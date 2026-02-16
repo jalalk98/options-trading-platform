@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Live Option Chart</title>
+
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+
+    <style>
+        body { margin: 0; font-family: Arial; }
+        #chart { width: 100vw; height: 550px; }
+
+        .topbar {
+            padding: 10px;
+            background: #f4f4f4;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        input {
+            padding: 6px;
+            width: 280px;
+        }
+
+        select {
+            padding: 6px;
+        }
+
+        #currentSymbol {
+            font-weight: bold;
+            color: #2563eb;
+        }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <span>Symbol:</span>
+
+    <input list="symbolList" id="symbolSelect" placeholder="Search strike...">
+    <datalist id="symbolList"></datalist>
+
+    </select>
+
+</div>
+
+<div id="chart"></div>
+
+<script>
+/* ======================
+   CHART SETUP
+====================== */
+const chart = LightweightCharts.createChart(
+    document.getElementById('chart'),
+    {
+        width: window.innerWidth,
+        height: 550,
+        timeScale: {
+            timeVisible: true,
+            secondsVisible: true
+        },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal
+        }
+    }
+);
+
+
+
+const candleSeries = chart.addBarSeries({
+    upColor: '#22c55e',
+    downColor: '#ef4444',
+    thinBars: true,
+});
+
+/* ======================
+   GLOBALS
+====================== */
+const INTERVAL = 5;
+let currentCandle = null;
+let socket = null;
+let reconnectTimeout = null;
+let activeSymbol = null;
+
+/* ======================
+   BUCKET FUNCTION
+====================== */
+function getBucketTime(epochSeconds) {
+    return Math.floor(epochSeconds / INTERVAL) * INTERVAL;
+}
+
+async function loadSymbol(symbol) {
+
+    if (!symbol) return;
+
+    activeSymbol = symbol;   // ✅ track active symbol
+
+    if (socket) {
+        socket.close();
+        socket = null;
+    }
+
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
+
+    candleSeries.setData([]);
+    currentCandle = null;   // ✅ VERY IMPORTANT RESET
+
+    // 🔹 Load history
+    const response = await fetch(`/api/history/${symbol}`);
+    const history = await response.json();
+
+    let candles = [];
+    let tempCandle = null;
+
+    history.forEach(tick => {
+        const bucketTime = getBucketTime(tick.time);
+        const price = tick.value;
+
+        if (!tempCandle || tempCandle.time !== bucketTime) {
+
+            if (tempCandle) candles.push(tempCandle);
+
+            tempCandle = {
+                time: bucketTime,
+                open: price,
+                high: price,
+                low: price,
+                close: price
+            };
+
+        } else {
+            tempCandle.high = Math.max(tempCandle.high, price);
+            tempCandle.low = Math.min(tempCandle.low, price);
+            tempCandle.close = price;
+        }
+    });
+
+    if (tempCandle) candles.push(tempCandle);
+
+    candleSeries.setData(candles);
+
+    chart.timeScale().fitContent();
+
+    // 🔹 Connect WebSocket AFTER history loads
+    connectWebSocket(symbol);
+}
+
+
+/* ======================
+   CONNECT WS
+====================== */
+function connectWebSocket(symbol) {
+
+    socket = new WebSocket(`ws://localhost:8000/ws/${symbol}`);
+
+    socket.onopen = () => {
+        console.log("Connected:", symbol);
+    };
+
+    socket.onmessage = function(event) {
+
+        const tick = JSON.parse(event.data);
+
+        const bucketTime = getBucketTime(tick.time);
+        const price = tick.value;
+
+        if (!currentCandle || currentCandle.time !== bucketTime) {
+
+            if (currentCandle) {
+                candleSeries.update(currentCandle);
+            }
+            
+            currentCandle = {
+                time: bucketTime,
+                open: price,
+                high: price,
+                low: price,
+                close: price
+            };
+
+        } else {
+            currentCandle.high = Math.max(currentCandle.high, price);
+            currentCandle.low = Math.min(currentCandle.low, price);
+            currentCandle.close = price;
+        }
+
+        candleSeries.update(currentCandle);
+        chart.timeScale().scrollToRealTime();
+    };
+
+    socket.onclose = (event) => {
+
+    if (!activeSymbol) return;
+
+    console.log("Socket closed. Reconnecting in 3s...");
+
+    reconnectTimeout = setTimeout(() => {
+        connectWebSocket(activeSymbol);
+    }, 3000);
+    };
+
+    socket.onerror = (err) => {
+        console.error("Socket error", err);
+        socket.close();
+    };
+}
+
+/* ======================
+   ENTER KEY SUPPORT
+====================== */
+document.getElementById("symbolSelect")
+.addEventListener("change", async function() {
+
+    const displayValue = this.value;
+
+    if (strikeMap[displayValue]) {
+        loadSymbol(strikeMap[displayValue]);
+        return;
+    }
+
+    // If manually typed, resolve from backend
+    const response = await fetch(`/api/resolve-symbol?display=${displayValue}`);
+    const data = await response.json();
+
+    if (data.symbol) {
+        loadSymbol(data.symbol);
+    } else {
+        alert("Strike not found in DB");
+    }
+});
+
+
+
+let strikeMap = {};  // display → symbol mapping
+
+async function loadStrikes() {
+    const response = await fetch("/api/strikes");
+    const strikes = await response.json();
+
+    const dataList = document.getElementById("symbolList");
+    dataList.innerHTML = "";
+    strikeMap = {};
+
+    strikes.forEach(item => {
+        const option = document.createElement("option");
+        option.value = item.display;   // user sees this
+        dataList.appendChild(option);
+
+        strikeMap[item.display] = item.symbol;  // mapping
+    });
+
+    if (strikes.length > 0) {
+        const firstDisplay = strikes[0].display;
+        document.getElementById("symbolSelect").value = firstDisplay;
+        loadSymbol(strikeMap[firstDisplay]);
+    }
+}
+
+
+loadStrikes();
+
+
+/* ======================
+   RESPONSIVE
+====================== */
+window.addEventListener('resize', () => {
+    chart.applyOptions({ width: window.innerWidth });
+});
+</script>
+
+</body>
+</html>

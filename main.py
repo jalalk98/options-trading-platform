@@ -5,7 +5,7 @@ import time
 
 if __name__ == "__main__":
 
-    strikes = ["25600-PE", "25500-CE"]
+    strikes = ["25400-CE", "25500-PE","25300-CE","25600-PE"]
     expiry = "17-2-2026"
     index_name = "NIFTY"
 

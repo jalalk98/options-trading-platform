@@ -22,7 +22,6 @@ def process_tick(tick: dict):
     if not metadata:
         return None
 
-
     curr_price = tick.get("last_price")
     curr_volume = tick.get("volume_traded")
     timestamp = tick.get("exchange_timestamp")
