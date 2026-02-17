@@ -11,7 +11,11 @@ from config.credentials import (
 from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router
-
+from backend.api.streaming import manager
+from backend.services.db_writer import db_writer
+from frontend.ui.websocket_setup import run_websocket
+from backend.services.instrument_registry import get_tokens_by_strikes
+from fastapi import WebSocketDisconnect
 
 app = FastAPI()
 
@@ -41,57 +45,32 @@ async def create_pool():
 async def startup():
     app.state.pool = await create_pool()
 
+    # Start DB writer
+    asyncio.create_task(db_writer())
+
+    # 🔥 Prepare market tokens
+    strikes = ["25500-CE", "25600-CE", "25700-PE", "25600-PE"]
+    expiry = "17-2-2026"
+    index_name = "NIFTY"
+
+    tokens = get_tokens_by_strikes(strikes, expiry, index_name)
+
+    if tokens:
+        asyncio.create_task(run_websocket(tokens))
+    else:
+        print("No valid tokens found. Market feed not started.")
+
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):
-    await websocket.accept()
 
-    pool = websocket.app.state.pool
+    await manager.connect(symbol, websocket)
 
-    last_timestamp = None
-
-    while True:
-        async with pool.acquire() as conn:
-
-            if last_timestamp is None:
-                # get latest timestamp from DB
-                row = await conn.fetchrow(
-                    """
-                    SELECT MAX(timestamp) as max_ts
-                    FROM gap_ticks
-                    WHERE symbol = $1
-                    """,
-                    symbol
-                )
-
-                if row and row["max_ts"]:
-                    last_timestamp = row["max_ts"]
-                else:
-                    await asyncio.sleep(0.5)
-                    continue
-
-            rows = await conn.fetch(
-                """
-                SELECT timestamp, curr_price
-                FROM gap_ticks
-                WHERE symbol = $1
-                AND timestamp > $2
-                ORDER BY timestamp ASC
-                """,
-                symbol,
-                last_timestamp
-            )
-
-            for row in rows:
-                last_timestamp = row["timestamp"]
-
-                await websocket.send_json({
-                    "time": row["timestamp"].timestamp(),
-                    "value": float(row["curr_price"])
-                })
-
-        await asyncio.sleep(0.5)
-
-
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(symbol, websocket)
 
 app.mount("/", StaticFiles(directory="frontend/ui", html=True), name="static")

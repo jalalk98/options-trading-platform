@@ -1,29 +1,21 @@
 # backend/api/strikes.py
 
 from fastapi import APIRouter, Request
-import asyncpg
-from config.credentials import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 
 router = APIRouter()
 
+
 @router.get("/strikes")
-async def get_strikes():
+async def get_strikes(request: Request):
 
-    conn = await asyncpg.connect(
-        host=DB_HOST,
-        port=int(DB_PORT),
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME
-    )
+    pool = request.app.state.pool
 
-    rows = await conn.fetch("""
-        SELECT DISTINCT symbol, strike, option_type
-        FROM gap_ticks
-        ORDER BY strike
-    """)
-
-    await conn.close()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT DISTINCT symbol, strike, option_type
+            FROM gap_ticks
+            ORDER BY strike
+        """)
 
     return [
         {
@@ -33,36 +25,31 @@ async def get_strikes():
         for r in rows
     ]
 
+
 @router.get("/resolve-symbol")
-async def resolve_symbol(display: str):
+async def resolve_symbol(display: str, request: Request):
 
     strike, option_type = display.split()
 
-    conn = await asyncpg.connect(
-        host=DB_HOST,
-        port=int(DB_PORT),
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME
-    )
+    pool = request.app.state.pool
 
-    row = await conn.fetchrow(
-        """
-        SELECT symbol
-        FROM gap_ticks
-        WHERE strike = $1 AND option_type = $2
-        LIMIT 1
-        """,
-        float(strike),
-        option_type
-    )
-
-    await conn.close()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT symbol
+            FROM gap_ticks
+            WHERE strike = $1 AND option_type = $2
+            LIMIT 1
+            """,
+            float(strike),
+            option_type
+        )
 
     if row:
         return {"symbol": row["symbol"]}
 
     return {"symbol": None}
+
 
 @router.get("/history/{symbol}")
 async def get_history(symbol: str, request: Request):

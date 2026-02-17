@@ -58,14 +58,41 @@ const chart = LightweightCharts.createChart(
         height: 550,
         timeScale: {
             timeVisible: true,
-            secondsVisible: true
+            secondsVisible: true,
+            rightBarStaysOnScroll: true,
+
+            // Axis labels (bottom scale)
+            tickMarkFormatter: (time) => {
+                const date = new Date(time * 1000);
+                return date.toLocaleTimeString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    hour12: false,
+                });
+            }
         },
+
+        rightPriceScale: {
+            autoScale: true,
+        },
+
+        localization: {
+            locale: 'en-IN',
+
+            // 🔥 Crosshair label formatter
+            timeFormatter: (time) => {
+                const date = new Date(time * 1000);
+                return date.toLocaleTimeString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    hour12: false,
+                });
+            }
+        },
+
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal
         }
     }
 );
-
 
 
 const candleSeries = chart.addBarSeries({
@@ -108,6 +135,8 @@ async function loadSymbol(symbol) {
 
     candleSeries.setData([]);
     currentCandle = null;   // ✅ VERY IMPORTANT RESET
+    
+
 
     // 🔹 Load history
     const response = await fetch(`/api/history/${symbol}`);
@@ -143,7 +172,19 @@ async function loadSymbol(symbol) {
 
     candleSeries.setData(candles);
 
+        // Adjust time scale to show all candles
     chart.timeScale().fitContent();
+
+    // Scroll to latest candle smoothly
+    chart.timeScale().scrollToRealTime();
+
+    // Force price axis to recalculate
+    setTimeout(() => {
+        chart.priceScale('right').applyOptions({
+            autoScale: true,
+        });
+    }, 50);
+
 
     // 🔹 Connect WebSocket AFTER history loads
     connectWebSocket(symbol);

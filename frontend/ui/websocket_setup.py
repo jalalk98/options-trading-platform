@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import threading
 from backend.core.async_tickers import MainTicker
 from backend.core.custom_connect import KiteConnect_custom
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
@@ -8,7 +7,7 @@ from config.logging_config import logger
 
 from backend.services.gap_processor import process_tick
 from backend.services.tick_queue import tick_queue
-from backend.services.db_writer import db_writer
+
 
 # Configure logging
 logging.getLogger('websockets.client').setLevel(logging.WARNING)
@@ -19,7 +18,7 @@ logging.getLogger('httpcore').setLevel(logging.WARNING)
 
 # Global variables for WebSocket
 websocket_running = {"running": False}
-loop = asyncio.new_event_loop()  # Dedicated event loop for WebSocket
+# loop = asyncio.new_event_loop()  # Dedicated event loop for WebSocket
 tokens = []
 
 # KiteConnect initialization
@@ -27,7 +26,7 @@ kite1 = KiteConnect_custom(KITE_API_KEY)
 kite1.set_access_token(KITE_ACCESS_TOKEN)
 
 # WebSocket Initialization
-kws = MainTicker(KITE_API_KEY, KITE_ACCESS_TOKEN, loop, kite1, token_to_OrderId_Mod_Dic=None, kws=None, debug=True)
+kws = MainTicker(KITE_API_KEY, KITE_ACCESS_TOKEN, None, kite1, token_to_OrderId_Mod_Dic=None, kws=None, debug=True)
 
 
 def setup_websocket_events():
@@ -49,7 +48,7 @@ def setup_websocket_events():
                 result = process_tick(tick)
 
                 if result:
-                    await tick_queue.put(result)
+                    asyncio.create_task(tick_queue.put(result))
 
             except Exception as e:
                 logger.error(f"Error processing tick: {e}")
@@ -107,49 +106,33 @@ def setup_websocket_events():
     kws.on_noreconnect = on_noreconnect
     
 
-def run_websocket(dynamic_tokens):
-    """
-    Start the WebSocket connection in a separate thread with dynamically passed tokens and references.
-    Ensures the Tkinter app remains responsive.
-    """
-    global websocket_running, kws, loop, tokens
+async def run_websocket(dynamic_tokens):
+    global websocket_running, kws, tokens
 
     if not dynamic_tokens:
-        logger.error("Websocket start aborted:Empty token list")
+        logger.error("Websocket start aborted: Empty token list")
         return
 
     if websocket_running["running"]:
-        logger.warning("WebSocket is already running. Ignoring start request.")
+        logger.warning("WebSocket is already running.")
         return
 
-    tokens = dynamic_tokens  # Update the tokens dynamically
-
-    def run_async_loop():
-        asyncio.set_event_loop(loop)
-
-        async def setup_and_listen():
-            setup_websocket_events()
-            try:
-                logger.info(f"Starting WebSocket connection with tokens: {tokens}")
-
-                # 🔥 START DB WRITER TASK
-                asyncio.create_task(db_writer())
-
-                kws.connect(threaded=True)
-                await asyncio.Event().wait()  # Keeps the loop running
-            except asyncio.CancelledError:
-                logger.info("WebSocket listening loop canceled.")
-            except Exception as e:
-                logger.error(f"Error in WebSocket setup and listen: {e}")
-            finally:
-                websocket_running["running"] = False
-                logger.info("Exiting WebSocket listening loop.")
-
-        loop.run_until_complete(setup_and_listen())
-
+    tokens = dynamic_tokens
     websocket_running["running"] = True
-    threading.Thread(target=run_async_loop).start()
-    logger.info("WebSocket task started in the background.")
+
+    setup_websocket_events()
+
+    # 🔥 IMPORTANT — use current running loop
+    current_loop = asyncio.get_running_loop()
+    kws.loop = current_loop
+
+    try:
+        logger.info(f"Starting WebSocket with tokens: {tokens}")
+        kws.connect(threaded=True)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        websocket_running["running"] = False
+
 
 
 

@@ -4,6 +4,8 @@ from config.logging_config import logger
 import asyncio
 import asyncpg
 from backend.services.tick_queue import tick_queue
+from backend.api.streaming import manager
+from datetime import timezone, timedelta
 from config.credentials import (
     DB_HOST,
     DB_PORT,
@@ -15,6 +17,7 @@ from config.credentials import (
 BATCH_SIZE = 100
 FLUSH_INTERVAL = 1.0  # seconds
 
+IST = timezone(timedelta(hours=5, minutes=30))
 
 async def create_pool():
     return await asyncpg.create_pool(
@@ -136,3 +139,30 @@ async def flush(pool, buffer):
 
     async with pool.acquire() as conn:
         await conn.executemany(INSERT_QUERY, records)
+
+    for row in buffer:
+        try:
+            ts = row["timestamp"]
+
+            if ts is None:
+                continue
+
+            # Treat DB value as UTC
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+
+            asyncio.create_task(
+                manager.broadcast(
+                    row["symbol"],
+                    {
+                        "time": ts.timestamp(),
+                        "value": float(row["curr_price"])
+                    }
+                )
+            )
+
+        except Exception as e:
+            print("Broadcast error:", e)
+
+
+
