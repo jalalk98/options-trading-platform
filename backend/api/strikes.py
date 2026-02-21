@@ -12,15 +12,15 @@ async def get_strikes(request: Request):
 
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT DISTINCT symbol, strike, option_type
+            SELECT DISTINCT symbol, strike, option_type, expiry_date
             FROM gap_ticks
-            ORDER BY strike
+            ORDER BY expiry_date, strike
         """)
 
     return [
         {
             "symbol": r["symbol"],
-            "display": f'{int(r["strike"])} {r["option_type"]}'
+            "display": f'{r["expiry_date"]} | {int(r["strike"])} {r["option_type"]}'
         }
         for r in rows
     ]
@@ -61,7 +61,6 @@ async def get_history(symbol: str, request: Request):
             SELECT timestamp, curr_price
             FROM gap_ticks
             WHERE symbol = $1
-            AND timestamp >= CURRENT_DATE
             ORDER BY timestamp ASC
         """, symbol)
 

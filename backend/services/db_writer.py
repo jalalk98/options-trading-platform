@@ -14,8 +14,8 @@ from config.credentials import (
     DB_PASSWORD,
 )
 
-BATCH_SIZE = 20
-FLUSH_INTERVAL = 0.1  # seconds
+BATCH_SIZE = 5
+FLUSH_INTERVAL = 0.07  # seconds
 
 # IST = timezone(timedelta(hours=5, minutes=30))
 
