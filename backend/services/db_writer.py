@@ -14,10 +14,10 @@ from config.credentials import (
     DB_PASSWORD,
 )
 
-BATCH_SIZE = 100
-FLUSH_INTERVAL = 1.0  # seconds
+BATCH_SIZE = 20
+FLUSH_INTERVAL = 0.1  # seconds
 
-IST = timezone(timedelta(hours=5, minutes=30))
+# IST = timezone(timedelta(hours=5, minutes=30))
 
 async def create_pool():
     return await asyncpg.create_pool(
@@ -108,6 +108,37 @@ async def flush(pool, buffer):
     if not buffer:
         return
 
+    tasks = []
+
+    for row in buffer:
+        try:
+            ts = row["timestamp"]
+            if ts is None:
+                continue
+
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+
+            # print("\nDB WRITER BROADCAST")
+            # print("Symbol:", row["symbol"])
+            # print("Active WS Symbols:", list(manager.active_connections.keys()))
+
+            tasks.append(
+                manager.broadcast(
+                    row["symbol"],
+                    {
+                        "time": ts.timestamp(),
+                        "value": float(row["curr_price"])
+                    }
+                )
+            )
+
+        except Exception as e:
+            print("Broadcast preparation error:", e)
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     records = []
 
     for row in buffer:
@@ -135,34 +166,13 @@ async def flush(pool, buffer):
             row["is_gap"]
         ))
 
-    logger.info(f"Inserted {len(buffer)} rows in to DB")
-
     async with pool.acquire() as conn:
         await conn.executemany(INSERT_QUERY, records)
+    logger.info(f"Inserted {len(buffer)} rows in to DB")
+    # print("Inserted symbols in this batch:")
+    # for r in buffer:
+    #     print(" -", r["symbol"])
 
-    for row in buffer:
-        try:
-            ts = row["timestamp"]
-
-            if ts is None:
-                continue
-
-            # Treat DB value as UTC
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-
-            asyncio.create_task(
-                manager.broadcast(
-                    row["symbol"],
-                    {
-                        "time": ts.timestamp(),
-                        "value": float(row["curr_price"])
-                    }
-                )
-            )
-
-        except Exception as e:
-            print("Broadcast error:", e)
 
 
 

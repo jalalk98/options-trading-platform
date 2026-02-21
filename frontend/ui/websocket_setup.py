@@ -37,14 +37,11 @@ def setup_websocket_events():
 
     # tick_count = 0
     async def on_ticks(ws, ticks):
-        # global tick_count
-        # tick_count += len(ticks)
-
-        # if tick_count % 100 == 0:
-        #     logger.info(f"Processesd {tick_count} ticks so far")
-         
+        # print("Received ticks:", len(ticks))
+        
         for tick in ticks:
             try:
+                print("Raw tick received:", tick["instrument_token"], tick["exchange_timestamp"])
                 result = process_tick(tick)
 
                 if result:

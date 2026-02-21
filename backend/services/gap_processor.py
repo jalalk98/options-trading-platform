@@ -16,8 +16,15 @@ def process_tick(tick: dict):
     if tick.get("mode") != "full":
         return None
 
+    print("Tick received at:", datetime.now())
+
     instrument_token = tick.get("instrument_token")
     metadata = get_metadata(instrument_token)
+
+    # print("\nTICK RECEIVED")
+    # print("Token:", instrument_token)
+    # print("Metadata Symbol:", metadata["symbol"])
+    # print("Metadata Expiry:", metadata["expiry_date"])
 
     if not metadata:
         return None
@@ -104,7 +111,8 @@ def process_tick(tick: dict):
         "volume": curr_volume,
         "timestamp": timestamp
     }
-
+    
+    print("Row created at:",datetime.now())
     return {
         "instrument_token": instrument_token,
 

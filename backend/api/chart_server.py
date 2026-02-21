@@ -16,6 +16,8 @@ from backend.services.db_writer import db_writer
 from frontend.ui.websocket_setup import run_websocket
 from backend.services.instrument_registry import get_tokens_by_strikes
 from fastapi import WebSocketDisconnect
+from backend.services.fake_tick_producer import fake_tick_producer
+
 
 app = FastAPI()
 
@@ -48,9 +50,11 @@ async def startup():
     # Start DB writer
     asyncio.create_task(db_writer())
 
+    # asyncio.create_task(fake_tick_producer())
+
     # 🔥 Prepare market tokens
-    strikes = ["25500-CE", "25600-CE", "25700-PE", "25600-PE"]
-    expiry = "17-2-2026"
+    strikes = ["25600-CE"]
+    expiry = "24-2-2026"
     index_name = "NIFTY"
 
     tokens = get_tokens_by_strikes(strikes, expiry, index_name)
@@ -64,13 +68,22 @@ async def startup():
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):
 
+    print("\nCLIENT CONNECTING TO SYMBOL:", symbol)
+
     await manager.connect(symbol, websocket)
+
+    print("Active WS symbols after connect:",
+          list(manager.active_connections.keys()))
 
     try:
         while True:
             # Keep connection alive
-            await websocket.receive_text()
+            await asyncio.sleep(60)
     except WebSocketDisconnect:
+        print("Client disconnected from:", symbol)
         manager.disconnect(symbol, websocket)
+        print("Remaining WS symbols:",
+        list(manager.active_connections.keys()))
+
 
 app.mount("/", StaticFiles(directory="frontend/ui", html=True), name="static")

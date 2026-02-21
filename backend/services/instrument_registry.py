@@ -15,10 +15,16 @@ def get_tokens_by_strikes(strike_list, expiry_date, index_name):
     Returns list of instrument tokens and builds active metadata map.
     """
 
+    print("\n========== GET TOKENS DEBUG ==========")
+    print("Requested expiry (raw):", expiry_date)
+    print("Index name:", index_name)
+    print("Strike list:", strike_list)
+
     global active_instruments
     active_instruments.clear()
 
     expiry_date = pd.to_datetime(expiry_date, dayfirst=True)
+    print("Converted expiry:", expiry_date)
 
     tokens = []
 
@@ -39,6 +45,12 @@ def get_tokens_by_strikes(strike_list, expiry_date, index_name):
             continue
 
         record = row.iloc[0]
+        print("\nMatched Instrument:")
+        print("Token:", record["instrument_token"])
+        print("Tradingsymbol:", record["tradingsymbol"])
+        print("CSV Expiry:", record["expiry"])
+        print("Strike:", record["strike"])
+        print("Option Type:", record["instrument_type"])
 
         token = int(record["instrument_token"])
 
@@ -50,6 +62,12 @@ def get_tokens_by_strikes(strike_list, expiry_date, index_name):
         }
 
         tokens.append(token)
+
+    print("\nActive Instruments Map:")
+    for token, meta in active_instruments.items():
+        print(token, "=>", meta["symbol"], "| Expiry:", meta["expiry_date"])
+
+    print("======================================\n")
 
     return tokens
 

@@ -59,7 +59,8 @@ const chart = LightweightCharts.createChart(
         timeScale: {
             timeVisible: true,
             secondsVisible: true,
-            rightBarStaysOnScroll: true,
+
+            rightOffset: 40,
 
             // Axis labels (bottom scale)
             tickMarkFormatter: (time) => {
@@ -73,6 +74,10 @@ const chart = LightweightCharts.createChart(
 
         rightPriceScale: {
             autoScale: true,
+            scaleMargins: {
+                top: 0.2,
+                bottom: 0.2,
+         },
         },
 
         localization: {
@@ -172,11 +177,6 @@ async function loadSymbol(symbol) {
 
     candleSeries.setData(candles);
 
-        // Adjust time scale to show all candles
-    chart.timeScale().fitContent();
-
-    // Scroll to latest candle smoothly
-    chart.timeScale().scrollToRealTime();
 
     // Force price axis to recalculate
     setTimeout(() => {
@@ -230,7 +230,7 @@ function connectWebSocket(symbol) {
         }
 
         candleSeries.update(currentCandle);
-        chart.timeScale().scrollToRealTime();
+        // chart.timeScale().scrollToRealTime();
     };
 
     socket.onclose = (event) => {
