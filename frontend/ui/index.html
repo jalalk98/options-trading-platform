@@ -7,6 +7,19 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 
     <style>
+
+        #tooltip {
+            position: absolute;
+            display: none;
+            background: rgba(0,0,0,0.8);
+            color: #fff;
+            padding: 8px 10px;
+            font-size: 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            z-index: 1000;
+            white-space: nowrap;
+        }
         body { margin: 0; font-family: Arial; }
         #chart { width: 100vw; height: 550px; }
 
@@ -46,6 +59,8 @@
 </div>
 
 <div id="chart"></div>
+
+<div id="tooltip"></div>
 
 <script>
 /* ======================
@@ -105,6 +120,30 @@ const chart = LightweightCharts.createChart(
     }
 );
 
+const tooltip = document.getElementById('tooltip');
+
+chart.subscribeCrosshairMove(param => {
+
+    if (!param.time || !param.point || !gapDetails.has(param.time)) {
+        tooltip.style.display = 'none';
+        return;
+    }
+
+    const g = gapDetails.get(param.time);
+
+    tooltip.innerHTML = `
+        <b>Gap ${g.dir}</b><br/>
+        From: ${g.from}<br/>
+        To: ${g.to}<br/>
+        Jump: ${g.jump}<br/>
+        Range: ${g.rangeLow} → ${g.rangeHigh}<br/>
+        <b>Volume:</b> ${g.volume}
+    `;
+
+    tooltip.style.left = param.point.x + 15 + 'px';
+    tooltip.style.top = param.point.y + 15 + 'px';
+    tooltip.style.display = 'block';
+});
 
 const candleSeries = chart.addBarSeries({
     upColor: '#22c55e',
@@ -120,6 +159,7 @@ let currentCandle = null;
 let socket = null;
 let reconnectTimeout = null;
 let activeSymbol = null;
+let gapDetails = new Map();   // time → gap metadata
 
 /* ======================
    BUCKET FUNCTION
@@ -129,7 +169,7 @@ function getBucketTime(epochSeconds) {
 }
 
 async function loadSymbol(symbol) {
-
+ 
     if (!symbol) return;
 
     activeSymbol = symbol;   // ✅ track active symbol
@@ -146,6 +186,7 @@ async function loadSymbol(symbol) {
 
     candleSeries.setData([]);
     currentCandle = null;   // ✅ VERY IMPORTANT RESET
+    gapDetails.clear(); 
     
 
 
@@ -156,10 +197,16 @@ async function loadSymbol(symbol) {
     let candles = [];
     let tempCandle = null;
 
+    let prevPrice = null;
+
     history.forEach(tick => {
+
         const bucketTime = getBucketTime(tick.time);
         const price = tick.value;
 
+        console.log("History gap:", tick.is_gap);
+
+        // ---- Build Candle ----
         if (!tempCandle || tempCandle.time !== bucketTime) {
 
             if (tempCandle) candles.push(tempCandle);
@@ -177,11 +224,47 @@ async function loadSymbol(symbol) {
             tempCandle.low = Math.min(tempCandle.low, price);
             tempCandle.close = price;
         }
+
+        // ---- GAP LOGIC ----
+        if (tick.is_gap && prevPrice !== null) {
+
+            const dir = price > prevPrice ? 'U' : 'D';
+
+            gapDetails.set(bucketTime, {
+                dir,
+                from: prevPrice,
+                to: price,
+                jump: Math.abs(price - prevPrice).toFixed(2),
+                rangeLow: Math.min(prevPrice, price),
+                rangeHigh: Math.max(prevPrice, price),
+                volume: tick.vol_change || 0
+            });
+        }
+
+        prevPrice = price;
     });
 
     if (tempCandle) candles.push(tempCandle);
 
     candleSeries.setData(candles);
+
+    const markers = [];
+
+    candles.forEach(c => {
+        if (gapDetails.has(c.time)) {
+            const info = gapDetails.get(c.time);
+
+            markers.push({
+                time: c.time,
+                position: info.dir === 'U' ? 'aboveBar' : 'belowBar',
+                color: info.dir === 'U' ? 'green' : 'red',
+                shape: 'text',
+                text: info.dir
+            });
+        }
+    });
+
+    candleSeries.setMarkers(markers);
 
 
     // Force price axis to recalculate
@@ -214,6 +297,32 @@ function connectWebSocket(symbol) {
 
         const bucketTime = getBucketTime(tick.time);
         const price = tick.value;
+
+        if (tick.is_gap) {
+
+            const dir = tick.direction === "UP" ? "U" : "D";
+            const prevPrice = tick.prev_price;
+
+            gapDetails.set(bucketTime, {
+                dir,
+                from: prevPrice,
+                to: price,
+                jump: Math.abs(price - prevPrice).toFixed(2),
+                rangeLow: Math.min(prevPrice, price),
+                rangeHigh: Math.max(prevPrice, price),
+                volume: tick.vol_change || 0
+            });
+
+            candleSeries.setMarkers(
+                Array.from(gapDetails.entries()).map(([time, info]) => ({
+                    time,
+                    position: info.dir === 'U' ? 'aboveBar' : 'belowBar',
+                    color: info.dir === 'U' ? 'green' : 'red',
+                    shape: 'text',
+                    text: info.dir
+                }))
+            );
+        }
 
         if (!currentCandle || currentCandle.time !== bucketTime) {
 

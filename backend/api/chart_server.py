@@ -50,19 +50,19 @@ async def startup():
     # Start DB writer
     asyncio.create_task(db_writer())
 
-    asyncio.create_task(fake_tick_producer())
+    # asyncio.create_task(fake_tick_producer())
 
-    # # 🔥 Prepare market tokens
-    # strikes = ["25600-CE"]
-    # expiry = "24-2-2026"
-    # index_name = "NIFTY"
+    # 🔥 Prepare market tokens
+    strikes = ["25600-CE"]
+    expiry = "24-2-2026"
+    index_name = "NIFTY"
 
-    # tokens = get_tokens_by_strikes(strikes, expiry, index_name)
+    tokens = get_tokens_by_strikes(strikes, expiry, index_name)
 
-    # if tokens:
-    #     asyncio.create_task(run_websocket(tokens))
-    # else:
-    #     print("No valid tokens found. Market feed not started.")
+    if tokens:
+        asyncio.create_task(run_websocket(tokens))
+    else:
+        print("No valid tokens found. Market feed not started.")
 
 
 @app.websocket("/ws/{symbol}")

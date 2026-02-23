@@ -58,7 +58,7 @@ async def get_history(symbol: str, request: Request):
 
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT timestamp, curr_price
+            SELECT timestamp, curr_price, is_gap, vol_change
             FROM gap_ticks
             WHERE symbol = $1
             ORDER BY timestamp ASC
@@ -67,7 +67,9 @@ async def get_history(symbol: str, request: Request):
     return [
         {
             "time": row["timestamp"].timestamp(),
-            "value": float(row["curr_price"])
+            "value": float(row["curr_price"]),
+            "is_gap": row["is_gap"],
+            "vol_change": row["vol_change"]
         }
         for row in rows
     ]

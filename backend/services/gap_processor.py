@@ -5,10 +5,10 @@ from backend.services.instrument_registry import get_metadata
 
 last_tick_cache = {}
 
-# Configurable thresholds
-PRICE_GAP_PERCENT = 0.05     # 0.05%
-SPREAD_GAP_PERCENT = 0.10    # 0.10%
-TIME_GAP_MS = 500
+PRICE_THRESHOLD = 1.0          # same as CSV
+TIME_THRESHOLD = 0.75          # seconds
+MAX_SPREAD_PCT = 0.25          # same as CSV
+REQUIRE_ZERO_VOLUME = True
 
 
 def process_tick(tick: dict):
@@ -16,7 +16,7 @@ def process_tick(tick: dict):
     if tick.get("mode") != "full":
         return None
 
-    print("Tick received at:", datetime.now())
+    # print("Tick received at:", datetime.now())
 
     instrument_token = tick.get("instrument_token")
     metadata = get_metadata(instrument_token)
@@ -92,18 +92,24 @@ def process_tick(tick: dict):
     gap_with_spread = False
     is_gap = False
 
-    price_gap_pct = 0
-    if prev_price != 0:
-        price_gap_pct = abs((price_jump / prev_price) * 100)
+    price_jump_abs = abs(curr_price - prev_price)
 
-    if price_gap_pct >= PRICE_GAP_PERCENT:
-        only_gap = True
+    vol_ok = (vol_change == 0) if REQUIRE_ZERO_VOLUME else True
 
-    if only_gap and spread_pct and spread_pct >= SPREAD_GAP_PERCENT:
-        gap_with_spread = True
+    only_gap = (
+        price_jump_abs >= PRICE_THRESHOLD
+        and vol_ok
+        and time_diff is not None
+        and time_diff <= TIME_THRESHOLD
+    )
 
-    if only_gap or gap_with_spread or (time_diff and time_diff * 1000 > TIME_GAP_MS):
-        is_gap = True
+    gap_with_spread = (
+        only_gap
+        and spread_pct is not None
+        and spread_pct <= MAX_SPREAD_PCT
+    )
+
+    is_gap = gap_with_spread
 
     # Update cache
     last_tick_cache[instrument_token] = {
@@ -112,7 +118,7 @@ def process_tick(tick: dict):
         "timestamp": timestamp
     }
     
-    print("Row created at:",datetime.now())
+    # print("Row created at:",datetime.now())
     return {
         "instrument_token": instrument_token,
 

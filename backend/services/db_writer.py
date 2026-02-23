@@ -116,8 +116,10 @@ async def flush(pool, buffer):
             if ts is None:
                 continue
 
+            IST = timezone(timedelta(hours=5, minutes=30))
+
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=IST)
 
             # print("\nDB WRITER BROADCAST")
             # print("Symbol:", row["symbol"])
@@ -127,8 +129,12 @@ async def flush(pool, buffer):
                 manager.broadcast(
                     row["symbol"],
                     {
-                        "time": ts.timestamp(),
-                        "value": float(row["curr_price"])
+                    "time": ts.timestamp(),
+                    "value": float(row["curr_price"]),
+                    "is_gap": row["is_gap"],
+                    "vol_change": row["vol_change"],
+                    "direction": row["direction"],
+                    "prev_price": row["prev_price"]
                     }
                 )
             )
