@@ -115,6 +115,8 @@ async def flush(pool, buffer):
             ts = row["timestamp"]
             if ts is None:
                 continue
+            if ts.year < 2000:
+                continue
 
             IST = timezone(timedelta(hours=5, minutes=30))
 

@@ -29,26 +29,40 @@ async def get_strikes(request: Request):
 @router.get("/resolve-symbol")
 async def resolve_symbol(display: str, request: Request):
 
-    strike, option_type = display.split()
+    try:
+        # Example display:
+        # "2026-03-02 | 24600 CE"
 
-    pool = request.app.state.pool
+        parts = display.split("|")
+        expiry = parts[0].strip()
+        strike_part = parts[1].strip()
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT symbol
-            FROM gap_ticks
-            WHERE strike = $1 AND option_type = $2
-            LIMIT 1
-            """,
-            float(strike),
-            option_type
-        )
+        strike, option_type = strike_part.split()
 
-    if row:
-        return {"symbol": row["symbol"]}
+        pool = request.app.state.pool
 
-    return {"symbol": None}
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT symbol
+                FROM gap_ticks
+                WHERE strike = $1
+                AND option_type = $2
+                AND expiry_date = $3
+                LIMIT 1
+                """,
+                float(strike),
+                option_type,
+                expiry
+            )
+
+        if row:
+            return {"symbol": row["symbol"]}
+
+        return {"symbol": None}
+
+    except Exception as e:
+        return {"symbol": None}
 
 
 @router.get("/history/{symbol}")
@@ -61,9 +75,10 @@ async def get_history(symbol: str, request: Request):
             SELECT timestamp, curr_price, is_gap, vol_change
             FROM gap_ticks
             WHERE symbol = $1
+            AND timestamp > '2000-01-01'
             ORDER BY timestamp ASC
         """, symbol)
-
+    
     return [
         {
             "time": row["timestamp"].timestamp(),

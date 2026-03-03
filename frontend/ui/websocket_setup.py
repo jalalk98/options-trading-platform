@@ -41,7 +41,7 @@ def setup_websocket_events():
         
         for tick in ticks:
             try:
-                print("Raw tick received:", tick["instrument_token"], tick["exchange_timestamp"])
+                # print("Raw tick received:", tick["instrument_token"], tick["exchange_timestamp"])
                 result = process_tick(tick)
 
                 if result:

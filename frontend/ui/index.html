@@ -194,6 +194,8 @@ async function loadSymbol(symbol) {
     const response = await fetch(`/api/history/${symbol}`);
     const history = await response.json();
 
+    console.log("Loaded history count:", history.length);
+
     let candles = [];
     let tempCandle = null;
 
@@ -228,7 +230,7 @@ async function loadSymbol(symbol) {
         // ---- GAP LOGIC ----
         if (tick.is_gap && prevPrice !== null) {
 
-            const dir = price > prevPrice ? 'U' : 'D';
+            const dir = price > prevPrice ? 'D' : 'U';
 
             gapDetails.set(bucketTime, {
                 dir,
@@ -256,8 +258,8 @@ async function loadSymbol(symbol) {
 
             markers.push({
                 time: c.time,
-                position: info.dir === 'U' ? 'aboveBar' : 'belowBar',
-                color: info.dir === 'U' ? 'green' : 'red',
+                position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
+                color: info.dir === 'D' ? 'green' : 'red',
                 shape: 'text',
                 text: info.dir
             });
@@ -265,7 +267,6 @@ async function loadSymbol(symbol) {
     });
 
     candleSeries.setMarkers(markers);
-
 
     // Force price axis to recalculate
     setTimeout(() => {
@@ -279,6 +280,53 @@ async function loadSymbol(symbol) {
     connectWebSocket(symbol);
 }
 
+function refreshMarkers() {
+
+    candleSeries.setMarkers(
+        Array.from(gapDetails.entries()).map(([time, info]) => ({
+
+            time,
+            position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
+
+            color: info.isFilled
+                ? (info.dir === 'D'
+                    ? 'rgba(0,128,0,0.3)'
+                    : 'rgba(255,0,0,0.3)')
+                : (info.dir === 'D'
+                    ? 'green'
+                    : 'red'),
+
+            shape: 'text',
+            text: info.dir
+        }))
+    );
+}
+
+function checkGapFill(currentCandle) {
+
+    let updated = false;
+
+    gapDetails.forEach((gap, time) => {
+
+        if (!gap.isFilled) {
+
+            // U gap → price must return to FROM or below
+            if (
+                (gap.dir === 'D' && currentCandle.low <= gap.from) ||
+
+                // D gap → price must return to FROM or above
+                (gap.dir === 'U' && currentCandle.high >= gap.from)
+            ) {
+                gap.isFilled = true;
+                updated = true;
+            }
+        }
+    });
+
+    if (updated) {
+        refreshMarkers();
+    }
+}
 
 /* ======================
    CONNECT WS
@@ -300,7 +348,7 @@ function connectWebSocket(symbol) {
 
         if (tick.is_gap) {
 
-            const dir = tick.direction === "UP" ? "U" : "D";
+            const dir = tick.direction === "UP" ? "D" : "U";
             const prevPrice = tick.prev_price;
 
             gapDetails.set(bucketTime, {
@@ -310,14 +358,15 @@ function connectWebSocket(symbol) {
                 jump: Math.abs(price - prevPrice).toFixed(2),
                 rangeLow: Math.min(prevPrice, price),
                 rangeHigh: Math.max(prevPrice, price),
-                volume: tick.vol_change || 0
+                volume: tick.vol_change || 0,
+                isFilled: false
             });
 
             candleSeries.setMarkers(
                 Array.from(gapDetails.entries()).map(([time, info]) => ({
                     time,
-                    position: info.dir === 'U' ? 'aboveBar' : 'belowBar',
-                    color: info.dir === 'U' ? 'green' : 'red',
+                    position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
+                    color: info.dir === 'D' ? 'green' : 'red',
                     shape: 'text',
                     text: info.dir
                 }))
@@ -345,6 +394,7 @@ function connectWebSocket(symbol) {
         }
 
         candleSeries.update(currentCandle);
+        checkGapFill(currentCandle);
         // chart.timeScale().scrollToRealTime();
     };
 
