@@ -886,7 +886,7 @@ class KiteConnect_custom(object):
         # trigger_price = stop_loss_price*0.02
         # trigger_price = round(stop_loss_price + trigger_price)* 10 / 10.0
         # logger.info(f" LTP: {ltp}, Stop Loss Price: {stop_loss_price}, Trigger Price: {trigger_price}")
-
+        # print("ENTERED SELL FUNCTION")
         data = {'variety': 'regular', 
                 'exchange': f'{exchange}', 
                 'tradingsymbol': f'{trade_symbol}', 
@@ -903,6 +903,7 @@ class KiteConnect_custom(object):
             'User-Agent': 'Kiteconnect-python/5.0.1', 
             'Authorization': f'token {api_key}:{access_token}'
                 }
+        # print("Sending request to Zerodha")
         try:
             r = await self.reqsession.request('POST',
                                                 'https://api.kite.trade/orders/regular',
@@ -911,7 +912,8 @@ class KiteConnect_custom(object):
                                                 params=None,
                                                 headers=headers,
                                                 timeout=7)
-            
+            print("Response received", r.status_code, r.text)
+            r.raise_for_status()
             # Any requests lib related exceptions are raised here - https://requests.readthedocs.io/en/latest/api/#exceptions
         except Exception as e:
             raise e

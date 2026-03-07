@@ -28,6 +28,7 @@ kite1.set_access_token(KITE_ACCESS_TOKEN)
 # WebSocket Initialization
 kws = MainTicker(KITE_API_KEY, KITE_ACCESS_TOKEN, None, kite1, token_to_OrderId_Mod_Dic=None, kws=None, debug=True)
 
+active_positions = {}
 
 def setup_websocket_events():
     """
@@ -49,6 +50,96 @@ def setup_websocket_events():
 
             except Exception as e:
                 logger.error(f"Error processing tick: {e}")
+    
+    async def on_order_update(ws, data):
+        try:
+            result = await handle_order_update(ws, data)
+            if result is None or result.get("status") != "success":
+                logger.error(f"handle_order_update returned an error: {result}")
+        except Exception as e:
+            logger.error(f"Error in on_order_update: {e}")
+
+
+    async def handle_order_update(ws, data):
+        try:
+            # Only act when order is fully completed
+            if data.get("status") != "COMPLETE":
+                return {"status": "ignored"}
+
+            # Ignore SL orders to prevent infinite loop
+            if data.get("order_type") == "SL":
+                return {"status": "ignored"}
+
+            trade_symbol = data.get("tradingsymbol")
+            qty = int(data.get("quantity", 0))
+            exchange = data.get("exchange")
+            transaction_type = data.get("transaction_type")
+            last_price = float(data.get("average_price", 0))
+
+            # Safety check
+            if last_price == 0:
+                logger.warning(f"Average price is zero for {trade_symbol}. Ignoring SL placement.")
+                return {"status": "ignored"}
+
+            def round_to_tick(price, tick_size=0.05):
+                return round(round(price / tick_size) * tick_size, 2)
+
+            sl_points = 5
+            trigger_buffer = 0.3
+
+            # ==============================
+            # BUY ENTRY → PLACE SELL SL
+            # ==============================
+            if transaction_type == "BUY":
+
+                stop_loss_price = round_to_tick(last_price - sl_points)
+                trigger_price = round_to_tick(stop_loss_price + trigger_buffer)
+
+                logger.info(
+                    f"Placing SL SELL for {trade_symbol} | Qty: {qty} | SL: {stop_loss_price} | Trigger: {trigger_price}"
+                )
+
+                await kite1.hard_code_regular_sell_order(
+                    exchange=exchange,
+                    trade_symbol=trade_symbol,
+                    qty=qty,
+                    stop_loss_price=stop_loss_price,
+                    trig_price=trigger_price,
+                    api_key=KITE_API_KEY,
+                    access_token=KITE_ACCESS_TOKEN
+                )
+
+                return {"status": "success"}
+
+            # ==============================
+            # SELL ENTRY → PLACE BUY SL
+            # ==============================
+            elif transaction_type == "SELL":
+
+                stop_loss_price = round_to_tick(last_price + sl_points)
+                trigger_price = round_to_tick(stop_loss_price - trigger_buffer)
+
+                logger.info(
+                    f"Placing SL BUY for {trade_symbol} | Qty: {qty} | SL: {stop_loss_price} | Trigger: {trigger_price}"
+                )
+
+                await kite1.hard_code_regular_buy_order(
+                    exchange=exchange,
+                    trade_symbol=trade_symbol,
+                    qty=qty,
+                    price=stop_loss_price,
+                    trig_price=trigger_price,
+                    api_key=KITE_API_KEY,
+                    access_token=KITE_ACCESS_TOKEN
+                )
+
+                return {"status": "success"}
+
+            return {"status": "ignored"}
+
+        except Exception as e:
+            logger.error(f"handle_order_update error: {e}")
+            return {"status": "error", "message": str(e)}
 
 
     async def on_connect(ws):
@@ -101,6 +192,7 @@ def setup_websocket_events():
     kws.on_error = on_error
     kws.on_reconnect = on_reconnect
     kws.on_noreconnect = on_noreconnect
+    kws.on_order_update = on_order_update
     
 
 async def run_websocket(dynamic_tokens):

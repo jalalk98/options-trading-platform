@@ -53,7 +53,7 @@ async def startup():
     # asyncio.create_task(fake_tick_producer())
 
     # 🔥 Prepare market tokens
-    strikes = ["24600-CE"]
+    strikes = ["24500-CE","24550-CE","24600-CE","24400-CE","24300-CE","24200-CE","24500-PE","24600-PE","24400-PE","24700-CE","24650-CE"]
     expiry = "10-3-2026"
     index_name = "NIFTY"
 

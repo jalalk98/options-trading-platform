@@ -124,6 +124,15 @@ const tooltip = document.getElementById('tooltip');
 
 chart.subscribeCrosshairMove(param => {
 
+    if (!param.point) return;
+
+    // 🔥 Convert mouse Y position to price
+    const price = candleSeries.coordinateToPrice(param.point.y);
+
+    if (price !== null) {
+        crosshairPrice = price;
+    }
+
     if (!param.time || !param.point || !gapDetails.has(param.time)) {
         tooltip.style.display = 'none';
         return;
@@ -160,6 +169,7 @@ let socket = null;
 let reconnectTimeout = null;
 let activeSymbol = null;
 let gapDetails = new Map();   // time → gap metadata
+let crosshairPrice = null;
 
 /* ======================
    BUCKET FUNCTION
@@ -476,6 +486,67 @@ loadStrikes();
 window.addEventListener('resize', () => {
     chart.applyOptions({ width: window.innerWidth });
 });
+
+
+window.addEventListener("keydown", async (e) => {
+
+    // ignore when typing in input
+    if (document.activeElement.tagName === "INPUT") {
+        return;
+    }
+
+    const key = e.key.toLowerCase();
+
+    console.log("Key pressed:", key);
+    console.log("Crosshair price:", crosshairPrice);
+
+    if (crosshairPrice === null) {
+        console.log("Move mouse over chart to select price");
+        return;
+    }
+    console.log("Sending order:", {
+    symbol: activeSymbol,
+    price: crosshairPrice,
+    });
+
+    if (!activeSymbol) {
+        console.log("No symbol selected");
+        return;
+    }
+
+    if (key === "q") {
+
+        console.log("SL BUY triggered");
+
+        await fetch("/api/place-sl-order", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                symbol: activeSymbol,
+                price: Number(crosshairPrice.toFixed(2)),
+                side: "BUY"
+            })
+        });
+    }
+
+    if (key === "w") {
+
+        console.log("SL SELL triggered");
+
+        await fetch("/api/place-sl-order", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                symbol: activeSymbol,
+                price: Number(crosshairPrice.toFixed(2)),
+                side: "SELL"
+            })
+        });
+    }
+
+});
+
+
 </script>
 
 </body>

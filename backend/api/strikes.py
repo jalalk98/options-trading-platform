@@ -1,6 +1,9 @@
 # backend/api/strikes.py
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel
+from frontend.ui.websocket_setup import kite1
+from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 
 router = APIRouter()
 
@@ -14,7 +17,7 @@ async def get_strikes(request: Request):
         rows = await conn.fetch("""
             SELECT DISTINCT symbol, strike, option_type, expiry_date
             FROM gap_ticks
-            ORDER BY expiry_date, strike
+            ORDER BY expiry_date DESC, strike
         """)
 
     return [
@@ -88,3 +91,56 @@ async def get_history(symbol: str, request: Request):
         }
         for row in rows
     ]
+
+class SLOrder(BaseModel):
+    symbol: str
+    price: float
+    side: str   # BUY or SELL
+
+@router.post("/place-sl-order")
+async def place_sl_order(order: SLOrder):
+
+    try:
+        print(f"Order request received: {order.symbol} {order.side} {order.price}")
+        def round_to_tick(price, tick_size=0.05):
+            return round(round(price / tick_size) * tick_size, 2)
+
+        trigger_buffer = 0.10
+        price = round_to_tick(order.price)
+
+        if order.side == "BUY":
+
+            trigger = round_to_tick(price - trigger_buffer)
+
+            await kite1.hard_code_regular_buy_order(
+                exchange="NFO",
+                trade_symbol=order.symbol,
+                qty=65,
+                price=price,
+                trig_price=trigger,
+                api_key=KITE_API_KEY,
+                access_token=KITE_ACCESS_TOKEN
+            )
+
+        elif order.side == "SELL":
+
+            trigger = round_to_tick(price + trigger_buffer)
+
+            await kite1.hard_code_regular_sell_order(
+                exchange="NFO",
+                trade_symbol=order.symbol,
+                qty=65,
+                stop_loss_price=price,
+                trig_price=trigger,
+                api_key=KITE_API_KEY,
+                access_token=KITE_ACCESS_TOKEN
+            )
+
+        return {
+            "status": "success",
+            "price": price,
+            "trigger": trigger
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
