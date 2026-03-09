@@ -71,7 +71,7 @@ async def db_writer():
 
     buffer = []
 
-    last_id = "0"   # Redis stream pointer
+    last_id = "$"  # Redis stream pointer
 
     try:
 

@@ -7,7 +7,6 @@ from config.logging_config import logger
 from backend.core.redis_client import redis_client
 import json
 from backend.services.gap_processor import process_tick
-from backend.services.tick_queue import tick_queue
 import threading
 
 # Configure logging
@@ -40,20 +39,26 @@ def setup_websocket_events():
     # tick_count = 0
     async def on_ticks(ws, ticks):
         # print("Received ticks:", len(ticks))
-        
-        for tick in ticks:
-            try:
+        try:
+            pipe = redis_client.pipeline()
+
+            for tick in ticks:
                 # print("Raw tick received:", tick["instrument_token"], tick["exchange_timestamp"])
                 result = process_tick(tick)
 
                 if result:
-                    await redis_client.xadd(
+                    pipe.xadd(
                         "ticks_stream",
-                        {"data": json.dumps(result,default=str)}
+                        {"data": json.dumps(result, default=str)},
+                        maxlen=50000,
+                        approximate=True
                     )
 
-            except Exception as e:
-                logger.error(f"Error processing tick: {e}")
+            await pipe.execute()
+
+        except Exception as e:
+            logger.error(f"Error processing tick batch: {e}")
+
     
     async def on_order_update(ws, data):
         try:
