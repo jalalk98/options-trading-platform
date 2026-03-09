@@ -4,10 +4,11 @@ from backend.core.async_tickers import MainTicker
 from backend.core.custom_connect import KiteConnect_custom
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 from config.logging_config import logger
-
+from backend.core.redis_client import redis_client
+import json
 from backend.services.gap_processor import process_tick
 from backend.services.tick_queue import tick_queue
-
+import threading
 
 # Configure logging
 logging.getLogger('websockets.client').setLevel(logging.WARNING)
@@ -46,7 +47,10 @@ def setup_websocket_events():
                 result = process_tick(tick)
 
                 if result:
-                    asyncio.create_task(tick_queue.put(result))
+                    await redis_client.xadd(
+                        "ticks_stream",
+                        {"data": json.dumps(result,default=str)}
+                    )
 
             except Exception as e:
                 logger.error(f"Error processing tick: {e}")
@@ -221,6 +225,7 @@ async def run_websocket(dynamic_tokens):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         websocket_running["running"] = False
+
 
 
 

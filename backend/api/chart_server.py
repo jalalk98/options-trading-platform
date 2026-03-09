@@ -7,18 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.credentials import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 )
-
+from backend.services.redis_streamer import redis_streamer
 from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router
 from backend.api.streaming import manager
-from backend.services.db_writer import db_writer
-from frontend.ui.websocket_setup import run_websocket
-from backend.services.instrument_registry import get_tokens_by_strikes
 from fastapi import WebSocketDisconnect
 from backend.services.fake_tick_producer import fake_tick_producer
 
-
+    
 app = FastAPI()
 
 app.include_router(strikes_router, prefix="/api")
@@ -47,23 +44,7 @@ async def create_pool():
 async def startup():
     app.state.pool = await create_pool()
 
-    # Start DB writer
-    asyncio.create_task(db_writer())
-
-    # asyncio.create_task(fake_tick_producer())
-
-    # 🔥 Prepare market tokens
-    strikes = ["24500-CE","24550-CE","24600-CE","24400-CE","24300-CE","24200-CE","24500-PE","24600-PE","24400-PE","24700-CE","24650-CE"]
-    expiry = "10-3-2026"
-    index_name = "NIFTY"
-
-    tokens = get_tokens_by_strikes(strikes, expiry, index_name)
-
-    if tokens:
-        asyncio.create_task(run_websocket(tokens))
-    else:
-        print("No valid tokens found. Market feed not started.")
-
+    asyncio.create_task(redis_streamer())
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):

@@ -12,7 +12,7 @@ venv/
 
 # Logs
 logs/
-
+*.log
 # Credentials
 config/credentials.py
 

@@ -351,9 +351,10 @@ function connectWebSocket(symbol) {
 
     socket.onmessage = function(event) {
 
+        console.log("WS TICK:", event.data);
         const tick = JSON.parse(event.data);
 
-        const bucketTime = getBucketTime(tick.time);
+        const bucketTime = getBucketTime(Number(tick.time));
         const price = tick.value;
 
         if (tick.is_gap) {
