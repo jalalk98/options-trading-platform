@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 
+data/Combined_Instruments.csv
+
 # Virtual environment
 .env
 venv/
