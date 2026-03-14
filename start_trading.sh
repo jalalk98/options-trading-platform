@@ -1,6 +1,8 @@
 #!/bin/bash
 
 SESSION="trading"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="$HOME/trading_start.log"
 
 tmux kill-session -t $SESSION 2>/dev/null
 
@@ -23,3 +25,19 @@ tmux send-keys -t $SESSION:1 "cd ~/projects/options-trading-platform && ~/projec
 tmux new-window -t $SESSION -n api_server
 
 tmux send-keys -t $SESSION:2 "cd ~/projects/options-trading-platform && ~/projects/options-trading-platform/venv/bin/uvicorn backend.api.chart_server:app --host 0.0.0.0 --port 8000" C-m
+
+# Wait for processes to settle then check health
+sleep 5
+
+WINDOWS=$(tmux list-windows -t $SESSION 2>/dev/null | wc -l)
+
+if [ "$WINDOWS" -eq 3 ]; then
+    "$SCRIPT_DIR/notify.sh" "✅ Trading session started successfully.
+- db_writer      running
+- tick_collector running
+- api_server     running (port 8000)" "$LOG_FILE"
+    echo "Trading session started."
+else
+    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — only $WINDOWS/3 tmux windows are running." "$LOG_FILE"
+    echo "Trading session start may have failed."
+fi
