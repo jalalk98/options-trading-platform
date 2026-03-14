@@ -37,12 +37,14 @@ async def prewarm_strikes_cache(pool):
         first_symbol = result[0]["symbol"]
         async with pool.acquire() as conn:
             await conn.fetch("""
-                SELECT FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                SELECT
+                    bucket,
                     (ARRAY_AGG(curr_price ORDER BY timestamp))[1],
                     MAX(curr_price), MIN(curr_price),
                     (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]
                 FROM (
-                    SELECT FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                    SELECT
+                        FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
                         curr_price, timestamp
                     FROM gap_ticks
                     WHERE symbol = $1
