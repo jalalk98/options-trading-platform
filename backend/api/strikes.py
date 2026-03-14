@@ -1,5 +1,6 @@
 # backend/api/strikes.py
 
+import time
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from backend.services.websocket_handler import kite1
@@ -7,19 +8,17 @@ from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 
 router = APIRouter()
 
+_strikes_cache = {"data": None, "ts": 0}
+STRIKES_CACHE_TTL = 60  # seconds
 
-@router.get("/strikes")
-async def get_strikes(request: Request):
 
-    pool = request.app.state.pool
-
+async def _query_strikes(pool):
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT DISTINCT symbol, strike, option_type, expiry_date
             FROM gap_ticks
             ORDER BY expiry_date DESC, strike
         """)
-
     return [
         {
             "symbol": r["symbol"],
@@ -27,6 +26,42 @@ async def get_strikes(request: Request):
         }
         for r in rows
     ]
+
+
+async def prewarm_strikes_cache(pool):
+    result = await _query_strikes(pool)
+    _strikes_cache["data"] = result
+    _strikes_cache["ts"] = time.monotonic()
+    # Prewarm DB plan cache for history queries by running one history fetch
+    if result:
+        first_symbol = result[0]["symbol"]
+        async with pool.acquire() as conn:
+            await conn.fetch("""
+                SELECT FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                    (ARRAY_AGG(curr_price ORDER BY timestamp))[1],
+                    MAX(curr_price), MIN(curr_price),
+                    (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]
+                FROM (
+                    SELECT FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                        curr_price, timestamp
+                    FROM gap_ticks
+                    WHERE symbol = $1
+                    AND timestamp >= NOW() - INTERVAL '7 hours'
+                ) t GROUP BY bucket ORDER BY bucket ASC
+            """, first_symbol)
+
+
+@router.get("/strikes")
+async def get_strikes(request: Request):
+
+    now = time.monotonic()
+    if _strikes_cache["data"] is not None and (now - _strikes_cache["ts"]) < STRIKES_CACHE_TTL:
+        return _strikes_cache["data"]
+
+    result = await _query_strikes(request.app.state.pool)
+    _strikes_cache["data"] = result
+    _strikes_cache["ts"] = now
+    return result
 
 
 @router.get("/resolve-symbol")
@@ -89,7 +124,7 @@ async def get_history(symbol: str, request: Request):
                 timestamp
             FROM gap_ticks
             WHERE symbol = $1
-            AND timestamp >= NOW() - INTERVAL '1 day'
+            AND timestamp >= NOW() - INTERVAL '7 hours'
         ) t
         GROUP BY bucket
         ORDER BY bucket ASC

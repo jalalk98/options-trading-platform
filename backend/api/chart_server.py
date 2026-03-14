@@ -10,7 +10,7 @@ from config.credentials import (
 from backend.services.redis_streamer import redis_streamer
 from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
-from backend.api.strikes import router as strikes_router
+from backend.api.strikes import router as strikes_router, prewarm_strikes_cache
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
 
@@ -44,6 +44,7 @@ async def startup():
     app.state.pool = await create_pool()
 
     asyncio.create_task(redis_streamer())
+    asyncio.create_task(prewarm_strikes_cache(app.state.pool))
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):
