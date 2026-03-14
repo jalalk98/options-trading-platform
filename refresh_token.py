@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
+import requests
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -47,7 +48,8 @@ def load_secrets() -> dict:
                 continue
             key, _, value = line.partition("=")
             secrets[key.strip()] = value.strip()
-    required = {"KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET"}
+    required = {"KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
     missing = required - secrets.keys()
     if missing:
         raise ValueError(f"Missing keys in ~/.kite_secrets: {missing}")
@@ -67,14 +69,14 @@ def load_env_credentials() -> dict:
 def update_env_token(new_token: str):
     """Replace KITE_ACCESS_TOKEN value in .env in-place."""
     text = ENV_FILE.read_text()
+    if not re.search(r"^KITE_ACCESS_TOKEN\s*=", text, flags=re.MULTILINE):
+        raise RuntimeError("KITE_ACCESS_TOKEN line not found in .env — cannot update")
     new_text = re.sub(
         r"^(KITE_ACCESS_TOKEN\s*=\s*).*$",
         rf"\g<1>'{new_token}'",
         text,
         flags=re.MULTILINE,
     )
-    if new_text == text:
-        raise RuntimeError("KITE_ACCESS_TOKEN line not found in .env — cannot update")
     ENV_FILE.write_text(new_text)
     log.info("KITE_ACCESS_TOKEN updated in .env")
 
@@ -152,7 +154,6 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
 def exchange_for_access_token(api_key: str, api_secret: str, request_token: str) -> str:
     """Exchange request_token for an access_token via the Kite API."""
     import hashlib
-    import requests
 
     checksum = hashlib.sha256(f"{api_key}{request_token}{api_secret}".encode()).hexdigest()
     resp = requests.post(
@@ -172,8 +173,34 @@ def exchange_for_access_token(api_key: str, api_secret: str, request_token: str)
     return access_token
 
 
+LOG_FILE = Path.home() / "token_refresh.log"
+
+
+def send_telegram(bot_token: str, chat_id: str, text: str, attach_log: bool = False):
+    """Send a Telegram message, optionally attaching the log file."""
+    base = f"https://api.telegram.org/bot{bot_token}"
+    try:
+        if attach_log and LOG_FILE.exists():
+            with open(LOG_FILE, "rb") as f:
+                requests.post(
+                    f"{base}/sendDocument",
+                    data={"chat_id": chat_id, "caption": text},
+                    files={"document": ("token_refresh.log", f)},
+                    timeout=15,
+                )
+        else:
+            requests.post(
+                f"{base}/sendMessage",
+                data={"chat_id": chat_id, "text": text},
+                timeout=15,
+            )
+    except Exception as e:
+        log.warning(f"Telegram notification failed: {e}")
+
+
 def main():
     log.info("=== Kite token refresh started ===")
+    secrets = {}
     try:
         secrets = load_secrets()
         env     = load_env_credentials()
@@ -194,8 +221,22 @@ def main():
         update_env_token(access_token)
         log.info("=== Token refresh SUCCESSFUL ===")
 
+        send_telegram(
+            secrets["TELEGRAM_BOT_TOKEN"],
+            secrets["TELEGRAM_CHAT_ID"],
+            "✅ Kite token refreshed successfully. Trading session is ready.",
+            attach_log=False,
+        )
+
     except Exception as e:
         log.error(f"=== Token refresh FAILED: {e} ===")
+        if secrets.get("TELEGRAM_BOT_TOKEN"):
+            send_telegram(
+                secrets["TELEGRAM_BOT_TOKEN"],
+                secrets["TELEGRAM_CHAT_ID"],
+                f"❌ Kite token refresh FAILED: {e}\n\nLog file attached.",
+                attach_log=True,
+            )
         sys.exit(1)
 
 
