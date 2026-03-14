@@ -128,9 +128,12 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
 
         totp_code = pyotp.TOTP(totp_secret).now()
         log.info(f"Generated TOTP: {totp_code}")
-        page.fill('input[type="number"]', totp_code)
-        page.click('button[type="submit"]')
-        log.info("Submitted TOTP")
+
+        # Type digit-by-digit — Kite auto-submits after the 6th digit
+        totp_input = page.locator('input[type="number"]')
+        for digit in totp_code:
+            totp_input.type(digit, delay=50)
+        log.info("Typed TOTP digits — waiting for auto-submit redirect …")
 
         # ── Wait for redirect with request_token ──────────────────────────
         deadline = time.time() + 20
