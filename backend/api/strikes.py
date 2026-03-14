@@ -75,19 +75,34 @@ async def get_history(symbol: str, request: Request):
 
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT timestamp, curr_price, is_gap, vol_change
+
+        SELECT
+            bucket,
+            (ARRAY_AGG(curr_price ORDER BY timestamp))[1] AS open,
+            MAX(curr_price) AS high,
+            MIN(curr_price) AS low,
+            (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1] AS close
+        FROM (
+            SELECT
+                FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                curr_price,
+                timestamp
             FROM gap_ticks
             WHERE symbol = $1
-            AND timestamp > '2000-01-01'
-            ORDER BY timestamp ASC
+            AND timestamp >= NOW() - INTERVAL '1 day'
+        ) t
+        GROUP BY bucket
+        ORDER BY bucket ASC
+
         """, symbol)
-    
+
     return [
         {
-            "time": row["timestamp"].timestamp(),
-            "value": float(row["curr_price"]),
-            "is_gap": row["is_gap"],
-            "vol_change": row["vol_change"]
+            "time": int(row["bucket"]),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"])
         }
         for row in rows
     ]

@@ -170,6 +170,8 @@ let reconnectTimeout = null;
 let activeSymbol = null;
 let gapDetails = new Map();   // time → gap metadata
 let crosshairPrice = null;
+let historyLoaded = false;
+let lastCandleTime = null;
 
 /* ======================
    BUCKET FUNCTION
@@ -179,10 +181,11 @@ function getBucketTime(epochSeconds) {
 }
 
 async function loadSymbol(symbol) {
- 
+
     if (!symbol) return;
 
-    activeSymbol = symbol;   // ✅ track active symbol
+    historyLoaded = false;
+    activeSymbol = symbol;
 
     if (socket) {
         socket.close();
@@ -195,100 +198,48 @@ async function loadSymbol(symbol) {
     }
 
     candleSeries.setData([]);
-    currentCandle = null;   // ✅ VERY IMPORTANT RESET
-    gapDetails.clear(); 
-    
-
+    currentCandle = null;
+    gapDetails.clear();
+    lastCandleTime = null;
 
     // 🔹 Load history
     const response = await fetch(`/api/history/${symbol}`);
     const history = await response.json();
 
-    console.log("Loaded history count:", history.length);
+    const candles = history.map(c => ({
+    time: c.time - 19800,   // convert IST → UTC
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close
+    }));
 
-    let candles = [];
-    let tempCandle = null;
-
-    let prevPrice = null;
-
-    history.forEach(tick => {
-
-        const bucketTime = getBucketTime(tick.time);
-        const price = tick.value;
-
-        console.log("History gap:", tick.is_gap);
-
-        // ---- Build Candle ----
-        if (!tempCandle || tempCandle.time !== bucketTime) {
-
-            if (tempCandle) candles.push(tempCandle);
-
-            tempCandle = {
-                time: bucketTime,
-                open: price,
-                high: price,
-                low: price,
-                close: price
-            };
-
-        } else {
-            tempCandle.high = Math.max(tempCandle.high, price);
-            tempCandle.low = Math.min(tempCandle.low, price);
-            tempCandle.close = price;
-        }
-
-        // ---- GAP LOGIC ----
-        if (tick.is_gap && prevPrice !== null) {
-
-            const dir = price > prevPrice ? 'D' : 'U';
-
-            gapDetails.set(bucketTime, {
-                dir,
-                from: prevPrice,
-                to: price,
-                jump: Math.abs(price - prevPrice).toFixed(2),
-                rangeLow: Math.min(prevPrice, price),
-                rangeHigh: Math.max(prevPrice, price),
-                volume: tick.vol_change || 0
-            });
-        }
-
-        prevPrice = price;
-    });
-
-    if (tempCandle) candles.push(tempCandle);
+    lastCandleTime = candles.length ? candles[candles.length - 1].time : null;    
 
     candleSeries.setData(candles);
+    chart.timeScale().fitContent();
 
-    const markers = [];
+    if (candles.length > 0) {
+    currentCandle = { ...candles[candles.length - 1] };
 
-    candles.forEach(c => {
-        if (gapDetails.has(c.time)) {
-            const info = gapDetails.get(c.time);
+    // Allow live ticks to continue building this candle
+    lastCandleTime = currentCandle.time;
+    }
 
-            markers.push({
-                time: c.time,
-                position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
-                color: info.dir === 'D' ? 'green' : 'red',
-                shape: 'text',
-                text: info.dir
-            });
-        }
-    });
+    historyLoaded = true;
 
-    candleSeries.setMarkers(markers);
-
-    // Force price axis to recalculate
+        // Force price axis to recalculate
     setTimeout(() => {
         chart.priceScale('right').applyOptions({
             autoScale: true,
         });
     }, 50);
 
-
     // 🔹 Connect WebSocket AFTER history loads
     connectWebSocket(symbol);
 }
+
+
 
 function refreshMarkers() {
 
@@ -350,13 +301,29 @@ function connectWebSocket(symbol) {
     };
 
     socket.onmessage = function(event) {
+        
+        
+        if (!historyLoaded) return;
+        //console.log("WS TICK:", event.data);
+        if (!activeSymbol) return;
 
-        console.log("WS TICK:", event.data);
         const tick = JSON.parse(event.data);
+        console.log(tick);
 
-        const bucketTime = getBucketTime(Number(tick.time));
+        // Ignore ticks for previous symbol
+        if (tick.symbol && tick.symbol !== activeSymbol) {
+            return;
+        }
+
+        const bucketTime = getBucketTime(Math.floor(Number(tick.time)));
         const price = tick.value;
 
+        // 🔴 Prevent backward time updates
+        if (lastCandleTime !== null && bucketTime < lastCandleTime) {
+            console.log("Ignoring old tick:", bucketTime, " < ", lastCandleTime);
+            return;
+        }
+        
         if (tick.is_gap) {
 
             const dir = tick.direction === "UP" ? "D" : "U";
@@ -384,12 +351,9 @@ function connectWebSocket(symbol) {
             );
         }
 
-        if (!currentCandle || currentCandle.time !== bucketTime) {
+        // NEW candle if tick is in a new time bucket
+        if (!currentCandle || bucketTime > currentCandle.time) {
 
-            if (currentCandle) {
-                candleSeries.update(currentCandle);
-            }
-            
             currentCandle = {
                 time: bucketTime,
                 open: price,
@@ -398,13 +362,33 @@ function connectWebSocket(symbol) {
                 close: price
             };
 
-        } else {
+        }
+
+        // Update existing candle
+        else if (bucketTime === currentCandle.time) {
+
             currentCandle.high = Math.max(currentCandle.high, price);
             currentCandle.low = Math.min(currentCandle.low, price);
             currentCandle.close = price;
+
         }
 
-        candleSeries.update(currentCandle);
+        // Ignore old ticks
+        else {
+            console.log("Ignoring delayed tick:", bucketTime);
+            return;
+        }
+
+        if (
+            currentCandle &&
+            !isNaN(currentCandle.open) &&
+            !isNaN(currentCandle.high) &&
+            !isNaN(currentCandle.low) &&
+            !isNaN(currentCandle.close)
+        ) {
+            candleSeries.update(currentCandle);
+        }
+
         checkGapFill(currentCandle);
         // chart.timeScale().scrollToRealTime();
     };

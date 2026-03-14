@@ -63,19 +63,26 @@ def setup_websocket_events():
     async def on_order_update(ws, data):
         try:
             result = await handle_order_update(ws, data)
-            if result is None or result.get("status") != "success":
-                logger.error(f"handle_order_update returned an error: {result}")
+
+            # Only log real errors
+            if result and result.get("status") == "error":
+                logger.error(f"handle_order_update returned error: {result}")
+
         except Exception as e:
             logger.error(f"Error in on_order_update: {e}")
 
 
     async def handle_order_update(ws, data):
+
+        global active_positions
+
         try:
-            # Only act when order is fully completed
+
+            # Only process completed orders
             if data.get("status") != "COMPLETE":
                 return {"status": "ignored"}
 
-            # Ignore SL orders to prevent infinite loop
+            # Ignore SL orders to prevent loop
             if data.get("order_type") == "SL":
                 return {"status": "ignored"}
 
@@ -85,20 +92,55 @@ def setup_websocket_events():
             transaction_type = data.get("transaction_type")
             last_price = float(data.get("average_price", 0))
 
-            # Safety check
             if last_price == 0:
-                logger.warning(f"Average price is zero for {trade_symbol}. Ignoring SL placement.")
+                logger.warning(f"Average price is zero for {trade_symbol}")
                 return {"status": "ignored"}
 
+            # -----------------------------
+            # Current position tracking
+            # -----------------------------
+            position = active_positions.get(trade_symbol, 0)
+
+            # ============================
+            # BUY ORDER
+            # ============================
+            if transaction_type == "BUY":
+
+                if position < 0:
+                    # Closing short position
+                    active_positions[trade_symbol] = 0
+                    logger.info(f"Short position CLOSED for {trade_symbol}")
+                    return {"status": "ignored"}
+
+                # New BUY entry
+                active_positions[trade_symbol] = qty
+
+            # ============================
+            # SELL ORDER
+            # ============================
+            elif transaction_type == "SELL":
+
+                if position > 0:
+                    # Closing long position
+                    active_positions[trade_symbol] = 0
+                    logger.info(f"Long position CLOSED for {trade_symbol}")
+                    return {"status": "ignored"}
+
+                # New SELL entry
+                active_positions[trade_symbol] = -qty
+
+            # -----------------------------
+            # Helper
+            # -----------------------------
             def round_to_tick(price, tick_size=0.05):
                 return round(round(price / tick_size) * tick_size, 2)
 
-            sl_points = 5
-            trigger_buffer = 0.3
+            sl_points = 10
+            trigger_buffer = 1
 
-            # ==============================
-            # BUY ENTRY → PLACE SELL SL
-            # ==============================
+            # ============================
+            # BUY ENTRY → SELL SL
+            # ============================
             if transaction_type == "BUY":
 
                 stop_loss_price = round_to_tick(last_price - sl_points)
@@ -120,9 +162,9 @@ def setup_websocket_events():
 
                 return {"status": "success"}
 
-            # ==============================
-            # SELL ENTRY → PLACE BUY SL
-            # ==============================
+            # ============================
+            # SELL ENTRY → BUY SL
+            # ============================
             elif transaction_type == "SELL":
 
                 stop_loss_price = round_to_tick(last_price + sl_points)
@@ -136,8 +178,8 @@ def setup_websocket_events():
                     exchange=exchange,
                     trade_symbol=trade_symbol,
                     qty=qty,
-                    price=stop_loss_price,
-                    trig_price=trigger_price,
+                    price=stop_loss_price + 5,
+                    trig_price=trigger_price + 5,
                     api_key=KITE_API_KEY,
                     access_token=KITE_ACCESS_TOKEN
                 )
