@@ -1,5 +1,5 @@
 import asyncio
-from frontend.ui.websocket_setup import run_websocket
+from backend.services.websocket_handler import run_websocket
 
 from backend.services.instrument_registry import (
     load_instruments,

@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from frontend.ui.websocket_setup import kite1
+from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 
 router = APIRouter()

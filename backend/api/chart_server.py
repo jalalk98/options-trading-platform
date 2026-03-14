@@ -13,7 +13,6 @@ from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
-from backend.services.fake_tick_producer import fake_tick_producer
 
     
 app = FastAPI()
