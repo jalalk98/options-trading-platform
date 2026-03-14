@@ -5,10 +5,17 @@ from backend.services.instrument_registry import get_metadata
 
 last_tick_cache = {}
 
-PRICE_THRESHOLD = 1.0          # same as CSV
-TIME_THRESHOLD = 0.75          # seconds
-MAX_SPREAD_PCT = 0.25          # same as CSV
+PRICE_THRESHOLD = 1.0          # NIFTY/BANKNIFTY
+TIME_THRESHOLD  = 0.75         # seconds — NIFTY
+MAX_SPREAD_PCT  = 0.25         # NIFTY
 REQUIRE_ZERO_VOLUME = True
+
+# SENSEX options (BFO) tick differently: volume always changes with price moves,
+# ticks are batched at 1s; genuine instantaneous gaps arrive at time_diff=0.0
+# All thresholds scaled ~3x relative to NIFTY equivalents
+SENSEX_PRICE_THRESHOLD = 3.0   # 3x NIFTY price threshold
+SENSEX_TIME_THRESHOLD  = 0.0   # must be exactly instantaneous (time_diff=0)
+SENSEX_MAX_SPREAD_PCT  = 0.75  # 3x NIFTY spread threshold
 
 
 def process_tick(tick: dict):
@@ -93,21 +100,34 @@ def process_tick(tick: dict):
     is_gap = False
 
     price_jump_abs = abs(curr_price - prev_price)
+    symbol = metadata["symbol"]
+    is_sensex = symbol.startswith("SENSEX")
 
-    vol_ok = (vol_change == 0) if REQUIRE_ZERO_VOLUME else True
-
-    only_gap = (
-        price_jump_abs >= PRICE_THRESHOLD
-        and vol_ok
-        and time_diff is not None
-        and time_diff <= TIME_THRESHOLD
-    )
-
-    gap_with_spread = (
-        only_gap
-        and spread_pct is not None
-        and spread_pct <= MAX_SPREAD_PCT
-    )
+    if is_sensex:
+        # SENSEX: instantaneous jump, no volume constraint, wider spread tolerance
+        only_gap = (
+            price_jump_abs >= SENSEX_PRICE_THRESHOLD
+            and time_diff is not None
+            and time_diff <= SENSEX_TIME_THRESHOLD
+        )
+        gap_with_spread = (
+            only_gap
+            and spread_pct is not None
+            and spread_pct <= SENSEX_MAX_SPREAD_PCT
+        )
+    else:
+        vol_ok = (vol_change == 0) if REQUIRE_ZERO_VOLUME else True
+        only_gap = (
+            price_jump_abs >= PRICE_THRESHOLD
+            and vol_ok
+            and time_diff is not None
+            and time_diff <= TIME_THRESHOLD
+        )
+        gap_with_spread = (
+            only_gap
+            and spread_pct is not None
+            and spread_pct <= MAX_SPREAD_PCT
+        )
 
     is_gap = gap_with_spread
 

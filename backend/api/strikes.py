@@ -1,6 +1,7 @@
 # backend/api/strikes.py
 
 import time
+from datetime import timezone, timedelta
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from backend.services.websocket_handler import kite1
@@ -36,21 +37,8 @@ async def prewarm_strikes_cache(pool):
     if result:
         first_symbol = result[0]["symbol"]
         async with pool.acquire() as conn:
-            await conn.fetch("""
-                SELECT
-                    bucket,
-                    (ARRAY_AGG(curr_price ORDER BY timestamp))[1],
-                    MAX(curr_price), MIN(curr_price),
-                    (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]
-                FROM (
-                    SELECT
-                        FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
-                        curr_price, timestamp
-                    FROM gap_ticks
-                    WHERE symbol = $1
-                    AND timestamp >= NOW() - INTERVAL '7 hours'
-                ) t GROUP BY bucket ORDER BY bucket ASC
-            """, first_symbol)
+            data = await _query_history(conn, first_symbol)
+        _history_cache[first_symbol] = {"data": data, "ts": time.monotonic()}
 
 
 @router.get("/strikes")
@@ -105,44 +93,149 @@ async def resolve_symbol(display: str, request: Request):
         return {"symbol": None}
 
 
-@router.get("/history/{symbol}")
-async def get_history(symbol: str, request: Request):
+_IST = timezone(timedelta(hours=5, minutes=30))
+_history_cache = {}   # symbol → {"day": date, "data": [...]}
 
-    pool = request.app.state.pool
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
+async def _query_history(conn, symbol: str):
+    # Step 1: O(1) index lookup — find the latest timestamp for this symbol
+    max_ts = await conn.fetchval(
+        "SELECT MAX(timestamp) FROM gap_ticks WHERE symbol = $1", symbol
+    )
+    if not max_ts:
+        return []
 
+    # Step 2: compute IST day boundaries (asyncpg returns naive UTC datetimes)
+    max_ist = max_ts.replace(tzinfo=timezone.utc).astimezone(_IST)
+    day_start_ist = max_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Strip back to naive UTC for asyncpg
+    day_start = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    day_end   = (day_start_ist + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+
+    # Step 3: range query — uses covering index, zero heap reads
+    rows = await conn.fetch("""
         SELECT
             bucket,
-            (ARRAY_AGG(curr_price ORDER BY timestamp))[1] AS open,
-            MAX(curr_price) AS high,
-            MIN(curr_price) AS low,
-            (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1] AS close
+            (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
+            MAX(curr_price)                                     AS high,
+            MIN(curr_price)                                     AS low,
+            (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
         FROM (
             SELECT
                 FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
-                curr_price,
-                timestamp
+                curr_price, timestamp
             FROM gap_ticks
             WHERE symbol = $1
-            AND timestamp >= NOW() - INTERVAL '7 hours'
+              AND timestamp >= $2
+              AND timestamp <  $3
         ) t
         GROUP BY bucket
         ORDER BY bucket ASC
-
-        """, symbol)
+    """, symbol, day_start, day_end)
 
     return [
         {
-            "time": int(row["bucket"]),
-            "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
-            "close": float(row["close"])
+            "time":  int(row["bucket"]),
+            "open":  float(row["open"]),
+            "high":  float(row["high"]),
+            "low":   float(row["low"]),
+            "close": float(row["close"]),
         }
         for row in rows
     ]
+
+
+@router.get("/history/{symbol}")
+async def get_history(symbol: str, request: Request):
+    pool = request.app.state.pool
+
+    cached = _history_cache.get(symbol)
+    if cached:
+        if time.monotonic() - cached["ts"] < 10:
+            return cached["data"]
+
+    async with pool.acquire() as conn:
+        data = await _query_history(conn, symbol)
+
+    _history_cache[symbol] = {"data": data, "ts": time.monotonic()}
+    return data
+
+
+_gaps_cache = {}   # symbol → {"data": [...], "ts": float}
+
+
+@router.get("/gaps/{symbol}")
+async def get_gaps(symbol: str, request: Request):
+    pool = request.app.state.pool
+
+    cached = _gaps_cache.get(symbol)
+    if cached and time.monotonic() - cached["ts"] < 10:
+        return cached["data"]
+
+    async with pool.acquire() as conn:
+        max_ts = await conn.fetchval(
+            "SELECT MAX(timestamp) FROM gap_ticks WHERE symbol = $1", symbol
+        )
+        if not max_ts:
+            return []
+
+        max_ist      = max_ts.replace(tzinfo=timezone.utc).astimezone(_IST)
+        day_start_ist = max_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start    = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+        day_end      = (day_start_ist + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+
+        # Check if this symbol has any is_gap rows (NIFTY) or needs fallback (SENSEX)
+        is_sensex = symbol.startswith("SENSEX")
+
+        if is_sensex:
+            # SENSEX historical data was collected before per-symbol gap detection.
+            # Detect gaps on-the-fly using SENSEX-specific thresholds (3x NIFTY):
+            #   price_jump >= 3.0, time_diff = 0.0, spread_pct <= 0.75
+            rows = await conn.fetch("""
+                SELECT DISTINCT ON (bucket)
+                    FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                    direction,
+                    prev_price,
+                    curr_price,
+                    vol_change
+                FROM gap_ticks
+                WHERE symbol    = $1
+                  AND timestamp >= $2
+                  AND timestamp <  $3
+                  AND ABS(price_jump) >= 3.0
+                  AND time_diff  = 0.0
+                  AND spread_pct <= 0.75
+                ORDER BY bucket, timestamp ASC
+            """, symbol, day_start, day_end)
+        else:
+            # NIFTY/BANKNIFTY: use the is_gap flag set by the gap processor
+            rows = await conn.fetch("""
+                SELECT DISTINCT ON (bucket)
+                    FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+                    direction,
+                    prev_price,
+                    curr_price,
+                    vol_change
+                FROM gap_ticks
+                WHERE symbol   = $1
+                  AND is_gap    = true
+                  AND timestamp >= $2
+                  AND timestamp <  $3
+                ORDER BY bucket, timestamp ASC
+            """, symbol, day_start, day_end)
+
+    data = [
+        {
+            "time":       int(row["bucket"]),
+            "direction":  row["direction"],
+            "prev_price": float(row["prev_price"]),
+            "curr_price": float(row["curr_price"]),
+            "vol_change": int(row["vol_change"]) if row["vol_change"] else 0,
+        }
+        for row in rows
+    ]
+    _gaps_cache[symbol] = {"data": data, "ts": time.monotonic()}
+    return data
 
 class SLOrder(BaseModel):
     symbol: str

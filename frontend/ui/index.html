@@ -20,8 +20,8 @@
             z-index: 1000;
             white-space: nowrap;
         }
-        body { margin: 0; font-family: Arial; }
-        #chart { width: 100vw; height: 550px; }
+        html, body { margin: 0; height: 100%; overflow: hidden; font-family: Arial; }
+        #chart { width: 100vw; }
 
         .topbar {
             padding: 10px;
@@ -33,8 +33,27 @@
 
         input {
             padding: 6px;
-            width: 280px;
+            width: 160px;
         }
+
+        #goToLive {
+            display: none;
+            position: fixed;
+            bottom: 24px;
+            right: 60px;
+            z-index: 100;
+            background: #2563eb;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 7px 14px;
+            font-size: 13px;
+            cursor: pointer;
+            align-items: center;
+            gap: 5px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        }
+        #goToLive:hover { background: #1d4ed8; }
 
         select {
             padding: 6px;
@@ -59,18 +78,22 @@
 </div>
 
 <div id="chart"></div>
-
+<button id="goToLive">&#9654; Latest</button>
 <div id="tooltip"></div>
 
 <script>
 /* ======================
    CHART SETUP
 ====================== */
+function getChartHeight() {
+    return window.innerHeight - document.querySelector('.topbar').offsetHeight;
+}
+
 const chart = LightweightCharts.createChart(
     document.getElementById('chart'),
     {
         width: window.innerWidth,
-        height: 550,
+        height: getChartHeight(),
         timeScale: {
             timeVisible: true,
             secondsVisible: true,
@@ -202,37 +225,65 @@ async function loadSymbol(symbol) {
     gapDetails.clear();
     lastCandleTime = null;
 
-    // 🔹 Load history
-    const response = await fetch(`/api/history/${symbol}`);
-    const history = await response.json();
+    // 🔹 Load history + gaps in parallel
+    const [historyRes, gapsRes] = await Promise.all([
+        fetch(`/api/history/${symbol}`),
+        fetch(`/api/gaps/${symbol}`)
+    ]);
+    const history = await historyRes.json();
+    const gapsRaw = await gapsRes.json();
 
     const candles = history.map(c => ({
-    time: c.time - 19800,   // convert IST → UTC
-    open: c.open,
-    high: c.high,
-    low: c.low,
-    close: c.close
+        time:  c.time - 19800,   // convert IST epoch → UTC epoch for chart
+        open:  c.open,
+        high:  c.high,
+        low:   c.low,
+        close: c.close
     }));
 
-    lastCandleTime = candles.length ? candles[candles.length - 1].time : null;    
+    lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
+
+    // 🔹 Build gapDetails from historical gap rows
+    gapsRaw.forEach(g => {
+        const bucketTime = g.time - 19800;
+        const dir = g.direction === 'UP' ? 'D' : 'U';
+        gapDetails.set(bucketTime, {
+            dir,
+            from:      g.prev_price,
+            to:        g.curr_price,
+            jump:      Math.abs(g.curr_price - g.prev_price).toFixed(2),
+            rangeLow:  Math.min(g.prev_price, g.curr_price),
+            rangeHigh: Math.max(g.prev_price, g.curr_price),
+            volume:    g.vol_change || 0,
+            isFilled:  false
+        });
+    });
+
+    // 🔹 Detect which historical gaps were already filled by later candles
+    candles.forEach(candle => {
+        gapDetails.forEach((gap, gapTime) => {
+            if (!gap.isFilled && candle.time > gapTime) {
+                if ((gap.dir === 'D' && candle.low  <= gap.from) ||
+                    (gap.dir === 'U' && candle.high >= gap.from)) {
+                    gap.isFilled = true;
+                }
+            }
+        });
+    });
 
     candleSeries.setData(candles);
+    refreshMarkers();
     chart.timeScale().fitContent();
 
     if (candles.length > 0) {
-    currentCandle = { ...candles[candles.length - 1] };
-
-    // Allow live ticks to continue building this candle
-    lastCandleTime = currentCandle.time;
+        currentCandle = { ...candles[candles.length - 1] };
+        lastCandleTime = currentCandle.time;
     }
 
     historyLoaded = true;
 
-        // Force price axis to recalculate
     setTimeout(() => {
-        chart.priceScale('right').applyOptions({
-            autoScale: true,
-        });
+        chart.priceScale('right').applyOptions({ autoScale: true });
     }, 50);
 
     // 🔹 Connect WebSocket AFTER history loads
@@ -294,7 +345,8 @@ function checkGapFill(currentCandle) {
 ====================== */
 function connectWebSocket(symbol) {
 
-    socket = new WebSocket(`ws://localhost:8000/ws/${symbol}`);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${symbol}`);
 
     socket.onopen = () => {
         console.log("Connected:", symbol);
@@ -469,7 +521,21 @@ loadStrikes();
    RESPONSIVE
 ====================== */
 window.addEventListener('resize', () => {
-    chart.applyOptions({ width: window.innerWidth });
+    chart.applyOptions({ width: window.innerWidth, height: getChartHeight() });
+});
+
+/* ======================
+   GO TO LATEST BUTTON
+====================== */
+const goToLiveBtn = document.getElementById('goToLive');
+
+chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+    if (!range || !lastCandleTime) { goToLiveBtn.style.display = 'none'; return; }
+    goToLiveBtn.style.display = lastCandleTime > range.to ? 'flex' : 'none';
+});
+
+goToLiveBtn.addEventListener('click', () => {
+    chart.timeScale().scrollToRealTime();
 });
 
 
