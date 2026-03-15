@@ -491,8 +491,12 @@ document.getElementById("symbolSelect")
 let strikeMap = {};  // display → symbol mapping
 
 async function loadStrikes() {
-    const response = await fetch("/api/strikes");
-    const strikes = await response.json();
+    const [strikesRes, atmRes] = await Promise.all([
+        fetch("/api/strikes"),
+        fetch("/api/atm-symbol")
+    ]);
+    const strikes = await strikesRes.json();
+    const atm     = await atmRes.json();
 
     const dataList = document.getElementById("symbolList");
     dataList.innerHTML = "";
@@ -500,31 +504,16 @@ async function loadStrikes() {
 
     strikes.forEach(item => {
         const option = document.createElement("option");
-        option.value = item.display;   // user sees this
+        option.value = item.display;
         dataList.appendChild(option);
-
-        strikeMap[item.display] = item.symbol;  // mapping
+        strikeMap[item.display] = item.symbol;
     });
 
     if (strikes.length > 0) {
-        // Try to load ATM CE as default; fall back to first strike
-        try {
-            const atmRes = await fetch("/api/atm-symbol");
-            const atm = await atmRes.json();
-            if (atm.symbol) {
-                // Find the display label for this symbol
-                const atmEntry = strikes.find(s => s.symbol === atm.symbol);
-                if (atmEntry) {
-                    document.getElementById("symbolSelect").value = atmEntry.display;
-                    loadSymbol(atm.symbol);
-                    return;
-                }
-            }
-        } catch (_) {}
-        // Fallback
-        const firstDisplay = strikes[0].display;
-        document.getElementById("symbolSelect").value = firstDisplay;
-        loadSymbol(strikeMap[firstDisplay]);
+        const atmEntry = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
+        const defaultEntry = atmEntry || strikes[0];
+        document.getElementById("symbolSelect").value = defaultEntry.display;
+        loadSymbol(defaultEntry.symbol);
     }
 }
 
