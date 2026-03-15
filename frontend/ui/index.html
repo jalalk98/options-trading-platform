@@ -952,23 +952,18 @@ function resetOrderBar(symbol) {
 
 
 function toggleQtyPopup(e) {
-    const p = document.getElementById('qtyPopup');
+    if (e) e.stopPropagation();
+    const p   = document.getElementById('qtyPopup');
     if (p.style.display === 'block') {
         p.style.display = 'none';
         return;
     }
-    // Position popup near the click point
-    if (e) {
-        const margin = 8;
-        const pw = 240, ph = 140;   // approx popup size
-        let x = e.clientX - pw / 2;
-        let y = e.clientY - ph - margin;
-        // keep within viewport
-        x = Math.max(margin, Math.min(x, window.innerWidth  - pw - margin));
-        y = Math.max(margin, Math.min(y, window.innerHeight - ph - margin));
-        p.style.left = x + 'px';
-        p.style.top  = y + 'px';
-    }
+    // Position below the order bar
+    const bar  = document.getElementById('orderBar');
+    const rect = bar.getBoundingClientRect();
+    const margin = 6;
+    p.style.left = rect.left + 'px';
+    p.style.top  = (rect.bottom + margin) + 'px';
     p.style.display = 'block';
 }
 
@@ -983,7 +978,7 @@ document.addEventListener('click', (e) => {
     const popup = document.getElementById('qtyPopup');
     const calc  = document.getElementById('btnCalc');
     if (popup.style.display === 'block' &&
-        !popup.contains(e.target) && e.target !== calc) {
+        !popup.contains(e.target) && !calc.contains(e.target)) {
         popup.style.display = 'none';
     }
 });
