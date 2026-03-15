@@ -216,12 +216,36 @@ function getBucketTime(epochSeconds) {
     return Math.floor(epochSeconds / INTERVAL) * INTERVAL;
 }
 
+function updateChartLabel(symbol) {
+    // Reverse-lookup display from strikeMap e.g. "2026-03-17 | 24200 CE"
+    const display = Object.keys(strikeMap).find(k => strikeMap[k] === symbol);
+    let label = '';
+    if (display) {
+        // Extract "24200 CE" from "2026-03-17 | 24200 CE" → "24200 - CE"
+        const part = display.split('|')[1]?.trim() || '';
+        const [strike, type] = part.split(' ');
+        if (strike && type) label = `${strike} - ${type}`;
+    }
+    chart.applyOptions({
+        watermark: {
+            visible:    !!label,
+            text:       label,
+            fontSize:   28,
+            fontFamily: 'Arial',
+            color:      'rgba(150, 150, 150, 0.25)',
+            horzAlign:  'right',
+            vertAlign:  'top',
+        }
+    });
+}
+
 async function loadSymbol(symbol) {
 
     if (!symbol) return;
 
     historyLoaded = false;
     activeSymbol = symbol;
+    updateChartLabel(symbol);
 
     if (socket) {
         socket.close();
