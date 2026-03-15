@@ -52,6 +52,7 @@ def handle_command(cmd, bot_token, chat_id):
 
     if cmd == "holiday":
         send_message(bot_token, chat_id, "⏳ Processing...")
+        time.sleep(1)
         with open(PAUSE_FLAG, "w") as f:
             f.write("")
         log.info("Holiday flag set.")
@@ -62,6 +63,7 @@ def handle_command(cmd, bot_token, chat_id):
 
     elif cmd == "resume":
         send_message(bot_token, chat_id, "⏳ Processing...")
+        time.sleep(1)
         if os.path.exists(PAUSE_FLAG):
             os.remove(PAUSE_FLAG)
             log.info("Holiday flag cleared.")
