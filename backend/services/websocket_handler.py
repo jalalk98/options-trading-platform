@@ -7,6 +7,7 @@ from config.logging_config import logger
 from backend.core.redis_client import redis_client
 import json
 from backend.services.gap_processor import process_tick
+from backend.state import sl_state
 import threading
 
 # Configure logging
@@ -82,8 +83,13 @@ def setup_websocket_events():
             if data.get("status") != "COMPLETE":
                 return {"status": "ignored"}
 
-            # Ignore SL orders to prevent loop
+            # Detect SL order completion → mark state as 'hit', then ignore to prevent loop
             if data.get("order_type") == "SL":
+                if data.get("status") == "COMPLETE":
+                    sym = data.get("tradingsymbol")
+                    if sym and sym in sl_state:
+                        sl_state[sym]["state"] = "hit"
+                        logger.info(f"SL hit for {sym} — state updated to 'hit'")
                 return {"status": "ignored"}
 
             trade_symbol = data.get("tradingsymbol")
@@ -135,22 +141,32 @@ def setup_websocket_events():
             def round_to_tick(price, tick_size=0.05):
                 return round(round(price / tick_size) * tick_size, 2)
 
-            sl_points = 10
-            trigger_buffer = 1
+            trigger_buffer = 0.10
+
+            # Use SL price from dragged line if available for this symbol,
+            # otherwise fall back to ±10 points from entry price.
+            stored_sl = sl_state.get(trade_symbol, {}).get("price")
 
             # ============================
             # BUY ENTRY → SELL SL
             # ============================
             if transaction_type == "BUY":
 
-                stop_loss_price = round_to_tick(last_price - sl_points)
+                if stored_sl and stored_sl < last_price:
+                    # Use dragged SL line — must be below entry for a long
+                    stop_loss_price = round_to_tick(stored_sl)
+                else:
+                    stop_loss_price = round_to_tick(last_price - 10)
+
                 trigger_price = round_to_tick(stop_loss_price + trigger_buffer)
 
                 logger.info(
-                    f"Placing SL SELL for {trade_symbol} | Qty: {qty} | SL: {stop_loss_price} | Trigger: {trigger_price}"
+                    f"Placing SL SELL for {trade_symbol} | Entry: {last_price} | "
+                    f"SL: {stop_loss_price} | Trigger: {trigger_price} | "
+                    f"Source: {'line' if stored_sl else 'default'}"
                 )
 
-                await kite1.hard_code_regular_sell_order(
+                result = await kite1.hard_code_regular_sell_order(
                     exchange=exchange,
                     trade_symbol=trade_symbol,
                     qty=qty,
@@ -160,6 +176,19 @@ def setup_websocket_events():
                     access_token=KITE_ACCESS_TOKEN
                 )
 
+                order_id = None
+                if isinstance(result, dict):
+                    order_id = (result.get("data") or {}).get("order_id")
+
+                sl_state[trade_symbol] = {
+                    "price":    stop_loss_price,
+                    "order_id": order_id,
+                    "side":     "SELL",
+                    "qty":      qty,
+                    "exchange": exchange,
+                    "state":    "placed",
+                }
+                logger.info(f"SL state updated for {trade_symbol}: order_id={order_id}")
                 return {"status": "success"}
 
             # ============================
@@ -167,23 +196,43 @@ def setup_websocket_events():
             # ============================
             elif transaction_type == "SELL":
 
-                stop_loss_price = round_to_tick(last_price + sl_points)
+                if stored_sl and stored_sl > last_price:
+                    # Use dragged SL line — must be above entry for a short
+                    stop_loss_price = round_to_tick(stored_sl)
+                else:
+                    stop_loss_price = round_to_tick(last_price + 10)
+
                 trigger_price = round_to_tick(stop_loss_price - trigger_buffer)
 
                 logger.info(
-                    f"Placing SL BUY for {trade_symbol} | Qty: {qty} | SL: {stop_loss_price} | Trigger: {trigger_price}"
+                    f"Placing SL BUY for {trade_symbol} | Entry: {last_price} | "
+                    f"SL: {stop_loss_price} | Trigger: {trigger_price} | "
+                    f"Source: {'line' if stored_sl else 'default'}"
                 )
 
-                await kite1.hard_code_regular_buy_order(
+                result = await kite1.hard_code_regular_buy_order(
                     exchange=exchange,
                     trade_symbol=trade_symbol,
                     qty=qty,
-                    price=stop_loss_price + 5,
-                    trig_price=trigger_price + 5,
+                    price=round_to_tick(stop_loss_price + 5),
+                    trig_price=round_to_tick(trigger_price + 5),
                     api_key=KITE_API_KEY,
                     access_token=KITE_ACCESS_TOKEN
                 )
 
+                order_id = None
+                if isinstance(result, dict):
+                    order_id = (result.get("data") or {}).get("order_id")
+
+                sl_state[trade_symbol] = {
+                    "price":    stop_loss_price,
+                    "order_id": order_id,
+                    "side":     "BUY",
+                    "qty":      qty,
+                    "exchange": exchange,
+                    "state":    "placed",
+                }
+                logger.info(f"SL state updated for {trade_symbol}: order_id={order_id}")
                 return {"status": "success"}
 
             return {"status": "ignored"}

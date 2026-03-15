@@ -11,6 +11,7 @@ from backend.services.redis_streamer import redis_streamer
 from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router, prewarm_strikes_cache
+from backend.api.sl import router as sl_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
 
@@ -18,6 +19,7 @@ from fastapi import WebSocketDisconnect
 app = FastAPI()
 
 app.include_router(strikes_router, prefix="/api")
+app.include_router(sl_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,

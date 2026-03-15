@@ -63,18 +63,31 @@
             font-weight: bold;
             color: #2563eb;
         }
+
+        #slBadge {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            background: #333;
+            color: #aaa;
+            cursor: default;
+            user-select: none;
+            min-width: 90px;
+            text-align: center;
+        }
+        #slBadge.pending  { background: #7c6000; color: #FFD700; }
+        #slBadge.placed   { background: #7a3c00; color: #FF8C00; }
+        #slBadge.hit      { background: #333;    color: #aaa;    }
     </style>
 </head>
 <body>
 
 <div class="topbar">
     <span>Symbol:</span>
-
     <input list="symbolList" id="symbolSelect" placeholder="Search strike...">
     <datalist id="symbolList"></datalist>
-
-    </select>
-
+    <span id="slBadge">SL: —</span>
 </div>
 
 <div id="chart"></div>
@@ -224,6 +237,7 @@ async function loadSymbol(symbol) {
     currentCandle = null;
     gapDetails.clear();
     lastCandleTime = null;
+    stopSLPoll();
 
     // 🔹 Load history + gaps in parallel
     const [historyRes, gapsRes] = await Promise.all([
@@ -285,6 +299,10 @@ async function loadSymbol(symbol) {
     setTimeout(() => {
         chart.priceScale('right').applyOptions({ autoScale: true });
     }, 50);
+
+    // Load SL state and start polling for this symbol
+    await loadSLState(symbol);
+    startSLPoll(symbol);
 
     // 🔹 Connect WebSocket AFTER history loads
     connectWebSocket(symbol);
@@ -543,60 +561,232 @@ goToLiveBtn.addEventListener('click', () => {
 });
 
 
+/* ======================
+   SL LINE
+====================== */
+// Colors per state
+const SL_COLOR = {
+    pending: '#FFD700',   // gold   — set, not yet placed
+    placed:  '#FF8C00',   // orange — order active on Kite
+    hit:     '#808080',   // gray   — order executed
+};
+
+let slPriceLine  = null;   // LightweightCharts price line
+let slPrice      = null;   // current SL price
+let slLineState  = 'none'; // 'none' | 'pending' | 'placed' | 'hit'
+let slOrderId    = null;
+let slDragging   = false;
+let slPollTimer  = null;
+
+function updateSLLine(price, state) {
+    if (slPriceLine) {
+        candleSeries.removePriceLine(slPriceLine);
+        slPriceLine = null;
+    }
+    if (price == null || state === 'none') {
+        slPrice     = null;
+        slLineState = 'none';
+        updateSLBadge();
+        return;
+    }
+    slPrice     = price;
+    slLineState = state;
+    const color = SL_COLOR[state] || SL_COLOR.pending;
+    slPriceLine = candleSeries.createPriceLine({
+        price:             price,
+        color:             color,
+        lineWidth:         2,
+        lineStyle:         2,   // dashed
+        axisLabelVisible:  true,
+        title:             `SL ${price}`,
+    });
+    updateSLBadge();
+}
+
+function updateSLBadge() {
+    const badge = document.getElementById('slBadge');
+    if (!slPrice || slLineState === 'none') {
+        badge.textContent = 'SL: —';
+        badge.className   = '';
+        return;
+    }
+    const labels = { pending: 'SET', placed: 'PLACED', hit: 'HIT' };
+    badge.textContent = `SL ${slPrice} [${labels[slLineState] || slLineState}]`;
+    badge.className   = slLineState;
+}
+
+// Poll backend every 2s to detect state changes (placed → hit)
+function startSLPoll(symbol) {
+    stopSLPoll();
+    slPollTimer = setInterval(async () => {
+        if (!symbol) return;
+        const res  = await fetch(`/api/sl/${symbol}`);
+        const data = await res.json();
+        if (data.state && data.state !== 'none') {
+            const price = data.price || slPrice;
+            if (data.state !== slLineState || price !== slPrice) {
+                updateSLLine(price, data.state);
+                slOrderId = data.order_id || null;
+            }
+            // After SL is hit, reset to pending with no order_id
+            if (data.state === 'hit') {
+                setTimeout(() => updateSLLine(price, 'pending'), 2000);
+            }
+        }
+    }, 2000);
+}
+
+function stopSLPoll() {
+    if (slPollTimer) { clearInterval(slPollTimer); slPollTimer = null; }
+}
+
+// Fetch SL state when switching symbols
+async function loadSLState(symbol) {
+    updateSLLine(null, 'none');
+    slOrderId = null;
+    try {
+        const res  = await fetch(`/api/sl/${symbol}`);
+        const data = await res.json();
+        if (data.state && data.state !== 'none' && data.price) {
+            updateSLLine(data.price, data.state);
+            slOrderId = data.order_id || null;
+        }
+    } catch (_) {}
+}
+
+/* ── Drag logic ─────────────────────────────── */
+const chartDiv = document.getElementById('chart');
+
+chartDiv.addEventListener('mousemove', (e) => {
+    if (!slPrice) return;
+    const rect = chartDiv.getBoundingClientRect();
+    const y    = e.clientY - rect.top;
+    const slY  = candleSeries.priceToCoordinate(slPrice);
+    if (slY !== null && Math.abs(y - slY) < 8) {
+        chartDiv.style.cursor = 'ns-resize';
+    } else if (!slDragging) {
+        chartDiv.style.cursor = 'default';
+    }
+    if (slDragging) {
+        const newPrice = candleSeries.coordinateToPrice(y);
+        if (newPrice !== null) {
+            const p = Math.round(newPrice * 20) / 20;   // round to 0.05
+            updateSLLine(p, slLineState === 'none' ? 'pending' : slLineState);
+        }
+    }
+});
+
+chartDiv.addEventListener('mousedown', (e) => {
+    if (!slPrice) return;
+    const rect = chartDiv.getBoundingClientRect();
+    const y    = e.clientY - rect.top;
+    const slY  = candleSeries.priceToCoordinate(slPrice);
+    if (slY !== null && Math.abs(y - slY) < 8) {
+        slDragging = true;
+        e.preventDefault();
+    }
+});
+
+chartDiv.addEventListener('mouseup', async () => {
+    if (!slDragging) return;
+    slDragging             = false;
+    chartDiv.style.cursor  = 'default';
+    if (!slPrice || !activeSymbol) return;
+    // Persist new price to backend (will also modify Kite order if placed)
+    await fetch('/api/sl/set', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ symbol: activeSymbol, price: slPrice }),
+    });
+});
+
+// Double-click on chart → place SL line at that price (if no line yet)
+chartDiv.addEventListener('dblclick', async (e) => {
+    if (!activeSymbol || crosshairPrice === null) return;
+    const p = Math.round(crosshairPrice * 20) / 20;
+    updateSLLine(p, 'pending');
+    await fetch('/api/sl/set', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ symbol: activeSymbol, price: p }),
+    });
+});
+
+/* ======================
+   KEYBOARD SHORTCUTS
+====================== */
 window.addEventListener("keydown", async (e) => {
 
     // ignore when typing in input
-    if (document.activeElement.tagName === "INPUT") {
-        return;
-    }
+    if (document.activeElement.tagName === "INPUT") return;
 
-    const key = e.key.toLowerCase();
+    const key = e.key;
 
-    console.log("Key pressed:", key);
-    console.log("Crosshair price:", crosshairPrice);
+    if (!activeSymbol) return;
 
-    if (crosshairPrice === null) {
-        console.log("Move mouse over chart to select price");
-        return;
-    }
-    console.log("Sending order:", {
-    symbol: activeSymbol,
-    price: crosshairPrice,
-    });
-
-    if (!activeSymbol) {
-        console.log("No symbol selected");
-        return;
-    }
-
+    // ── Q: SL BUY (legacy) ──────────────────
     if (key === "q") {
-
-        console.log("SL BUY triggered");
-
+        if (crosshairPrice === null) return;
         await fetch("/api/place-sl-order", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
                 symbol: activeSymbol,
-                price: Number(crosshairPrice.toFixed(2)),
-                side: "BUY"
+                price:  Number(crosshairPrice.toFixed(2)),
+                side:   "BUY"
             })
         });
     }
 
+    // ── W: SL SELL (legacy) ─────────────────
     if (key === "w") {
-
-        console.log("SL SELL triggered");
-
+        if (crosshairPrice === null) return;
         await fetch("/api/place-sl-order", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
                 symbol: activeSymbol,
-                price: Number(crosshairPrice.toFixed(2)),
-                side: "SELL"
+                price:  Number(crosshairPrice.toFixed(2)),
+                side:   "SELL"
             })
         });
+    }
+
+    // ── L: Convert SL → LIMIT at crosshair price ──
+    if (key === "l" || key === "L") {
+        if (crosshairPrice === null) { console.log("Move mouse to set crosshair price first"); return; }
+        const price = Number(crosshairPrice.toFixed(2));
+        const res = await fetch("/api/sl/convert-to-limit", {
+            method:  "POST",
+            headers: {"Content-Type": "application/json"},
+            body:    JSON.stringify({ symbol: activeSymbol, price }),
+        });
+        const data = await res.json();
+        console.log("SL→LIMIT:", data);
+        if (data.status === "ok") updateSLLine(price, 'placed');
+    }
+
+    // ── M: Convert SL → MARKET ──────────────
+    if (key === "m" && !e.shiftKey) {
+        const res = await fetch("/api/sl/convert-to-market", {
+            method:  "POST",
+            headers: {"Content-Type": "application/json"},
+            body:    JSON.stringify({ symbol: activeSymbol }),
+        });
+        const data = await res.json();
+        console.log("SL→MARKET:", data);
+    }
+
+    // ── Shift+M: Close full position ────────
+    if (key === "M" && e.shiftKey) {
+        const res = await fetch("/api/sl/close-position", {
+            method:  "POST",
+            headers: {"Content-Type": "application/json"},
+            body:    JSON.stringify({ symbol: activeSymbol }),
+        });
+        const data = await res.json();
+        console.log("Close position:", data);
+        updateSLLine(null, 'none');
     }
 
 });
