@@ -10,14 +10,17 @@ from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 router = APIRouter()
 
 _strikes_cache = {"data": None, "ts": 0}
-STRIKES_CACHE_TTL = 60  # seconds
+STRIKES_CACHE_TTL = 60   # seconds
+
+_atm_cache = {"data": None, "ts": 0}
+ATM_CACHE_TTL = 300      # 5 minutes
 
 
 async def _query_strikes(pool):
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT DISTINCT symbol, strike, option_type, expiry_date
-            FROM gap_ticks
+            SELECT symbol, strike, option_type, expiry_date
+            FROM tracked_symbols
             WHERE expiry_date >= CURRENT_DATE
             ORDER BY expiry_date ASC, strike
         """)
@@ -36,9 +39,17 @@ async def prewarm_strikes_cache(pool):
         _strikes_cache["data"] = result
         _strikes_cache["ts"] = time.monotonic()
 
-        # Prewarm history cache for the ATM symbol (what the page loads by default)
+        # Prewarm ATM cache
         atm_row = await _query_atm_symbol(conn)
-        atm_symbol = atm_row["symbol"] if atm_row else (result[0]["symbol"] if result else None)
+        if atm_row:
+            atm_result = {"symbol": atm_row["symbol"], "strike": float(atm_row["strike"])}
+            _atm_cache["data"] = atm_result
+            _atm_cache["ts"] = time.monotonic()
+            atm_symbol = atm_row["symbol"]
+        else:
+            atm_symbol = result[0]["symbol"] if result else None
+
+        # Prewarm history cache for the ATM symbol
         if atm_symbol:
             data = await _query_history(conn, atm_symbol)
             _history_cache[atm_symbol] = {"data": data, "ts": time.monotonic()}
@@ -61,52 +72,71 @@ async def _query_atm_symbol(conn):
     """
     Returns the ATM CE symbol for the nearest expiry.
     ATM = strike where |CE_price - PE_price| is minimum (put-call parity).
-    Uses last 10 minutes of available data — works both live and post-market.
+    Uses tracked_symbols for the expiry/strike list (fast),
+    then fetches the latest price per symbol via the covering index.
     """
-    row = await conn.fetchrow("""
-        SELECT strike, symbol
-        FROM (
-            SELECT
-                strike,
-                MAX(CASE WHEN option_type='CE' THEN curr_price END) AS ce_price,
-                MAX(CASE WHEN option_type='PE' THEN curr_price END) AS pe_price
-            FROM gap_ticks
-            WHERE expiry_date = (
-                SELECT MIN(expiry_date) FROM gap_ticks
-                WHERE expiry_date >= CURRENT_DATE
-                  AND symbol NOT LIKE 'SENSEX%'
-            )
-            AND symbol NOT LIKE 'SENSEX%'
-            AND timestamp >= (
-                SELECT MAX(timestamp) FROM gap_ticks
-                WHERE symbol NOT LIKE 'SENSEX%'
-            ) - INTERVAL '10 minutes'
-            GROUP BY strike
-            HAVING MAX(CASE WHEN option_type='CE' THEN curr_price END) IS NOT NULL
-               AND MAX(CASE WHEN option_type='PE' THEN curr_price END) IS NOT NULL
-        ) t
-        JOIN gap_ticks g USING (strike)
-        WHERE g.option_type = 'CE'
-          AND g.expiry_date = (
-              SELECT MIN(expiry_date) FROM gap_ticks
-              WHERE expiry_date >= CURRENT_DATE
-                AND symbol NOT LIKE 'SENSEX%'
-          )
-          AND g.symbol NOT LIKE 'SENSEX%'
-        ORDER BY ABS(ce_price - pe_price) ASC
-        LIMIT 1
+    # Step 1: get symbols for nearest NIFTY expiry from tracked_symbols (fast)
+    symbols = await conn.fetch("""
+        SELECT symbol, strike, option_type
+        FROM tracked_symbols
+        WHERE expiry_date = (
+            SELECT MIN(expiry_date) FROM tracked_symbols
+            WHERE expiry_date >= CURRENT_DATE
+              AND symbol NOT LIKE 'SENSEX%'
+        )
+        AND symbol NOT LIKE 'SENSEX%'
     """)
-    return row
+
+    if not symbols:
+        return None
+
+    # Step 2: get latest price for each symbol using the covering index (fast)
+    prices = {}
+    for s in symbols:
+        row = await conn.fetchrow("""
+            SELECT curr_price FROM gap_ticks
+            WHERE symbol = $1
+            ORDER BY timestamp DESC LIMIT 1
+        """, s["symbol"])
+        if row:
+            prices[s["symbol"]] = {"strike": s["strike"], "option_type": s["option_type"], "price": row["curr_price"]}
+
+    # Step 3: find strike where |CE_price - PE_price| is minimum
+    strikes = {}
+    for sym, info in prices.items():
+        k = info["strike"]
+        if k not in strikes:
+            strikes[k] = {}
+        strikes[k][info["option_type"]] = {"symbol": sym, "price": info["price"]}
+
+    best_strike = None
+    best_diff = float("inf")
+    for strike, opts in strikes.items():
+        if "CE" in opts and "PE" in opts:
+            diff = abs(opts["CE"]["price"] - opts["PE"]["price"])
+            if diff < best_diff:
+                best_diff = diff
+                best_strike = strike
+
+    if best_strike and "CE" in strikes[best_strike]:
+        ce = strikes[best_strike]["CE"]
+        # return as asyncpg-compatible Record-like dict
+        return {"symbol": ce["symbol"], "strike": best_strike}
+    return None
 
 
 @router.get("/atm-symbol")
 async def get_atm_symbol(request: Request):
+    now = time.monotonic()
+    if _atm_cache["data"] is not None and (now - _atm_cache["ts"]) < ATM_CACHE_TTL:
+        return _atm_cache["data"]
     try:
         async with request.app.state.pool.acquire() as conn:
             row = await _query_atm_symbol(conn)
-        if row:
-            return {"symbol": row["symbol"], "strike": float(row["strike"])}
-        return {"symbol": None}
+        result = {"symbol": row["symbol"], "strike": float(row["strike"])} if row else {"symbol": None}
+        _atm_cache["data"] = result
+        _atm_cache["ts"] = now
+        return result
     except Exception:
         return {"symbol": None}
 

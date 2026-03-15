@@ -188,5 +188,15 @@ async def flush(pool, buffer):
 
     async with pool.acquire() as conn:
         await conn.executemany(INSERT_QUERY, records)
+        # Keep tracked_symbols up to date for fast strike lookups
+        unique_symbols = {
+            (r["symbol"], r["strike"], r["option_type"], r["expiry_date"])
+            for r in buffer
+        }
+        await conn.executemany("""
+            INSERT INTO tracked_symbols (symbol, strike, option_type, expiry_date)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (symbol) DO NOTHING
+        """, list(unique_symbols))
 
     logger.info(f"Inserted {len(buffer)} rows into DB")
