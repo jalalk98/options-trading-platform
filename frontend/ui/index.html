@@ -507,6 +507,21 @@ async function loadStrikes() {
     });
 
     if (strikes.length > 0) {
+        // Try to load ATM CE as default; fall back to first strike
+        try {
+            const atmRes = await fetch("/api/atm-symbol");
+            const atm = await atmRes.json();
+            if (atm.symbol) {
+                // Find the display label for this symbol
+                const atmEntry = strikes.find(s => s.symbol === atm.symbol);
+                if (atmEntry) {
+                    document.getElementById("symbolSelect").value = atmEntry.display;
+                    loadSymbol(atm.symbol);
+                    return;
+                }
+            }
+        } catch (_) {}
+        // Fallback
         const firstDisplay = strikes[0].display;
         document.getElementById("symbolSelect").value = firstDisplay;
         loadSymbol(strikeMap[firstDisplay]);
