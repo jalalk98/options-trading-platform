@@ -103,9 +103,8 @@
         /* ── Buy / Sell buttons ── */
         #orderBar {
             position: fixed;
-            bottom: 28px;
-            left: 50%;
-            transform: translateX(-50%);
+            top: 56px;
+            left: 12px;
             z-index: 200;
             display: flex;
             align-items: stretch;
@@ -142,9 +141,6 @@
         #qtyPopup {
             display: none;
             position: fixed;
-            bottom: 90px;
-            left: 50%;
-            transform: translateX(-50%);
             z-index: 300;
             background: #1e293b;
             border: 1px solid #334155;
@@ -218,7 +214,7 @@
         <span class="ob-price" id="buyPrice">—</span>
         <span class="ob-qty"   id="buyQty">65</span>
     </button>
-    <button class="ob-calc" id="btnCalc" onclick="toggleQtyPopup()">
+    <button class="ob-calc" id="btnCalc" onclick="toggleQtyPopup(event)">
         <span class="ob-label">QTY</span>
         <span class="ob-qty"   id="calcQtyDisplay">65</span>
         <span class="ob-lots"  id="calcLotsDisplay">1 lot</span>
@@ -235,9 +231,9 @@
     <h4 id="qtyPopupTitle">Quantity (NIFTY · 65/lot)</h4>
     <div id="lotsDisplay">1 lot</div>
     <div class="qty-row">
-        <button class="qty-btn" onclick="adjustLots(-1)">−</button>
+        <button class="qty-btn" onclick="adjustLots(-1, event)">−</button>
         <span id="qtyDisplay">65</span>
-        <button class="qty-btn" onclick="adjustLots(+1)">+</button>
+        <button class="qty-btn" onclick="adjustLots(+1, event)">+</button>
     </div>
     <button id="qtyClose" onclick="toggleQtyPopup()">Done</button>
 </div>
@@ -954,14 +950,32 @@ function resetOrderBar(symbol) {
     updateOrderBar(null);
 }
 
-function adjustLots(delta) {
-    orderLots = Math.max(1, orderLots + delta);
-    updateOrderBar(null);
+
+function toggleQtyPopup(e) {
+    const p = document.getElementById('qtyPopup');
+    if (p.style.display === 'block') {
+        p.style.display = 'none';
+        return;
+    }
+    // Position popup near the click point
+    if (e) {
+        const margin = 8;
+        const pw = 240, ph = 140;   // approx popup size
+        let x = e.clientX - pw / 2;
+        let y = e.clientY - ph - margin;
+        // keep within viewport
+        x = Math.max(margin, Math.min(x, window.innerWidth  - pw - margin));
+        y = Math.max(margin, Math.min(y, window.innerHeight - ph - margin));
+        p.style.left = x + 'px';
+        p.style.top  = y + 'px';
+    }
+    p.style.display = 'block';
 }
 
-function toggleQtyPopup() {
-    const p = document.getElementById('qtyPopup');
-    p.style.display = p.style.display === 'block' ? 'none' : 'block';
+function adjustLots(delta, e) {
+    if (e) e.stopPropagation();   // prevent popup closing on click
+    orderLots = Math.max(1, orderLots + delta);
+    updateOrderBar(null);
 }
 
 // Close popup when clicking outside
