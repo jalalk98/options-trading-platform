@@ -266,3 +266,48 @@ async def close_position(req: SymbolRequest):
     sl_state.pop(symbol, None)
 
     return {"status": "ok", "logs": logs}
+
+
+# ─────────────────────────────────────────────
+# POST /api/place-limit-order
+# Places a regular LIMIT order (Buy/Sell buttons).
+# ─────────────────────────────────────────────
+class LimitOrderRequest(BaseModel):
+    symbol:   str
+    price:    float
+    side:     str   # BUY or SELL
+    qty:      int
+    exchange: str = "NFO"
+
+@router.post("/place-limit-order")
+async def place_limit_order(req: LimitOrderRequest):
+    price = _round(req.price)
+    headers = {
+        "X-Kite-Version": "3",
+        "User-Agent":      "Kiteconnect-python/5.0.1",
+        "Authorization":   f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    data = {
+        "variety":          "regular",
+        "exchange":         req.exchange,
+        "tradingsymbol":    req.symbol,
+        "transaction_type": req.side,
+        "quantity":         str(req.qty),
+        "product":          "NRML",
+        "order_type":       "LIMIT",
+        "price":            str(price),
+        "validity":         "DAY",
+    }
+    try:
+        r = await kite1.reqsession.post(
+            "https://api.kite.trade/orders/regular",
+            data=data, headers=headers, timeout=7
+        )
+        r.raise_for_status()
+        result = r.json()
+        order_id = (result.get("data") or {}).get("order_id")
+        logger.info(f"LIMIT {req.side} {req.qty} {req.symbol} @ {price} → order_id={order_id}")
+        return {"status": "success", "order_id": order_id, "price": price, "qty": req.qty, "side": req.side}
+    except Exception as e:
+        logger.error(f"place-limit-order error: {e}")
+        return {"status": "error", "message": str(e)}

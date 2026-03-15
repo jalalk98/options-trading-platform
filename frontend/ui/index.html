@@ -100,6 +100,71 @@
         #chartLabel .cl-ce     { color: #15803d; }
         #chartLabel .cl-pe     { color: #b91c1c; }
 
+        /* ── Buy / Sell buttons ── */
+        #orderBar {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            display: flex;
+            align-items: stretch;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+            font-family: Arial, sans-serif;
+            user-select: none;
+        }
+        .ob-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 22px;
+            cursor: pointer;
+            border: none;
+            min-width: 90px;
+            gap: 2px;
+            transition: filter 0.15s;
+        }
+        .ob-btn:hover { filter: brightness(1.15); }
+        .ob-btn:active { filter: brightness(0.9); }
+        .ob-buy  { background: #16a34a; color: #fff; }
+        .ob-sell { background: #dc2626; color: #fff; }
+        .ob-calc { background: #1e293b; color: #94a3b8; cursor: pointer; border: none; padding: 8px 14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; }
+        .ob-calc:hover { background: #334155; }
+        .ob-label { font-size: 11px; font-weight: bold; letter-spacing: 0.5px; opacity: 0.85; }
+        .ob-price { font-size: 15px; font-weight: bold; }
+        .ob-qty   { font-size: 11px; opacity: 0.8; }
+        .ob-lots  { font-size: 10px; opacity: 0.65; }
+
+        /* ── Quantity calculator popup ── */
+        #qtyPopup {
+            display: none;
+            position: fixed;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 300;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            padding: 16px 20px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+            color: #e2e8f0;
+            font-family: Arial, sans-serif;
+            min-width: 220px;
+            text-align: center;
+        }
+        #qtyPopup h4 { margin: 0 0 12px; font-size: 13px; color: #94a3b8; font-weight: normal; }
+        .qty-row { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 10px; }
+        .qty-btn { width: 32px; height: 32px; border-radius: 6px; border: none; background: #334155; color: #e2e8f0; font-size: 18px; cursor: pointer; display:flex; align-items:center; justify-content:center; }
+        .qty-btn:hover { background: #475569; }
+        #qtyDisplay { font-size: 22px; font-weight: bold; color: #f1f5f9; min-width: 60px; }
+        #lotsDisplay { font-size: 12px; color: #64748b; margin-bottom: 4px; }
+        #qtyClose { margin-top: 8px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 6px; padding: 5px 18px; cursor: pointer; font-size: 12px; }
+        #qtyClose:hover { background: #1e293b; }
+
         /* ── Toast notifications ── */
         #toastContainer {
             position: fixed;
@@ -145,6 +210,37 @@
 <button id="goToLive">&#9654; Latest</button>
 <div id="tooltip"></div>
 <div id="toastContainer"></div>
+
+<!-- Buy / Sell order bar -->
+<div id="orderBar">
+    <button class="ob-btn ob-buy" id="btnBuy" onclick="placeOrder('BUY')">
+        <span class="ob-label">BUY</span>
+        <span class="ob-price" id="buyPrice">—</span>
+        <span class="ob-qty"   id="buyQty">65</span>
+    </button>
+    <button class="ob-calc" id="btnCalc" onclick="toggleQtyPopup()">
+        <span class="ob-label">QTY</span>
+        <span class="ob-qty"   id="calcQtyDisplay">65</span>
+        <span class="ob-lots"  id="calcLotsDisplay">1 lot</span>
+    </button>
+    <button class="ob-btn ob-sell" id="btnSell" onclick="placeOrder('SELL')">
+        <span class="ob-label">SELL</span>
+        <span class="ob-price" id="sellPrice">—</span>
+        <span class="ob-qty"   id="sellQty">65</span>
+    </button>
+</div>
+
+<!-- Quantity calculator popup -->
+<div id="qtyPopup">
+    <h4 id="qtyPopupTitle">Quantity (NIFTY · 65/lot)</h4>
+    <div id="lotsDisplay">1 lot</div>
+    <div class="qty-row">
+        <button class="qty-btn" onclick="adjustLots(-1)">−</button>
+        <span id="qtyDisplay">65</span>
+        <button class="qty-btn" onclick="adjustLots(+1)">+</button>
+    </div>
+    <button id="qtyClose" onclick="toggleQtyPopup()">Done</button>
+</div>
 
 <script>
 /* ======================
@@ -302,6 +398,7 @@ async function loadSymbol(symbol) {
     historyLoaded = false;
     activeSymbol = symbol;
     updateChartLabel(symbol);
+    resetOrderBar(symbol);
 
     if (socket) {
         socket.close();
@@ -528,6 +625,8 @@ function connectWebSocket(symbol) {
             console.log("Ignoring delayed tick:", bucketTime);
             return;
         }
+
+        updateOrderBar(price);
 
         if (
             currentCandle &&
@@ -808,6 +907,90 @@ chartDiv.addEventListener('dblclick', async (e) => {
         body:    JSON.stringify({ symbol: activeSymbol, price: p }),
     });
 });
+
+/* ======================
+   BUY / SELL ORDER BAR
+====================== */
+const LOT_SIZES = { NIFTY: 65, SENSEX: 20, BANKNIFTY: 30 };
+
+let currentLTP  = null;
+let orderLots   = 1;
+let orderLotSize = 65;   // updated on symbol change
+
+function getLotSize(symbol) {
+    if (!symbol) return 65;
+    if (symbol.startsWith('SENSEX'))    return LOT_SIZES.SENSEX;
+    if (symbol.startsWith('BANKNIFTY')) return LOT_SIZES.BANKNIFTY;
+    return LOT_SIZES.NIFTY;
+}
+
+function getIndexName(symbol) {
+    if (!symbol) return 'NIFTY';
+    if (symbol.startsWith('SENSEX'))    return 'SENSEX';
+    if (symbol.startsWith('BANKNIFTY')) return 'BANKNIFTY';
+    return 'NIFTY';
+}
+
+function updateOrderBar(ltp) {
+    if (ltp != null) currentLTP = ltp;
+    const p   = currentLTP != null ? currentLTP.toFixed(2) : '—';
+    const qty = orderLots * orderLotSize;
+    document.getElementById('buyPrice').textContent  = p;
+    document.getElementById('sellPrice').textContent = p;
+    document.getElementById('buyQty').textContent    = `${qty} qty`;
+    document.getElementById('sellQty').textContent   = `${qty} qty`;
+    document.getElementById('calcQtyDisplay').textContent = qty;
+    document.getElementById('calcLotsDisplay').textContent =
+        `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
+}
+
+function resetOrderBar(symbol) {
+    orderLotSize = getLotSize(symbol);
+    orderLots    = 1;
+    currentLTP   = null;
+    const idx    = getIndexName(symbol);
+    document.getElementById('qtyPopupTitle').textContent =
+        `Quantity (${idx} · ${orderLotSize}/lot)`;
+    updateOrderBar(null);
+}
+
+function adjustLots(delta) {
+    orderLots = Math.max(1, orderLots + delta);
+    updateOrderBar(null);
+}
+
+function toggleQtyPopup() {
+    const p = document.getElementById('qtyPopup');
+    p.style.display = p.style.display === 'block' ? 'none' : 'block';
+}
+
+// Close popup when clicking outside
+document.addEventListener('click', (e) => {
+    const popup = document.getElementById('qtyPopup');
+    const calc  = document.getElementById('btnCalc');
+    if (popup.style.display === 'block' &&
+        !popup.contains(e.target) && e.target !== calc) {
+        popup.style.display = 'none';
+    }
+});
+
+async function placeOrder(side) {
+    if (!activeSymbol) { toast('No symbol selected', 'warn'); return; }
+    if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
+
+    const price = parseFloat(currentLTP.toFixed(2));
+    const qty   = orderLots * orderLotSize;
+    const label = `${side} ${qty} ${activeSymbol} @ ${price}`;
+
+    toast(`⏳ Placing ${label}…`, 'info', 2000);
+
+    const res  = await fetch('/api/place-limit-order', {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json'},
+        body:    JSON.stringify({ symbol: activeSymbol, price, side, qty, exchange: 'NFO' }),
+    });
+    toastOrder(await res.json(), label);
+}
 
 /* ======================
    TOAST NOTIFICATIONS
