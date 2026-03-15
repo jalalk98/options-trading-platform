@@ -18,6 +18,7 @@ async def _query_strikes(pool):
         rows = await conn.fetch("""
             SELECT DISTINCT symbol, strike, option_type, expiry_date
             FROM gap_ticks
+            WHERE expiry_date >= CURRENT_DATE
             ORDER BY expiry_date ASC, strike
         """)
     return [
