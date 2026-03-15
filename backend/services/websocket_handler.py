@@ -1,14 +1,39 @@
 import asyncio
 import logging
+import threading
+import json
+import requests
+from pathlib import Path
 from backend.core.async_tickers import MainTicker
 from backend.core.custom_connect import KiteConnect_custom
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 from config.logging_config import logger
 from backend.core.redis_client import redis_client
-import json
 from backend.services.gap_processor import process_tick
 from backend.state import sl_state
-import threading
+
+
+def _send_telegram(text: str) -> None:
+    """Send a Telegram message using credentials from ~/.kite_secrets."""
+    secrets_path = Path.home() / ".kite_secrets"
+    try:
+        secrets = {}
+        for line in secrets_path.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, _, v = line.partition("=")
+                secrets[k.strip()] = v.strip()
+        token   = secrets.get("TELEGRAM_BOT_TOKEN")
+        chat_id = secrets.get("TELEGRAM_CHAT_ID")
+        if not token or not chat_id:
+            logger.error("Telegram credentials missing in ~/.kite_secrets")
+            return
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send Telegram alert: {e}")
 
 # Configure logging
 logging.getLogger('websockets.client').setLevel(logging.WARNING)
@@ -279,10 +304,11 @@ def setup_websocket_events():
 
     # Callback when reconnect is in progress
     def on_reconnect(ws, attempts_count):
-        logger.info("Reconnecting: Attempt {}".format(attempts_count))
+        logger.warning(f"WebSocket reconnecting: attempt {attempts_count}")
 
     def on_noreconnect(ws):
-        logger.info("Reconnect failed. No more attempts will be made.")
+        logger.error("WebSocket reconnect FAILED — all retry attempts exhausted. Feed is dead.")
+        _send_telegram("🔴 WebSocket feed DEAD — all reconnect attempts exhausted. Restart trading session manually.")
 
         
     # Attach handlers to the WebSocket instance
