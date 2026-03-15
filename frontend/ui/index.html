@@ -97,8 +97,36 @@
         }
         #chartLabel .cl-index  { color: #6b7280; }
         #chartLabel .cl-strike { color: #b45309; }
-        #chartLabel .cl-ce     { color: #15803d; }   /* dark green for CE */
-        #chartLabel .cl-pe     { color: #b91c1c; }   /* dark red for PE   */
+        #chartLabel .cl-ce     { color: #15803d; }
+        #chartLabel .cl-pe     { color: #b91c1c; }
+
+        /* ── Toast notifications ── */
+        #toastContainer {
+            position: fixed;
+            top: 54px;
+            right: 16px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: bold;
+            color: #fff;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.4);
+            opacity: 1;
+            transition: opacity 0.4s ease;
+            max-width: 320px;
+            white-space: pre-wrap;
+        }
+        .toast.success { background: #15803d; border-left: 4px solid #4ade80; }
+        .toast.error   { background: #b91c1c; border-left: 4px solid #f87171; }
+        .toast.info    { background: #1d4ed8; border-left: 4px solid #93c5fd; }
+        .toast.warn    { background: #92400e; border-left: 4px solid #fbbf24; }
     </style>
 </head>
 <body>
@@ -116,6 +144,7 @@
 </div>
 <button id="goToLive">&#9654; Latest</button>
 <div id="tooltip"></div>
+<div id="toastContainer"></div>
 
 <script>
 /* ======================
@@ -781,79 +810,104 @@ chartDiv.addEventListener('dblclick', async (e) => {
 });
 
 /* ======================
+   TOAST NOTIFICATIONS
+====================== */
+function toast(msg, type = 'info', duration = 4000) {
+    const container = document.getElementById('toastContainer');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 420);
+    }, duration);
+}
+
+function toastOrder(data, actionLabel) {
+    if (!data) { toast(`${actionLabel}: no response`, 'error'); return; }
+    if (data.status === 'success' || data.status === 'ok') {
+        const detail = data.price ? ` @ ${data.price}` : '';
+        toast(`✅ ${actionLabel}${detail}`, 'success');
+    } else if (data.status === 'error') {
+        toast(`❌ ${actionLabel} FAILED\n${data.message || ''}`, 'error', 6000);
+    } else {
+        toast(`⚠️ ${actionLabel}: ${JSON.stringify(data)}`, 'warn', 5000);
+    }
+}
+
+/* ======================
    KEYBOARD SHORTCUTS
 ====================== */
 window.addEventListener("keydown", async (e) => {
 
-    // ignore when typing in input
     if (document.activeElement.tagName === "INPUT") return;
 
     const key = e.key;
-
     if (!activeSymbol) return;
 
-    // ── Q: SL BUY (legacy) ──────────────────
+    // ── Q: SL BUY ───────────────────────────
     if (key === "q") {
-        if (crosshairPrice === null) return;
-        await fetch("/api/place-sl-order", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                symbol: activeSymbol,
-                price:  Number(crosshairPrice.toFixed(2)),
-                side:   "BUY"
-            })
-        });
-    }
-
-    // ── W: SL SELL (legacy) ─────────────────
-    if (key === "w") {
-        if (crosshairPrice === null) return;
-        await fetch("/api/place-sl-order", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                symbol: activeSymbol,
-                price:  Number(crosshairPrice.toFixed(2)),
-                side:   "SELL"
-            })
-        });
-    }
-
-    // ── L: Convert SL → LIMIT at crosshair price ──
-    if (key === "l" || key === "L") {
-        if (crosshairPrice === null) { console.log("Move mouse to set crosshair price first"); return; }
+        if (crosshairPrice === null) { toast('Move mouse over chart first', 'warn'); return; }
         const price = Number(crosshairPrice.toFixed(2));
-        const res = await fetch("/api/sl/convert-to-limit", {
-            method:  "POST",
-            headers: {"Content-Type": "application/json"},
-            body:    JSON.stringify({ symbol: activeSymbol, price }),
+        toast(`⏳ Placing SL BUY @ ${price}…`, 'info', 2000);
+        const res  = await fetch("/api/place-sl-order", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ symbol: activeSymbol, price, side: "BUY" })
+        });
+        toastOrder(await res.json(), `SL BUY ${activeSymbol} @ ${price}`);
+    }
+
+    // ── W: SL SELL ──────────────────────────
+    if (key === "w") {
+        if (crosshairPrice === null) { toast('Move mouse over chart first', 'warn'); return; }
+        const price = Number(crosshairPrice.toFixed(2));
+        toast(`⏳ Placing SL SELL @ ${price}…`, 'info', 2000);
+        const res  = await fetch("/api/place-sl-order", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ symbol: activeSymbol, price, side: "SELL" })
+        });
+        toastOrder(await res.json(), `SL SELL ${activeSymbol} @ ${price}`);
+    }
+
+    // ── L: Convert SL → LIMIT at crosshair ─
+    if (key === "l" || key === "L") {
+        if (crosshairPrice === null) { toast('Move mouse over chart first', 'warn'); return; }
+        const price = Number(crosshairPrice.toFixed(2));
+        toast(`⏳ Converting SL → LIMIT @ ${price}…`, 'info', 2000);
+        const res  = await fetch("/api/sl/convert-to-limit", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ symbol: activeSymbol, price })
         });
         const data = await res.json();
-        console.log("SL→LIMIT:", data);
+        toastOrder(data, `SL→LIMIT @ ${price}`);
         if (data.status === "ok") updateSLLine(price, 'placed');
     }
 
     // ── S: Convert SL → MARKET ──────────────
-    if (key === "s" || key === "S") {
-        const res = await fetch("/api/sl/convert-to-market", {
-            method:  "POST",
-            headers: {"Content-Type": "application/json"},
-            body:    JSON.stringify({ symbol: activeSymbol }),
+    if ((key === "s" || key === "S") && !e.shiftKey) {
+        toast(`⏳ Converting SL → MARKET…`, 'info', 2000);
+        const res  = await fetch("/api/sl/convert-to-market", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ symbol: activeSymbol })
         });
-        const data = await res.json();
-        console.log("SL→MARKET:", data);
+        toastOrder(await res.json(), `SL→MARKET ${activeSymbol}`);
     }
 
     // ── Shift+M: Close full position ────────
     if (key === "M" && e.shiftKey) {
-        const res = await fetch("/api/sl/close-position", {
-            method:  "POST",
-            headers: {"Content-Type": "application/json"},
-            body:    JSON.stringify({ symbol: activeSymbol }),
+        toast(`⏳ Closing full position for ${activeSymbol}…`, 'info', 3000);
+        const res  = await fetch("/api/sl/close-position", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ symbol: activeSymbol })
         });
         const data = await res.json();
-        console.log("Close position:", data);
+        if (data.status === 'ok') {
+            const summary = data.logs ? data.logs[data.logs.length - 1] : 'done';
+            toast(`✅ Position closed\n${summary}`, 'success', 6000);
+        } else {
+            toast(`❌ Close position failed`, 'error', 6000);
+        }
         updateSLLine(null, 'none');
     }
 
