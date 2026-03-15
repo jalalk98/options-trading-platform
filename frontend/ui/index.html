@@ -783,8 +783,8 @@ window.addEventListener("keydown", async (e) => {
         if (data.status === "ok") updateSLLine(price, 'placed');
     }
 
-    // ── M: Convert SL → MARKET ──────────────
-    if (key === "m" && !e.shiftKey) {
+    // ── S: Convert SL → MARKET ──────────────
+    if (key === "s" || key === "S") {
         const res = await fetch("/api/sl/convert-to-market", {
             method:  "POST",
             headers: {"Content-Type": "application/json"},
