@@ -971,6 +971,9 @@ function toggleQtyPopup(e) {
     p.style.left = rect.left + 'px';
     p.style.top  = (rect.bottom + margin) + 'px';
     p.style.display = 'block';
+    const inp = document.getElementById('qtyDisplay');
+    inp.focus();
+    inp.select();
 }
 
 function adjustLots(delta) {
