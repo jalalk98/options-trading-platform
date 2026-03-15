@@ -198,8 +198,22 @@ def send_telegram(bot_token: str, chat_id: str, text: str, attach_log: bool = Fa
         log.warning(f"Telegram notification failed: {e}")
 
 
+PAUSE_FLAG = Path.home() / ".trading_paused"
+
+
 def main():
     log.info("=== Kite token refresh started ===")
+
+    if PAUSE_FLAG.exists():
+        log.info("Holiday mode active — skipping token refresh.")
+        secrets = load_secrets()
+        send_telegram(
+            secrets["TELEGRAM_BOT_TOKEN"],
+            secrets["TELEGRAM_CHAT_ID"],
+            "⏸ Token refresh skipped — holiday mode is ON.",
+        )
+        return
+
     secrets = {}
     try:
         secrets = load_secrets()

@@ -4,6 +4,13 @@ SESSION="trading"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$HOME/trading_start.log"
 
+# Holiday check
+if [ -f "$HOME/.trading_paused" ]; then
+    "$SCRIPT_DIR/notify.sh" "⏸ Trading session start skipped — holiday mode is ON."
+    echo "Holiday mode active — skipping session start."
+    exit 0
+fi
+
 tmux kill-session -t $SESSION 2>/dev/null
 
 echo "Clearing old Redis ticks..."
