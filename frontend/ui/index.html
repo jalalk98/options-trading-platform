@@ -657,16 +657,34 @@ async function loadSLState(symbol) {
 /* ── Drag logic ─────────────────────────────── */
 const chartDiv = document.getElementById('chart');
 
+function isNearSLLine(clientY) {
+    if (!slPrice) return false;
+    const rect = chartDiv.getBoundingClientRect();
+    const y    = clientY - rect.top;
+    const slY  = candleSeries.priceToCoordinate(slPrice);
+    return slY !== null && Math.abs(y - slY) < 8;
+}
+
+function disableChartScroll() {
+    chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false } });
+}
+function enableChartScroll() {
+    chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true } });
+}
+
 chartDiv.addEventListener('mousemove', (e) => {
     if (!slPrice) return;
     const rect = chartDiv.getBoundingClientRect();
     const y    = e.clientY - rect.top;
-    const slY  = candleSeries.priceToCoordinate(slPrice);
-    if (slY !== null && Math.abs(y - slY) < 8) {
+
+    if (isNearSLLine(e.clientY)) {
         chartDiv.style.cursor = 'ns-resize';
+        disableChartScroll();   // prevent chart panning when hovering the line
     } else if (!slDragging) {
         chartDiv.style.cursor = 'default';
+        enableChartScroll();
     }
+
     if (slDragging) {
         const newPrice = candleSeries.coordinateToPrice(y);
         if (newPrice !== null) {
@@ -678,12 +696,10 @@ chartDiv.addEventListener('mousemove', (e) => {
 
 chartDiv.addEventListener('mousedown', (e) => {
     if (!slPrice) return;
-    const rect = chartDiv.getBoundingClientRect();
-    const y    = e.clientY - rect.top;
-    const slY  = candleSeries.priceToCoordinate(slPrice);
-    if (slY !== null && Math.abs(y - slY) < 8) {
+    if (isNearSLLine(e.clientY)) {
         slDragging = true;
-        e.preventDefault();
+        disableChartScroll();
+        e.stopPropagation();   // prevent chart receiving this mousedown
     }
 });
 
@@ -691,6 +707,7 @@ chartDiv.addEventListener('mouseup', async () => {
     if (!slDragging) return;
     slDragging             = false;
     chartDiv.style.cursor  = 'default';
+    enableChartScroll();
     if (!slPrice || !activeSymbol) return;
     // Persist new price to backend (will also modify Kite order if placed)
     await fetch('/api/sl/set', {

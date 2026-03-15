@@ -55,7 +55,7 @@ async def set_sl(req: SetSLRequest):
     order_id = existing.get("order_id")
     if order_id and existing.get("state") == "placed":
         try:
-            trigger = _round(new_price + 0.10) if existing.get("side") == "SELL" else _round(new_price - 0.10)
+            trigger = _round(new_price + 0.20) if existing.get("side") == "SELL" else _round(new_price - 0.20)
             result = await kite1.hard_code_regular_modify_order(
                 order_id=order_id,
                 price=new_price,
