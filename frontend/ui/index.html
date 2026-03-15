@@ -79,6 +79,26 @@
         #slBadge.pending  { background: #7c6000; color: #FFD700; }
         #slBadge.placed   { background: #7a3c00; color: #FF8C00; }
         #slBadge.hit      { background: #333;    color: #aaa;    }
+
+        #chartLabel {
+            position: absolute;
+            top: 12px;
+            right: 70px;       /* leave room for price axis */
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: Arial, sans-serif;
+            font-size: 22px;
+            font-weight: bold;
+            opacity: 0.35;
+            user-select: none;
+        }
+        #chartLabel .cl-index { color: #d1d5db; }
+        #chartLabel .cl-strike { color: #facc15; }
+        #chartLabel .cl-ce   { color: #4ade80; }   /* green for CE */
+        #chartLabel .cl-pe   { color: #f87171; }   /* red for PE   */
     </style>
 </head>
 <body>
@@ -90,7 +110,10 @@
     <span id="slBadge">SL: —</span>
 </div>
 
-<div id="chart"></div>
+<div style="position:relative;">
+    <div id="chart"></div>
+    <div id="chartLabel"></div>
+</div>
 <button id="goToLive">&#9654; Latest</button>
 <div id="tooltip"></div>
 
@@ -217,26 +240,30 @@ function getBucketTime(epochSeconds) {
 }
 
 function updateChartLabel(symbol) {
-    // Reverse-lookup display from strikeMap e.g. "2026-03-17 | 24200 CE"
+    const el = document.getElementById('chartLabel');
+    if (!el) return;
+
+    // Parse index name from symbol prefix
+    let index = 'NIFTY';
+    if (symbol.startsWith('SENSEX'))    index = 'SENSEX';
+    else if (symbol.startsWith('BANKNIFTY')) index = 'BANKNIFTY';
+
+    // Get strike + type from strikeMap display e.g. "2026-03-17 | 24200 CE"
     const display = Object.keys(strikeMap).find(k => strikeMap[k] === symbol);
-    let label = '';
-    if (display) {
-        // Extract "24200 CE" from "2026-03-17 | 24200 CE" → "24200 - CE"
-        const part = display.split('|')[1]?.trim() || '';
-        const [strike, type] = part.split(' ');
-        if (strike && type) label = `${strike} - ${type}`;
-    }
-    chart.applyOptions({
-        watermark: {
-            visible:    !!label,
-            text:       label,
-            fontSize:   28,
-            fontFamily: 'Arial',
-            color:      'rgba(150, 150, 150, 0.25)',
-            horzAlign:  'right',
-            vertAlign:  'top',
-        }
-    });
+    if (!display) { el.innerHTML = ''; return; }
+
+    const part = display.split('|')[1]?.trim() || '';
+    const [strike, type] = part.split(' ');
+    if (!strike || !type) { el.innerHTML = ''; return; }
+
+    const typeClass = type === 'CE' ? 'cl-ce' : 'cl-pe';
+    el.innerHTML = `
+        <span class="cl-index">${index}</span>
+        <span class="cl-index">·</span>
+        <span class="cl-strike">${strike}</span>
+        <span class="cl-index">·</span>
+        <span class="${typeClass}">${type}</span>
+    `;
 }
 
 async function loadSymbol(symbol) {
