@@ -4,10 +4,19 @@ SESSION="trading"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$HOME/trading_start.log"
 
-# Holiday check
+# Holiday check — manual flag
 if [ -f "$HOME/.trading_paused" ]; then
     "$SCRIPT_DIR/notify.sh" "⏸ Trading session start skipped — holiday mode is ON."
     echo "Holiday mode active — skipping session start."
+    exit 0
+fi
+
+# Holiday check — NSE holiday list
+TODAY=$(date +%Y-%m-%d)
+HOLIDAY_NAME=$(grep "^$TODAY " "$HOME/.trading_holidays" 2>/dev/null | cut -d' ' -f2-)
+if [ -n "$HOLIDAY_NAME" ]; then
+    "$SCRIPT_DIR/notify.sh" "⏸ Trading session start skipped — today is a market holiday: $HOLIDAY_NAME."
+    echo "NSE holiday ($HOLIDAY_NAME) — skipping session start."
     exit 0
 fi
 

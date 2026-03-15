@@ -10,6 +10,7 @@ Polls Telegram every 30s and responds to commands:
 import os
 import time
 import logging
+import datetime
 import requests
 
 logging.basicConfig(
@@ -19,9 +20,23 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-SECRETS_FILE = os.path.expanduser("~/.kite_secrets")
-PAUSE_FLAG   = os.path.expanduser("~/.trading_paused")
+SECRETS_FILE  = os.path.expanduser("~/.kite_secrets")
+PAUSE_FLAG    = os.path.expanduser("~/.trading_paused")
+HOLIDAYS_FILE = os.path.expanduser("~/.trading_holidays")
 POLL_INTERVAL = 30  # seconds
+
+
+def get_holiday(date_str: str) -> str | None:
+    """Return holiday name for given YYYY-MM-DD date, or None."""
+    try:
+        with open(HOLIDAYS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(date_str):
+                    return line[len(date_str):].strip() or "NSE Holiday"
+    except FileNotFoundError:
+        pass
+    return None
 
 
 def load_secrets():
@@ -75,13 +90,23 @@ def handle_command(cmd, bot_token, chat_id):
                 "ℹ️ Already active — no holiday flag was set.")
 
     elif cmd == "status":
+        today    = datetime.date.today().isoformat()
+        tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        today_holiday    = get_holiday(today)
+        tomorrow_holiday = get_holiday(tomorrow)
+
+        lines = []
         if os.path.exists(PAUSE_FLAG):
-            send_message(bot_token, chat_id,
-                "⏸ Status: PAUSED (holiday mode is ON)\n"
-                "Send 'resume' to re-enable.")
+            lines.append("⏸ Status: PAUSED (holiday mode is ON manually)")
+            lines.append("Send 'resume' to re-enable.")
+        elif today_holiday:
+            lines.append(f"⏸ Status: PAUSED — today is a market holiday: {today_holiday}")
         else:
-            send_message(bot_token, chat_id,
-                "✅ Status: ACTIVE (trading scripts will run normally)")
+            lines.append("✅ Status: ACTIVE (trading scripts will run normally)")
+
+        if tomorrow_holiday:
+            lines.append(f"\n🗓 Tomorrow is a market holiday: {tomorrow_holiday}")
+        send_message(bot_token, chat_id, "\n".join(lines))
 
     else:
         send_message(bot_token, chat_id,

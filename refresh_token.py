@@ -198,7 +198,20 @@ def send_telegram(bot_token: str, chat_id: str, text: str, attach_log: bool = Fa
         log.warning(f"Telegram notification failed: {e}")
 
 
-PAUSE_FLAG = Path.home() / ".trading_paused"
+PAUSE_FLAG     = Path.home() / ".trading_paused"
+HOLIDAYS_FILE  = Path.home() / ".trading_holidays"
+
+
+def is_nse_holiday() -> str | None:
+    """Return holiday name if today is in ~/.trading_holidays, else None."""
+    if not HOLIDAYS_FILE.exists():
+        return None
+    today = __import__("datetime").date.today().isoformat()
+    for line in HOLIDAYS_FILE.read_text().splitlines():
+        line = line.strip()
+        if line.startswith(today):
+            return line[len(today):].strip() or "NSE Holiday"
+    return None
 
 
 def main():
@@ -211,6 +224,17 @@ def main():
             secrets["TELEGRAM_BOT_TOKEN"],
             secrets["TELEGRAM_CHAT_ID"],
             "⏸ Token refresh skipped — holiday mode is ON.",
+        )
+        return
+
+    holiday = is_nse_holiday()
+    if holiday:
+        log.info(f"NSE holiday ({holiday}) — skipping token refresh.")
+        secrets = load_secrets()
+        send_telegram(
+            secrets["TELEGRAM_BOT_TOKEN"],
+            secrets["TELEGRAM_CHAT_ID"],
+            f"⏸ Token refresh skipped — today is a market holiday: {holiday}.",
         )
         return
 
