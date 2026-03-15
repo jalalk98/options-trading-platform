@@ -31,15 +31,17 @@ async def _query_strikes(pool):
 
 
 async def prewarm_strikes_cache(pool):
-    result = await _query_strikes(pool)
-    _strikes_cache["data"] = result
-    _strikes_cache["ts"] = time.monotonic()
-    # Prewarm DB plan cache for history queries by running one history fetch
-    if result:
-        first_symbol = result[0]["symbol"]
-        async with pool.acquire() as conn:
-            data = await _query_history(conn, first_symbol)
-        _history_cache[first_symbol] = {"data": data, "ts": time.monotonic()}
+    async with pool.acquire() as conn:
+        result = await _query_strikes(pool)
+        _strikes_cache["data"] = result
+        _strikes_cache["ts"] = time.monotonic()
+
+        # Prewarm history cache for the ATM symbol (what the page loads by default)
+        atm_row = await _query_atm_symbol(conn)
+        atm_symbol = atm_row["symbol"] if atm_row else (result[0]["symbol"] if result else None)
+        if atm_symbol:
+            data = await _query_history(conn, atm_symbol)
+            _history_cache[atm_symbol] = {"data": data, "ts": time.monotonic()}
 
 
 @router.get("/strikes")
@@ -55,48 +57,53 @@ async def get_strikes(request: Request):
     return result
 
 
-@router.get("/atm-symbol")
-async def get_atm_symbol(request: Request):
+async def _query_atm_symbol(conn):
     """
     Returns the ATM CE symbol for the nearest expiry.
-    ATM is the strike where |CE_price - PE_price| is minimum (put-call parity).
-    Uses the last 10 minutes of available data so it works both live and post-market.
+    ATM = strike where |CE_price - PE_price| is minimum (put-call parity).
+    Uses last 10 minutes of available data — works both live and post-market.
     """
+    row = await conn.fetchrow("""
+        SELECT strike, symbol
+        FROM (
+            SELECT
+                strike,
+                MAX(CASE WHEN option_type='CE' THEN curr_price END) AS ce_price,
+                MAX(CASE WHEN option_type='PE' THEN curr_price END) AS pe_price
+            FROM gap_ticks
+            WHERE expiry_date = (
+                SELECT MIN(expiry_date) FROM gap_ticks
+                WHERE expiry_date >= CURRENT_DATE
+                  AND symbol NOT LIKE 'SENSEX%'
+            )
+            AND symbol NOT LIKE 'SENSEX%'
+            AND timestamp >= (
+                SELECT MAX(timestamp) FROM gap_ticks
+                WHERE symbol NOT LIKE 'SENSEX%'
+            ) - INTERVAL '10 minutes'
+            GROUP BY strike
+            HAVING MAX(CASE WHEN option_type='CE' THEN curr_price END) IS NOT NULL
+               AND MAX(CASE WHEN option_type='PE' THEN curr_price END) IS NOT NULL
+        ) t
+        JOIN gap_ticks g USING (strike)
+        WHERE g.option_type = 'CE'
+          AND g.expiry_date = (
+              SELECT MIN(expiry_date) FROM gap_ticks
+              WHERE expiry_date >= CURRENT_DATE
+                AND symbol NOT LIKE 'SENSEX%'
+          )
+          AND g.symbol NOT LIKE 'SENSEX%'
+        ORDER BY ABS(ce_price - pe_price) ASC
+        LIMIT 1
+    """)
+    return row
+
+
+@router.get("/atm-symbol")
+async def get_atm_symbol(request: Request):
     try:
         async with request.app.state.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT strike, symbol
-                FROM (
-                    SELECT
-                        strike,
-                        MAX(CASE WHEN option_type='CE' THEN curr_price END) AS ce_price,
-                        MAX(CASE WHEN option_type='PE' THEN curr_price END) AS pe_price
-                    FROM gap_ticks
-                    WHERE expiry_date = (
-                        SELECT MIN(expiry_date) FROM gap_ticks
-                        WHERE expiry_date >= CURRENT_DATE
-                          AND symbol NOT LIKE 'SENSEX%'
-                    )
-                    AND symbol NOT LIKE 'SENSEX%'
-                    AND timestamp >= (
-                        SELECT MAX(timestamp) FROM gap_ticks
-                        WHERE symbol NOT LIKE 'SENSEX%'
-                    ) - INTERVAL '10 minutes'
-                    GROUP BY strike
-                    HAVING MAX(CASE WHEN option_type='CE' THEN curr_price END) IS NOT NULL
-                       AND MAX(CASE WHEN option_type='PE' THEN curr_price END) IS NOT NULL
-                ) t
-                JOIN gap_ticks g USING (strike)
-                WHERE g.option_type = 'CE'
-                  AND g.expiry_date = (
-                      SELECT MIN(expiry_date) FROM gap_ticks
-                      WHERE expiry_date >= CURRENT_DATE
-                        AND symbol NOT LIKE 'SENSEX%'
-                  )
-                  AND g.symbol NOT LIKE 'SENSEX%'
-                ORDER BY ABS(ce_price - pe_price) ASC
-                LIMIT 1
-            """)
+            row = await _query_atm_symbol(conn)
         if row:
             return {"symbol": row["symbol"], "strike": float(row["strike"])}
         return {"symbol": None}
