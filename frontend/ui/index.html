@@ -1017,6 +1017,17 @@ document.getElementById('qtyDisplay').addEventListener('change', (e) => {
         updateOrderBar(null);
     }
 });
+document.getElementById('qtyDisplay').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const typed = parseInt(e.target.value, 10);
+        if (!isNaN(typed) && typed >= 1) {
+            orderLots = Math.max(1, Math.round(typed / orderLotSize));
+            updateOrderBar(null);
+        }
+        toggleQtyPopup();
+    }
+});
 
 // Close popup when clicking outside
 document.addEventListener('click', (e) => {
