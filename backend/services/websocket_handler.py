@@ -62,6 +62,8 @@ def setup_websocket_events():
     """
     global kws
 
+    _feed_dropped = {"sent": False}  # track whether drop alert was already sent
+
     # tick_count = 0
     async def on_ticks(ws, ticks):
         # print("Received ticks:", len(ticks))
@@ -278,15 +280,21 @@ def setup_websocket_events():
             await main_ticker.set_mode("full", tokens)
             kws.first_connect = False
         else:
-            logging.info("Reconnection: skipping first-connect subscription.")
+            attempts = kws.reconnect_attempts
+            logging.info(f"Reconnection successful after {attempts} attempt(s).")
+            _feed_dropped["sent"] = False  # reset for next disconnect
+            _send_telegram(f"🟢 WebSocket feed restored after {attempts} attempt(s). Feed is live.")
     
     async def on_close(ws, code, reason):
         global websocket_running
         """
         Triggered when WebSocket connection closes.
         """
-        logger.info(f"WebSocket closed: {code} - {reason}")
+        logger.warning(f"WebSocket closed: {code} - {reason}")
         websocket_running["running"] = False
+        if not _feed_dropped["sent"]:
+            _feed_dropped["sent"] = True
+            _send_telegram(f"🟡 WebSocket feed dropped (code={code}). Reconnecting automatically...")
         if code is None:
             code = 1000
         if reason is None:
@@ -304,7 +312,7 @@ def setup_websocket_events():
 
     # Callback when reconnect is in progress
     def on_reconnect(ws, attempts_count):
-        logger.warning(f"WebSocket reconnecting: attempt {attempts_count}")
+        logger.warning(f"WebSocket reconnecting: attempt {attempts_count} of {kws.reconnect_max_tries}")
 
     def on_noreconnect(ws):
         logger.error("WebSocket reconnect FAILED — all retry attempts exhausted. Feed is dead.")
