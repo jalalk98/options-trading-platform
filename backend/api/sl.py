@@ -134,23 +134,84 @@ async def convert_to_market(req: SymbolRequest):
         return {"status": "error", "message": str(e)}
 
 
+# Freeze qty limits per exchange/index
+FREEZE_QTY = {
+    "NIFTY":  1755,
+    "SENSEX": 1000,
+}
+
+def _freeze_qty(symbol: str) -> int:
+    if symbol.startswith("SENSEX"):
+        return FREEZE_QTY["SENSEX"]
+    return FREEZE_QTY["NIFTY"]
+
+
+async def _fetch_net_position(symbol: str, exchange: str) -> int:
+    """Fetch live net open qty for a symbol from Kite portfolio/positions."""
+    headers = {
+        "X-Kite-Version": "3",
+        "Authorization": f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    try:
+        r = await kite1.reqsession.get(
+            "https://api.kite.trade/portfolio/positions",
+            headers=headers,
+            timeout=7
+        )
+        r.raise_for_status()
+        data = r.json()
+        for p in data.get("data", {}).get("net", []):
+            if p.get("tradingsymbol") == symbol:
+                return int(p.get("quantity", 0))
+    except Exception as e:
+        logger.error(f"_fetch_net_position error: {e}")
+    return 0
+
+
+async def _place_market_order(exchange: str, symbol: str, tx: str, qty: int) -> dict:
+    """Place a plain MARKET order (not SL) for the given qty."""
+    headers = {
+        "X-Kite-Version": "3",
+        "User-Agent": "Kiteconnect-python/5.0.1",
+        "Authorization": f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    data = {
+        "variety":          "regular",
+        "exchange":         exchange,
+        "tradingsymbol":    symbol,
+        "transaction_type": tx,
+        "quantity":         str(qty),
+        "product":          "NRML",
+        "order_type":       "MARKET",
+        "validity":         "DAY",
+    }
+    r = await kite1.reqsession.post(
+        "https://api.kite.trade/orders/regular",
+        data=data,
+        headers=headers,
+        timeout=7
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 # ─────────────────────────────────────────────
 # POST /api/sl/close-position     (Shift+M)
 # 1. Convert all TRIGGER PENDING SL orders for symbol → MARKET
-# 2. Check net open position
-# 3. If units remain, place opposite MARKET order to flatten
+# 2. Fetch live net position from Kite
+# 3. If any qty remains, place pure MARKET orders in freeze-qty chunks
 # ─────────────────────────────────────────────
 @router.post("/sl/close-position")
 async def close_position(req: SymbolRequest):
-    symbol = req.symbol
-    state  = sl_state.get(symbol, {})
-    logs   = []
+    symbol   = req.symbol
+    exchange = sl_state.get(symbol, {}).get("exchange", "NFO")
+    logs     = []
 
-    # Step 1 — convert any pending SL orders to market
+    # ── Step 1: Convert all TRIGGER PENDING SL orders → MARKET ──────────
     try:
-        orders = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
+        orders     = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
         all_orders = orders.get("data", []) if isinstance(orders, dict) else []
-        sl_orders = [
+        sl_orders  = [
             o for o in all_orders
             if o.get("tradingsymbol") == symbol
             and o.get("order_type") == "SL"
@@ -163,53 +224,45 @@ async def close_position(req: SymbolRequest):
                 access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
                 type="MARKET"
             )
-            logs.append(f"Converted SL {oid} → MARKET: {res}")
+            logs.append(f"SL {oid} → MARKET: {res}")
             logger.info(logs[-1])
+        logs.append(f"Step 1 done — converted {len(sl_orders)} SL order(s) to MARKET")
     except Exception as e:
         logger.error(f"close-position step-1 error: {e}")
         logs.append(f"Step-1 error: {e}")
 
-    # Step 2 — check net position and flatten remainder
+    # ── Step 2: Fetch live position ──────────────────────────────────────
     try:
-        exchange = state.get("exchange", "NFO")
-        qty      = state.get("qty")
-
-        if qty:
-            # Net position from sl_state (positive=long, negative=short)
-            net = sl_state.get(symbol, {}).get("qty", 0)
-            if isinstance(net, int) and net != 0:
-                # Flatten: opposite direction at market
-                tx = "SELL" if net > 0 else "BUY"
-                close_qty = abs(net)
-
-                if tx == "SELL":
-                    res = await kite1.hard_code_regular_sell_order(
-                        exchange=exchange,
-                        trade_symbol=symbol,
-                        qty=close_qty,
-                        stop_loss_price=0,
-                        trig_price=0,
-                        api_key=KITE_API_KEY,
-                        access_token=KITE_ACCESS_TOKEN
-                    )
-                else:
-                    res = await kite1.hard_code_regular_buy_order(
-                        exchange=exchange,
-                        trade_symbol=symbol,
-                        qty=close_qty,
-                        price=0,
-                        trig_price=0,
-                        api_key=KITE_API_KEY,
-                        access_token=KITE_ACCESS_TOKEN
-                    )
-                logs.append(f"Flattened {close_qty} units {tx} @ MARKET: {res}")
-                logger.info(logs[-1])
-
-        # Clear SL state for symbol
-        sl_state.pop(symbol, None)
-
+        net = await _fetch_net_position(symbol, exchange)
+        logs.append(f"Step 2 — live net position: {net}")
+        logger.info(logs[-1])
     except Exception as e:
         logger.error(f"close-position step-2 error: {e}")
         logs.append(f"Step-2 error: {e}")
+        net = 0
+
+    # ── Step 3: Flatten remainder in freeze-qty chunks ───────────────────
+    if net != 0:
+        tx         = "SELL" if net > 0 else "BUY"
+        remaining  = abs(net)
+        freeze     = _freeze_qty(symbol)
+        order_num  = 0
+        try:
+            while remaining > 0:
+                chunk = min(remaining, freeze)
+                res   = await _place_market_order(exchange, symbol, tx, chunk)
+                order_num += 1
+                logs.append(f"Step 3 order {order_num}: {tx} {chunk} @ MARKET → {res}")
+                logger.info(logs[-1])
+                remaining -= chunk
+            logs.append(f"Step 3 done — placed {order_num} MARKET order(s) to flatten {abs(net)} units")
+        except Exception as e:
+            logger.error(f"close-position step-3 error: {e}")
+            logs.append(f"Step-3 error: {e}")
+    else:
+        logs.append("Step 3 skipped — position already flat after SL conversion")
+
+    # Clear SL state
+    sl_state.pop(symbol, None)
 
     return {"status": "ok", "logs": logs}
