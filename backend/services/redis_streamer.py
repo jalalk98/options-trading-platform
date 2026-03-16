@@ -35,6 +35,7 @@ async def redis_streamer():
                 await manager.broadcast(
                     row["symbol"],
                     {
+                        "symbol": row["symbol"],
                         "time": epoch_time,
                         "value": float(row["curr_price"]),
                         "is_gap": row["is_gap"],
