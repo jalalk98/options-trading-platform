@@ -273,15 +273,21 @@ async def close_position(req: SymbolRequest):
 # Places a regular LIMIT order (Buy/Sell buttons).
 # ─────────────────────────────────────────────
 class LimitOrderRequest(BaseModel):
-    symbol:   str
-    price:    float
-    side:     str   # BUY or SELL
-    qty:      int
-    exchange: str = "NFO"
+    symbol:     str
+    price:      float
+    side:       str        # BUY or SELL
+    qty:        int
+    exchange:   str = "NFO"
+    order_type: str = "L"  # 'L' (LIMIT) | 'M' (MARKET) | 'SL' (SL-LIMIT)
 
 @router.post("/place-limit-order")
 async def place_limit_order(req: LimitOrderRequest):
     price = _round(req.price)
+
+    # Map frontend type codes → Kite order_type
+    kite_type_map = {"L": "LIMIT", "M": "MARKET", "SL": "SL"}
+    kite_order_type = kite_type_map.get(req.order_type.upper(), "LIMIT")
+
     headers = {
         "X-Kite-Version": "3",
         "User-Agent":      "Kiteconnect-python/5.0.1",
@@ -294,10 +300,16 @@ async def place_limit_order(req: LimitOrderRequest):
         "transaction_type": req.side,
         "quantity":         str(req.qty),
         "product":          "NRML",
-        "order_type":       "LIMIT",
-        "price":            str(price),
+        "order_type":       kite_order_type,
         "validity":         "DAY",
     }
+    # LIMIT and SL-LIMIT need a price; MARKET does not
+    if kite_order_type in ("LIMIT", "SL"):
+        data["price"] = str(price)
+    # SL also needs a trigger price (same as price for now — user can modify in Kite)
+    if kite_order_type == "SL":
+        data["trigger_price"] = str(price)
+
     try:
         r = await kite1.reqsession.post(
             "https://api.kite.trade/orders/regular",
@@ -306,8 +318,8 @@ async def place_limit_order(req: LimitOrderRequest):
         r.raise_for_status()
         result = r.json()
         order_id = (result.get("data") or {}).get("order_id")
-        logger.info(f"LIMIT {req.side} {req.qty} {req.symbol} @ {price} → order_id={order_id}")
-        return {"status": "success", "order_id": order_id, "price": price, "qty": req.qty, "side": req.side}
+        logger.info(f"{kite_order_type} {req.side} {req.qty} {req.symbol} @ {price} → order_id={order_id}")
+        return {"status": "success", "order_id": order_id, "price": price, "qty": req.qty, "side": req.side, "order_type": kite_order_type}
     except Exception as e:
         logger.error(f"place-limit-order error: {e}")
         return {"status": "error", "message": str(e)}

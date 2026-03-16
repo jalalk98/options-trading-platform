@@ -136,6 +136,28 @@
         .ob-price { font-size: 11px; font-weight: bold; }
         .ob-qty   { font-size: 9px; opacity: 0.8; }
         .ob-lots  { font-size: 8px; opacity: 0.65; }
+        /* ── Order-type toggle group ── */
+        .ob-type-group {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            background: #0f172a;
+        }
+        .ob-type-btn {
+            flex: 1;
+            border: none;
+            cursor: pointer;
+            font-size: 8px;
+            font-weight: bold;
+            letter-spacing: 0.4px;
+            padding: 0 7px;
+            color: #64748b;
+            background: transparent;
+            transition: background 0.12s, color 0.12s;
+            white-space: nowrap;
+        }
+        .ob-type-btn:hover { background: #1e293b; color: #94a3b8; }
+        .ob-type-btn.active { background: #334155; color: #f1f5f9; }
 
         /* ── Quantity calculator popup ── */
         #qtyPopup {
@@ -210,6 +232,11 @@
 
 <!-- Buy / Sell order bar -->
 <div id="orderBar">
+    <div class="ob-type-group" id="typeGroupLeft">
+        <button class="ob-type-btn active" data-type="L"  onclick="setOrderType('L')">L</button>
+        <button class="ob-type-btn"        data-type="M"  onclick="setOrderType('M')">M</button>
+        <button class="ob-type-btn"        data-type="SL" onclick="setOrderType('SL')">SL</button>
+    </div>
     <button class="ob-btn ob-buy" id="btnBuy" onclick="placeOrder('BUY')">
         <span class="ob-label">BUY</span>
         <span class="ob-price" id="buyPrice">—</span>
@@ -225,6 +252,11 @@
         <span class="ob-price" id="sellPrice">—</span>
         <span class="ob-qty"   id="sellQty">65</span>
     </button>
+    <div class="ob-type-group" id="typeGroupRight">
+        <button class="ob-type-btn active" data-type="L"  onclick="setOrderType('L')">L</button>
+        <button class="ob-type-btn"        data-type="M"  onclick="setOrderType('M')">M</button>
+        <button class="ob-type-btn"        data-type="SL" onclick="setOrderType('SL')">SL</button>
+    </div>
 </div>
 
 <!-- Quantity calculator popup -->
@@ -910,9 +942,17 @@ chartDiv.addEventListener('dblclick', async (e) => {
 ====================== */
 const LOT_SIZES = { NIFTY: 65, SENSEX: 20, BANKNIFTY: 30 };
 
-let currentLTP  = null;
-let orderLots   = 1;
+let currentLTP   = null;
+let orderLots    = 1;
 let orderLotSize = 65;   // updated on symbol change
+let orderType    = 'L';  // 'L' | 'M' | 'SL'
+
+function setOrderType(type) {
+    orderType = type;
+    document.querySelectorAll('.ob-type-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.type === type);
+    });
+}
 
 function getLotSize(symbol) {
     if (!symbol) return 65;
@@ -1045,14 +1085,14 @@ async function placeOrder(side) {
 
     const price = parseFloat(currentLTP.toFixed(2));
     const qty   = orderLots * orderLotSize;
-    const label = `${side} ${qty} ${activeSymbol} @ ${price}`;
+    const label = `${side} ${qty} ${activeSymbol} @ ${price} [${orderType}]`;
 
     toast(`⏳ Placing ${label}…`, 'info', 2000);
 
     const res  = await fetch('/api/place-limit-order', {
         method:  'POST',
         headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ symbol: activeSymbol, price, side, qty, exchange: 'NFO' }),
+        body:    JSON.stringify({ symbol: activeSymbol, price, side, qty, exchange: 'NFO', order_type: orderType }),
     });
     toastOrder(await res.json(), label);
 }
