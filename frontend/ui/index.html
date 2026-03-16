@@ -214,6 +214,69 @@
         #slConfigClose { margin-top: 4px; width: 100%; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 0; cursor: pointer; font-size: 10px; }
         #slConfigClose:hover { background: #1e293b; }
 
+        /* ── Layout picker ── */
+        #layoutBtn {
+            background: none;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 2px 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #555;
+            height: 22px;
+        }
+        #layoutBtn:hover { background: #e4e4e4; }
+        #layoutBtn svg { display: block; }
+
+        #layoutPopup {
+            display: none;
+            position: fixed;
+            z-index: 400;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 7px;
+            padding: 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+            font-family: Arial, sans-serif;
+        }
+        #layoutPopup .lp-title {
+            font-size: 9px;
+            color: #64748b;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .lp-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .lp-row {
+            display: flex;
+            gap: 5px;
+        }
+        .lp-option {
+            width: 36px;
+            height: 26px;
+            border: 1px solid #475569;
+            border-radius: 3px;
+            background: #0f172a;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 3px;
+            box-sizing: border-box;
+            transition: border-color 0.12s, background 0.12s;
+        }
+        .lp-option:hover   { border-color: #94a3b8; background: #1e293b; }
+        .lp-option.active  { border-color: #3b82f6; background: #1e3a5f; }
+        .lp-option svg rect { fill: #475569; }
+        .lp-option:hover svg rect   { fill: #94a3b8; }
+        .lp-option.active svg rect  { fill: #3b82f6; }
+
         /* ── Toast notifications ── */
         #toastContainer {
             position: fixed;
@@ -250,6 +313,61 @@
     <input list="symbolList" id="symbolSelect" placeholder="Search strike...">
     <datalist id="symbolList"></datalist>
     <span id="slBadge">SL: —</span>
+    <!-- Layout picker button -->
+    <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
+        <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
+            <rect x="8" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
+            <rect x="0" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
+            <rect x="8" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
+        </svg>
+    </button>
+</div>
+
+<!-- Layout picker popup -->
+<div id="layoutPopup">
+    <div class="lp-title">Layout</div>
+    <div class="lp-grid">
+        <!-- Row: 1 panel -->
+        <div class="lp-row">
+            <div class="lp-option active" data-layout="1" title="Single" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="30" height="20" rx="1"/></svg>
+            </div>
+        </div>
+        <!-- Row: 2 panels -->
+        <div class="lp-row">
+            <div class="lp-option" data-layout="2h" title="2 - Side by side" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="14" height="20" rx="1"/><rect x="16" y="0" width="14" height="20" rx="1"/></svg>
+            </div>
+            <div class="lp-option" data-layout="2v" title="2 - Stacked" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="30" height="9" rx="1"/><rect x="0" y="11" width="30" height="9" rx="1"/></svg>
+            </div>
+        </div>
+        <!-- Row: 4 panels (first only) -->
+        <div class="lp-row">
+            <div class="lp-option" data-layout="4" title="4 - 2×2 Grid" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="14" height="9" rx="1"/><rect x="16" y="0" width="14" height="9" rx="1"/><rect x="0" y="11" width="14" height="9" rx="1"/><rect x="16" y="11" width="14" height="9" rx="1"/></svg>
+            </div>
+        </div>
+        <!-- Row: 6 panels (first two) -->
+        <div class="lp-row">
+            <div class="lp-option" data-layout="6a" title="6 - 2 rows × 3 cols" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="8" height="9" rx="1"/><rect x="11" y="0" width="8" height="9" rx="1"/><rect x="22" y="0" width="8" height="9" rx="1"/><rect x="0" y="11" width="8" height="9" rx="1"/><rect x="11" y="11" width="8" height="9" rx="1"/><rect x="22" y="11" width="8" height="9" rx="1"/></svg>
+            </div>
+            <div class="lp-option" data-layout="6b" title="6 - 3 rows × 2 cols" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="14" height="5" rx="1"/><rect x="16" y="0" width="14" height="5" rx="1"/><rect x="0" y="7" width="14" height="5" rx="1"/><rect x="16" y="7" width="14" height="5" rx="1"/><rect x="0" y="14" width="14" height="6" rx="1"/><rect x="16" y="14" width="14" height="6" rx="1"/></svg>
+            </div>
+        </div>
+        <!-- Row: 8 panels (first two) -->
+        <div class="lp-row">
+            <div class="lp-option" data-layout="8a" title="8 - 2 rows × 4 cols" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="6" height="9" rx="1"/><rect x="8" y="0" width="6" height="9" rx="1"/><rect x="16" y="0" width="6" height="9" rx="1"/><rect x="24" y="0" width="6" height="9" rx="1"/><rect x="0" y="11" width="6" height="9" rx="1"/><rect x="8" y="11" width="6" height="9" rx="1"/><rect x="16" y="11" width="6" height="9" rx="1"/><rect x="24" y="11" width="6" height="9" rx="1"/></svg>
+            </div>
+            <div class="lp-option" data-layout="8b" title="8 - 4 rows × 2 cols" onclick="selectLayout(this)">
+                <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="14" height="3" rx="1"/><rect x="16" y="0" width="14" height="3" rx="1"/><rect x="0" y="5" width="14" height="3" rx="1"/><rect x="16" y="5" width="14" height="3" rx="1"/><rect x="0" y="10" width="14" height="3" rx="1"/><rect x="16" y="10" width="14" height="3" rx="1"/><rect x="0" y="15" width="14" height="5" rx="1"/><rect x="16" y="15" width="14" height="5" rx="1"/></svg>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div style="position:relative;">
@@ -1085,6 +1203,37 @@ function resetOrderBar(symbol) {
     updateOrderBar(null);
 }
 
+
+// ── Layout picker ──
+let activeLayout = '1';
+
+function toggleLayoutPopup(e) {
+    if (e) e.stopPropagation();
+    const p = document.getElementById('layoutPopup');
+    if (p.style.display === 'block') { p.style.display = 'none'; return; }
+    const btn  = document.getElementById('layoutBtn');
+    const rect = btn.getBoundingClientRect();
+    p.style.left = rect.left + 'px';
+    p.style.top  = (rect.bottom + 4) + 'px';
+    p.style.display = 'block';
+}
+
+function selectLayout(el) {
+    document.querySelectorAll('.lp-option').forEach(o => o.classList.remove('active'));
+    el.classList.add('active');
+    activeLayout = el.dataset.layout;
+    document.getElementById('layoutPopup').style.display = 'none';
+    // Layout implementation will go here
+    console.log('Layout selected:', activeLayout);
+}
+
+document.addEventListener('click', (e) => {
+    const p   = document.getElementById('layoutPopup');
+    const btn = document.getElementById('layoutBtn');
+    if (p && p.style.display === 'block' && !p.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+        p.style.display = 'none';
+    }
+});
 
 function toggleQtyPopup(e) {
     if (e) e.stopPropagation();
