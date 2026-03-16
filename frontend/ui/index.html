@@ -319,7 +319,14 @@
             background: #000;
             overflow: hidden;
         }
-        .chart-panel.active { outline: 4px solid #60a5fa; outline-offset: -4px; }
+        .chart-panel.active::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border: 3px solid #60a5fa;
+            pointer-events: none;
+            z-index: 9999;
+        }
         .panel-label {
             position: absolute;
             top: 10px;
