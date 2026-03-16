@@ -31,12 +31,12 @@ def should_subscribe(index_name, expiry_str):
 
     logger.info(f"{index_name} expiry in {days_left} days")
 
-    # NIFTY always subscribe
-    if index_name == "NIFTY":
+    # NIFTY and SENSEX always subscribe
+    if index_name in ["NIFTY", "SENSEX"]:
         return True
 
-    # SENSEX & BANKNIFTY only in last 2 days
-    if index_name in ["SENSEX", "BANKNIFTY"]:
+    # BANKNIFTY only in last 2 days
+    if index_name == "BANKNIFTY":
         return 0 <= days_left <= 1
 
     return True

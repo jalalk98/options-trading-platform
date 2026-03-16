@@ -1133,15 +1133,80 @@ async function refreshAllPanels() {
     btn.classList.remove('spinning');
 }
 
-document.getElementById('autoPopulateSelect').addEventListener('change', function() {
+document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
     const value = this.value;
     if (!value) return;
-    autoPopulatePanels(value);
     this.value = '';
+    try {
+        await autoPopulatePanels(value);
+    } catch (e) {
+        toast('Auto populate failed: ' + e.message, 'warn');
+    }
 });
 
 async function autoPopulatePanels(mode) {
-    // Logic to be implemented
+    const total = panels.length;
+    if (!total) return;
+
+    // Split panels: top half = group1, bottom half = group2
+    const g1Size = Math.ceil(total / 2);
+    const g2Size = total - g1Size;
+
+    // Determine index + option type for each group
+    let g1Index, g1Type, g2Index, g2Type;
+    if      (mode === 'nifty-sensex-ce') { g1Index='NIFTY';  g1Type='CE'; g2Index='SENSEX'; g2Type='CE'; }
+    else if (mode === 'nifty-sensex-pe') { g1Index='NIFTY';  g1Type='PE'; g2Index='SENSEX'; g2Type='PE'; }
+    else if (mode === 'nifty-ce-pe')     { g1Index='NIFTY';  g1Type='CE'; g2Index='NIFTY';  g2Type='PE'; }
+    else if (mode === 'sensex-ce-pe')    { g1Index='SENSEX'; g1Type='CE'; g2Index='SENSEX'; g2Type='PE'; }
+    else return;
+
+    const STEP = { NIFTY: 50, SENSEX: 100 };
+
+    // Fetch live index prices and compute ATM as floor(ltp/step)*step
+    const ltpData = await fetch('/api/index-ltp').then(r => r.json());
+    const atmMap = {};
+    for (const idx of ['NIFTY', 'SENSEX']) {
+        const ltp = ltpData[idx];
+        atmMap[idx] = ltp ? Math.floor(ltp / STEP[idx]) * STEP[idx] : null;
+    }
+
+    function getStrikes(index, type, n) {
+        const atm = atmMap[index];
+        if (!atm) return new Array(n).fill(null); // blank if Sensex not in DB
+        const s = STEP[index];
+        if (type === 'CE')
+            // [ATM-(n-2)*s, ..., ATM, ATM+s] — ends with 1 OTM (ATM+step)
+            return Array.from({ length: n }, (_, i) => atm + (i - (n - 2)) * s);
+        else
+            // [ATM+(n-1)*s, ..., ATM+s, ATM] — descending, ends with ATM (OTM for PE)
+            return Array.from({ length: n }, (_, i) => atm + (n - 1 - i) * s);
+    }
+
+    // Find symbol in strikeMap by strike + type (nearest expiry comes first)
+    function findSymbol(strike, type) {
+        if (!strike) return null;
+        const suffix = `| ${strike} ${type}`;
+        for (const [display, sym] of Object.entries(strikeMap)) {
+            if (display.endsWith(suffix)) return sym;
+        }
+        return null;
+    }
+
+    const g1Strikes = getStrikes(g1Index, g1Type, g1Size);
+    const g2Strikes = getStrikes(g2Index, g2Type, g2Size);
+
+    const loads = [];
+    g1Strikes.forEach((strike, i) => {
+        const sym = findSymbol(strike, g1Type);
+        if (sym) loads.push(panels[i].loadSymbol(sym));
+    });
+    g2Strikes.forEach((strike, i) => {
+        const sym = findSymbol(strike, g2Type);
+        if (sym) loads.push(panels[g1Size + i].loadSymbol(sym));
+        // if sym is null (Sensex not tracked), panel stays as-is
+    });
+
+    await Promise.all(loads);
 }
 
 /* ======================

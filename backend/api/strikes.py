@@ -4,16 +4,23 @@ import time
 from datetime import timezone, timedelta
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
+from kiteconnect import KiteConnect
 from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
+
+_kite = KiteConnect(api_key=KITE_API_KEY)
+_kite.set_access_token(KITE_ACCESS_TOKEN)
 
 router = APIRouter()
 
 _strikes_cache = {"data": None, "ts": 0}
 STRIKES_CACHE_TTL = 300  # seconds — strikes don't change during the trading day
 
-_atm_cache = {"data": None, "ts": 0}
+_atm_cache = {}          # keyed by index, e.g. "NIFTY" / "SENSEX"
 ATM_CACHE_TTL = 300      # 5 minutes
+
+_ltp_cache = {"data": None, "ts": 0}
+LTP_CACHE_TTL = 10       # 10 seconds — keep near real-time
 
 
 async def _query_strikes(pool):
@@ -39,12 +46,11 @@ async def prewarm_strikes_cache(pool):
         _strikes_cache["data"] = result
         _strikes_cache["ts"] = time.monotonic()
 
-        # Prewarm ATM cache
-        atm_row = await _query_atm_symbol(conn)
+        # Prewarm ATM cache for NIFTY
+        atm_row = await _query_atm_symbol(conn, "NIFTY")
         if atm_row:
             atm_result = {"symbol": atm_row["symbol"], "strike": float(atm_row["strike"])}
-            _atm_cache["data"] = atm_result
-            _atm_cache["ts"] = time.monotonic()
+            _atm_cache["NIFTY"] = {"data": atm_result, "ts": time.monotonic()}
             atm_symbol = atm_row["symbol"]
         else:
             atm_symbol = result[0]["symbol"] if result else None
@@ -68,23 +74,28 @@ async def get_strikes(request: Request):
     return result
 
 
-async def _query_atm_symbol(conn):
+async def _query_atm_symbol(conn, index: str = "NIFTY"):
     """
     Returns the ATM CE symbol for the nearest expiry.
     ATM = strike where |CE_price - PE_price| is minimum (put-call parity).
     Uses tracked_symbols for the expiry/strike list (fast),
     then fetches the latest price per symbol via the covering index.
     """
-    # Step 1: get symbols for nearest NIFTY expiry from tracked_symbols (fast)
-    symbols = await conn.fetch("""
+    if index == "SENSEX":
+        sym_filter = "symbol LIKE 'SENSEX%'"
+    else:
+        sym_filter = "symbol NOT LIKE 'SENSEX%' AND symbol NOT LIKE 'BANKNIFTY%'"
+
+    # Step 1: get symbols for nearest expiry from tracked_symbols (fast)
+    symbols = await conn.fetch(f"""
         SELECT symbol, strike, option_type
         FROM tracked_symbols
         WHERE expiry_date = (
             SELECT MIN(expiry_date) FROM tracked_symbols
             WHERE expiry_date >= CURRENT_DATE
-              AND symbol NOT LIKE 'SENSEX%'
+              AND {sym_filter}
         )
-        AND symbol NOT LIKE 'SENSEX%'
+        AND {sym_filter}
     """)
 
     if not symbols:
@@ -129,19 +140,39 @@ async def _query_atm_symbol(conn):
 
 
 @router.get("/atm-symbol")
-async def get_atm_symbol(request: Request):
+async def get_atm_symbol(request: Request, index: str = "NIFTY"):
+    index = index.upper()
     now = time.monotonic()
-    if _atm_cache["data"] is not None and (now - _atm_cache["ts"]) < ATM_CACHE_TTL:
-        return _atm_cache["data"]
+    cached = _atm_cache.get(index)
+    if cached and (now - cached["ts"]) < ATM_CACHE_TTL:
+        return cached["data"]
     try:
         async with request.app.state.pool.acquire() as conn:
-            row = await _query_atm_symbol(conn)
-        result = {"symbol": row["symbol"], "strike": float(row["strike"])} if row else {"symbol": None}
-        _atm_cache["data"] = result
-        _atm_cache["ts"] = now
+            row = await _query_atm_symbol(conn, index)
+        result = {"symbol": row["symbol"], "strike": float(row["strike"])} if row else {"symbol": None, "strike": None}
+        _atm_cache[index] = {"data": result, "ts": now}
         return result
     except Exception:
-        return {"symbol": None}
+        return {"symbol": None, "strike": None}
+
+
+@router.get("/index-ltp")
+async def get_index_ltp():
+    """Returns live LTP for NIFTY and SENSEX indices from Kite API."""
+    now = time.monotonic()
+    if _ltp_cache["data"] and (now - _ltp_cache["ts"]) < LTP_CACHE_TTL:
+        return _ltp_cache["data"]
+    try:
+        data = _kite.ltp(["NSE:NIFTY 50", "BSE:SENSEX"])
+        result = {
+            "NIFTY":  data.get("NSE:NIFTY 50",  {}).get("last_price"),
+            "SENSEX": data.get("BSE:SENSEX",     {}).get("last_price"),
+        }
+        _ltp_cache["data"] = result
+        _ltp_cache["ts"] = now
+        return result
+    except Exception:
+        return {"NIFTY": None, "SENSEX": None}
 
 
 @router.get("/resolve-symbol")
