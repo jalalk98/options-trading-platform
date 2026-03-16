@@ -548,8 +548,8 @@ async function loadSymbol(symbol) {
         chart.priceScale('right').applyOptions({ autoScale: true });
     }, 50);
 
-    // Load SL state and start polling for this symbol
-    await loadSLState(symbol);
+    // Load SL state async (don't block WebSocket connection)
+    loadSLState(symbol);
     startSLPoll(symbol);
 
     // 🔹 Connect WebSocket AFTER history loads

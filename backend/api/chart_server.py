@@ -46,7 +46,7 @@ async def startup():
     app.state.pool = await create_pool()
 
     asyncio.create_task(redis_streamer())
-    asyncio.create_task(prewarm_strikes_cache(app.state.pool))
+    await prewarm_strikes_cache(app.state.pool)  # blocking — cache must be warm before serving requests
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):

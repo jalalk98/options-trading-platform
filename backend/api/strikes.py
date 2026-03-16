@@ -10,7 +10,7 @@ from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 router = APIRouter()
 
 _strikes_cache = {"data": None, "ts": 0}
-STRIKES_CACHE_TTL = 60   # seconds
+STRIKES_CACHE_TTL = 300  # seconds — strikes don't change during the trading day
 
 _atm_cache = {"data": None, "ts": 0}
 ATM_CACHE_TTL = 300      # 5 minutes
@@ -90,16 +90,19 @@ async def _query_atm_symbol(conn):
     if not symbols:
         return None
 
-    # Step 2: get latest price for each symbol using the covering index (fast)
-    prices = {}
-    for s in symbols:
-        row = await conn.fetchrow("""
-            SELECT curr_price FROM gap_ticks
-            WHERE symbol = $1
-            ORDER BY timestamp DESC LIMIT 1
-        """, s["symbol"])
-        if row:
-            prices[s["symbol"]] = {"strike": s["strike"], "option_type": s["option_type"], "price": row["curr_price"]}
+    # Step 2: get latest price for all symbols in one batch query
+    symbol_list = [s["symbol"] for s in symbols]
+    symbol_meta = {s["symbol"]: {"strike": s["strike"], "option_type": s["option_type"]} for s in symbols}
+    price_rows = await conn.fetch("""
+        SELECT DISTINCT ON (symbol) symbol, curr_price
+        FROM gap_ticks
+        WHERE symbol = ANY($1)
+        ORDER BY symbol, timestamp DESC
+    """, symbol_list)
+    prices = {
+        r["symbol"]: {**symbol_meta[r["symbol"]], "price": r["curr_price"]}
+        for r in price_rows if r["symbol"] in symbol_meta
+    }
 
     # Step 3: find strike where |CE_price - PE_price| is minimum
     strikes = {}
