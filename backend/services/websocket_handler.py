@@ -62,7 +62,7 @@ def setup_websocket_events():
     """
     global kws
 
-    _feed_dropped = {"sent": False}  # track whether drop alert was already sent
+    _feed_dropped = {"sent": False, "at": None}  # track whether drop alert was already sent
 
     # tick_count = 0
     async def on_ticks(ws, ticks):
@@ -280,10 +280,17 @@ def setup_websocket_events():
             await main_ticker.set_mode("full", tokens)
             kws.first_connect = False
         else:
+            import time
             attempts = kws.reconnect_attempts
-            logging.info(f"Reconnection successful after {attempts} attempt(s).")
-            _feed_dropped["sent"] = False  # reset for next disconnect
-            _send_telegram(f"🟢 WebSocket feed restored after {attempts} attempt(s). Feed is live.")
+            down_for = ""
+            if _feed_dropped["at"]:
+                elapsed = int(time.time() - _feed_dropped["at"])
+                mins, secs = divmod(elapsed, 60)
+                down_for = f" (down for {mins}m {secs}s)" if mins else f" (down for {secs}s)"
+            logging.info(f"Reconnection successful after {attempts} attempt(s){down_for}.")
+            _feed_dropped["sent"] = False
+            _feed_dropped["at"] = None
+            _send_telegram(f"🟢 WebSocket feed restored after {attempts} attempt(s){down_for}. Feed is live.")
     
     async def on_close(ws, code, reason):
         global websocket_running
@@ -293,7 +300,9 @@ def setup_websocket_events():
         logger.warning(f"WebSocket closed: {code} - {reason}")
         websocket_running["running"] = False
         if not _feed_dropped["sent"]:
+            import time
             _feed_dropped["sent"] = True
+            _feed_dropped["at"] = time.time()
             _send_telegram(f"🟡 WebSocket feed dropped (code={code}). Reconnecting automatically...")
         if code is None:
             code = 1000
