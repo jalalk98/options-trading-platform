@@ -327,33 +327,43 @@
             pointer-events: none;
             z-index: 9999;
         }
-        .panel-label {
-            position: absolute;
-            top: 10px;
-            right: 70px;
-            z-index: 10;
-            pointer-events: none;
-            font-size: 13px;
-            font-weight: bold;
-            opacity: 0.55;
-            font-family: Arial, sans-serif;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            user-select: none;
-        }
         .panel-chart-area {
             flex: 1;
             position: relative;
             overflow: hidden;
         }
-        .panel-refresh-btn {
+        /* container for label + refresh, sits top-right before the price axis */
+        .panel-top-bar {
             position: absolute;
             top: 8px;
-            right: 8px;
+            right: 72px;
             z-index: 10;
-            width: 22px;
-            height: 22px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            pointer-events: none;
+            user-select: none;
+        }
+        .panel-label {
+            font-size: 11px;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            color: #fff;
+            padding: 2px 7px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+        .panel-label.ce-label { background: rgba(22,163,74,0.80); }
+        .panel-label.pe-label { background: rgba(220,38,38,0.80); }
+        .panel-label.no-label { background: rgba(51,65,85,0.70); }
+        .panel-label .pl-dim  { opacity: 0.75; }
+        .panel-refresh-btn {
+            pointer-events: all;
+            width: 20px;
+            height: 20px;
             border-radius: 50%;
             border: none;
             background: rgba(30,41,59,0.75);
@@ -363,8 +373,9 @@
             align-items: center;
             justify-content: center;
             padding: 0;
-            opacity: 0.6;
+            opacity: 0.7;
             transition: opacity 0.15s, background 0.15s;
+            flex-shrink: 0;
         }
         .panel-refresh-btn:hover { opacity: 1; background: rgba(51,65,85,0.95); color: #e2e8f0; }
         .panel-refresh-btn.spinning svg { animation: spin 0.6s linear; }
@@ -560,15 +571,20 @@ function createPanel(id) {
     const chartAreaEl = document.createElement('div');
     chartAreaEl.className = 'panel-chart-area';
 
+    const topBarEl = document.createElement('div');
+    topBarEl.className = 'panel-top-bar';
+
     const labelEl = document.createElement('div');
-    labelEl.className = 'panel-label';
-    chartAreaEl.appendChild(labelEl);
+    labelEl.className = 'panel-label no-label';
 
     const refreshBtn = document.createElement('button');
     refreshBtn.className = 'panel-refresh-btn';
     refreshBtn.title = 'Refresh chart';
-    refreshBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
-    chartAreaEl.appendChild(refreshBtn);
+    refreshBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
+
+    topBarEl.appendChild(labelEl);
+    topBarEl.appendChild(refreshBtn);
+    chartAreaEl.appendChild(topBarEl);
 
     panelEl.appendChild(chartAreaEl);
     document.getElementById('chartGrid').appendChild(panelEl);
@@ -626,15 +642,15 @@ function createPanel(id) {
     function getBucketTime(t) { return Math.floor(t / INTERVAL) * INTERVAL; }
 
     function updateChartLabel(sym) {
-        if (!sym) { labelEl.innerHTML = ''; return; }
+        if (!sym) { labelEl.innerHTML = ''; labelEl.className = 'panel-label no-label'; return; }
         const index = sym.startsWith('SENSEX') ? 'SENSEX' : sym.startsWith('BANKNIFTY') ? 'BANKNIFTY' : 'NIFTY';
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym);
         if (!display) { labelEl.innerHTML = ''; return; }
         const part = display.split('|')[1]?.trim() || '';
         const [strike, type] = part.split(' ');
         if (!strike || !type) { labelEl.innerHTML = ''; return; }
-        const tc = type === 'CE' ? 'cl-ce' : 'cl-pe';
-        labelEl.innerHTML = `<span class="cl-index">${index}</span><span class="cl-index">·</span><span class="cl-strike">${strike}</span><span class="cl-index">·</span><span class="${tc}">${type}</span>`;
+        labelEl.className = `panel-label ${type === 'CE' ? 'ce-label' : 'pe-label'}`;
+        labelEl.innerHTML = `<span class="pl-dim">${index} ${strike}</span> ${type}`;
     }
 
     function refreshMarkers() {
