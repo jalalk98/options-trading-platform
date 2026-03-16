@@ -21,7 +21,6 @@
             white-space: nowrap;
         }
         html, body { margin: 0; height: 100%; overflow: hidden; font-family: Arial; }
-        #chart { width: 100vw; }
 
         .topbar {
             padding: 6px 10px;
@@ -304,6 +303,58 @@
         .toast.error   { background: #b91c1c; border-left: 4px solid #f87171; }
         .toast.info    { background: #1d4ed8; border-left: 4px solid #93c5fd; }
         .toast.warn    { background: #92400e; border-left: 4px solid #fbbf24; }
+
+        /* ── Chart grid & panels ── */
+        #chartGrid {
+            display: grid;
+            width: 100vw;
+            gap: 2px;
+            background: #111;
+            overflow: hidden;
+        }
+        .chart-panel {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            background: #000;
+            border: 1px solid transparent;
+            overflow: hidden;
+        }
+        .chart-panel.active { border-color: #3b82f6; }
+        .panel-header {
+            display: flex;
+            align-items: center;
+            padding: 2px 6px;
+            background: #0f172a;
+            min-height: 22px;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .panel-sym-input {
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid #334155;
+            color: #94a3b8;
+            font-size: 10px;
+            font-family: Arial;
+            padding: 1px 2px;
+            width: 130px;
+            outline: none;
+        }
+        .panel-label {
+            font-size: 11px;
+            font-weight: bold;
+            opacity: 0.55;
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .panel-chart-area {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
     </style>
 </head>
 <body>
@@ -370,10 +421,7 @@
     </div>
 </div>
 
-<div style="position:relative;">
-    <div id="chart"></div>
-    <div id="chartLabel"></div>
-</div>
+<div id="chartGrid"></div>
 <button id="goToLive">&#9654; Latest</button>
 <div id="tooltip"></div>
 <div id="toastContainer"></div>
@@ -435,777 +483,432 @@
 
 <script>
 /* ======================
-   CHART SETUP
+   CHART OPTIONS FACTORY
 ====================== */
-function getChartHeight() {
-    return window.innerHeight - document.querySelector('.topbar').offsetHeight;
-}
-
-const chart = LightweightCharts.createChart(
-    document.getElementById('chart'),
-    {
-        width: window.innerWidth,
-        height: getChartHeight(),
+function makeChartOptions(w, h) {
+    return {
+        width: w, height: h,
         timeScale: {
-            timeVisible: true,
-            secondsVisible: true,
-
-            rightOffset: 40,
-
-            // Axis labels (bottom scale)
+            timeVisible: true, secondsVisible: true, rightOffset: 40,
             tickMarkFormatter: (time) => {
                 const date = new Date(time * 1000);
-                return date.toLocaleTimeString('en-IN', {
-                    timeZone: 'Asia/Kolkata',
-                    hour12: false,
+                return date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+            }
+        },
+        rightPriceScale: { autoScale: true, scaleMargins: { top: 0.2, bottom: 0.2 } },
+        localization: {
+            locale: 'en-IN',
+            timeFormatter: (time) => {
+                const date = new Date(time * 1000);
+                return date.toLocaleString('en-IN', {
+                    timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
                 });
             }
         },
-
-        rightPriceScale: {
-            autoScale: true,
-            scaleMargins: {
-                top: 0.2,
-                bottom: 0.2,
-         },
-        },
-
-            // 🔥 Crosshair label formatter
-            localization: {
-                locale: 'en-IN',
-
-                timeFormatter: (time) => {
-                    const date = new Date(time * 1000);
-                    return date.toLocaleString('en-IN', {
-                        timeZone: 'Asia/Kolkata',
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit',
-                        hour12: false,
-                    });
-                }
-            },
-
-        crosshair: {
-            mode: LightweightCharts.CrosshairMode.Normal
-        }
-    }
-);
-
-const tooltip = document.getElementById('tooltip');
-
-chart.subscribeCrosshairMove(param => {
-
-    if (!param.point) return;
-
-    // 🔥 Convert mouse Y position to price
-    const price = candleSeries.coordinateToPrice(param.point.y);
-
-    if (price !== null) {
-        crosshairPrice = price;
-    }
-
-    if (!param.time || !param.point || !gapDetails.has(param.time)) {
-        tooltip.style.display = 'none';
-        return;
-    }
-
-    const g = gapDetails.get(param.time);
-
-    tooltip.innerHTML = `
-        <b>Gap ${g.dir}</b><br/>
-        From: ${g.from}<br/>
-        To: ${g.to}<br/>
-        Jump: ${g.jump}<br/>
-        Range: ${g.rangeLow} → ${g.rangeHigh}<br/>
-        <b>Volume:</b> ${g.volume}
-    `;
-
-    tooltip.style.left = param.point.x + 15 + 'px';
-    tooltip.style.top = param.point.y + 15 + 'px';
-    tooltip.style.display = 'block';
-});
-
-const candleSeries = chart.addBarSeries({
-    upColor: '#22c55e',
-    downColor: '#ef4444',
-    thinBars: true,
-});
-
-/* ======================
-   GLOBALS
-====================== */
-const INTERVAL = 5;
-let currentCandle = null;
-let socket = null;
-let reconnectTimeout = null;
-let activeSymbol = null;
-let gapDetails = new Map();   // time → gap metadata
-let crosshairPrice = null;
-let historyLoaded = false;
-let lastCandleTime = null;
-
-/* ======================
-   BUCKET FUNCTION
-====================== */
-function getBucketTime(epochSeconds) {
-    return Math.floor(epochSeconds / INTERVAL) * INTERVAL;
-}
-
-function updateChartLabel(symbol) {
-    const el = document.getElementById('chartLabel');
-    if (!el) return;
-
-    // Parse index name from symbol prefix
-    let index = 'NIFTY';
-    if (symbol.startsWith('SENSEX'))    index = 'SENSEX';
-    else if (symbol.startsWith('BANKNIFTY')) index = 'BANKNIFTY';
-
-    // Get strike + type from strikeMap display e.g. "2026-03-17 | 24200 CE"
-    const display = Object.keys(strikeMap).find(k => strikeMap[k] === symbol);
-    if (!display) { el.innerHTML = ''; return; }
-
-    const part = display.split('|')[1]?.trim() || '';
-    const [strike, type] = part.split(' ');
-    if (!strike || !type) { el.innerHTML = ''; return; }
-
-    const typeClass = type === 'CE' ? 'cl-ce' : 'cl-pe';
-    el.innerHTML = `
-        <span class="cl-index">${index}</span>
-        <span class="cl-index">·</span>
-        <span class="cl-strike">${strike}</span>
-        <span class="cl-index">·</span>
-        <span class="${typeClass}">${type}</span>
-    `;
-}
-
-async function loadSymbol(symbol) {
-
-    if (!symbol) return;
-
-    historyLoaded = false;
-    activeSymbol = symbol;
-    updateChartLabel(symbol);
-    resetOrderBar(symbol);
-
-    if (socket) {
-        socket._intentionalClose = true;  // suppress auto-reconnect in onclose
-        socket.close();
-        socket = null;
-    }
-
-    if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-    }
-
-    candleSeries.setData([]);
-    currentCandle = null;
-    gapDetails.clear();
-    lastCandleTime = null;
-    stopSLPoll();
-
-    // 🔹 Load history + gaps in parallel
-    const [historyRes, gapsRes] = await Promise.all([
-        fetch(`/api/history/${symbol}`),
-        fetch(`/api/gaps/${symbol}`)
-    ]);
-    const history = await historyRes.json();
-    const gapsRaw = await gapsRes.json();
-
-    const candles = history.map(c => ({
-        time:  c.time - 19800,   // convert IST epoch → UTC epoch for chart
-        open:  c.open,
-        high:  c.high,
-        low:   c.low,
-        close: c.close
-    }));
-
-    lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
-
-    // 🔹 Build gapDetails from historical gap rows
-    gapsRaw.forEach(g => {
-        const bucketTime = g.time - 19800;
-        const dir = g.direction === 'UP' ? 'D' : 'U';
-        gapDetails.set(bucketTime, {
-            dir,
-            from:      g.prev_price,
-            to:        g.curr_price,
-            jump:      Math.abs(g.curr_price - g.prev_price).toFixed(2),
-            rangeLow:  Math.min(g.prev_price, g.curr_price),
-            rangeHigh: Math.max(g.prev_price, g.curr_price),
-            volume:    g.vol_change || 0,
-            isFilled:  false
-        });
-    });
-
-    // 🔹 Detect which historical gaps were already filled by later candles
-    candles.forEach(candle => {
-        gapDetails.forEach((gap, gapTime) => {
-            if (!gap.isFilled && candle.time > gapTime) {
-                if ((gap.dir === 'D' && candle.low  <= gap.from) ||
-                    (gap.dir === 'U' && candle.high >= gap.from)) {
-                    gap.isFilled = true;
-                }
-            }
-        });
-    });
-
-    candleSeries.setData(candles);
-    refreshMarkers();
-    chart.timeScale().fitContent();
-
-    if (candles.length > 0) {
-        currentCandle = { ...candles[candles.length - 1] };
-        lastCandleTime = currentCandle.time;
-    }
-
-    historyLoaded = true;
-
-    setTimeout(() => {
-        chart.priceScale('right').applyOptions({ autoScale: true });
-    }, 50);
-
-    // Load SL state async (don't block WebSocket connection)
-    loadSLState(symbol);
-    startSLPoll(symbol);
-
-    // 🔹 Connect WebSocket AFTER history loads
-    connectWebSocket(symbol);
-}
-
-
-
-function refreshMarkers() {
-
-    candleSeries.setMarkers(
-        Array.from(gapDetails.entries()).map(([time, info]) => ({
-
-            time,
-            position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
-
-            color: info.isFilled
-                ? (info.dir === 'D'
-                    ? 'rgba(0,128,0,0.3)'
-                    : 'rgba(255,0,0,0.3)')
-                : (info.dir === 'D'
-                    ? 'green'
-                    : 'red'),
-
-            shape: 'text',
-            text: info.dir
-        }))
-    );
-}
-
-function checkGapFill(currentCandle) {
-
-    let updated = false;
-
-    gapDetails.forEach((gap, time) => {
-
-        if (!gap.isFilled) {
-
-            // U gap → price must return to FROM or below
-            if (
-                (gap.dir === 'D' && currentCandle.low <= gap.from) ||
-
-                // D gap → price must return to FROM or above
-                (gap.dir === 'U' && currentCandle.high >= gap.from)
-            ) {
-                gap.isFilled = true;
-                updated = true;
-            }
-        }
-    });
-
-    if (updated) {
-        refreshMarkers();
-    }
-}
-
-/* ======================
-   CONNECT WS
-====================== */
-function connectWebSocket(symbol) {
-
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${symbol}`);
-
-    socket.onopen = () => {
-        console.log("Connected:", symbol);
-    };
-
-    socket.onmessage = function(event) {
-        
-        
-        if (!historyLoaded) return;
-        //console.log("WS TICK:", event.data);
-        if (!activeSymbol) return;
-
-        const tick = JSON.parse(event.data);
-        if (tick.type === 'ping') return;  // heartbeat — ignore
-
-        // Ignore ticks for previous symbol
-        if (tick.symbol && tick.symbol !== activeSymbol) {
-            return;
-        }
-
-        const bucketTime = getBucketTime(Math.floor(Number(tick.time)));
-        const price = tick.value;
-
-        // 🔴 Prevent backward time updates
-        if (lastCandleTime !== null && bucketTime < lastCandleTime) {
-            console.log("Ignoring old tick:", bucketTime, " < ", lastCandleTime);
-            return;
-        }
-        
-        if (tick.is_gap) {
-
-            const dir = tick.direction === "UP" ? "D" : "U";
-            const prevPrice = tick.prev_price;
-
-            gapDetails.set(bucketTime, {
-                dir,
-                from: prevPrice,
-                to: price,
-                jump: Math.abs(price - prevPrice).toFixed(2),
-                rangeLow: Math.min(prevPrice, price),
-                rangeHigh: Math.max(prevPrice, price),
-                volume: tick.vol_change || 0,
-                isFilled: false
-            });
-
-            candleSeries.setMarkers(
-                Array.from(gapDetails.entries()).map(([time, info]) => ({
-                    time,
-                    position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
-                    color: info.dir === 'D' ? 'green' : 'red',
-                    shape: 'text',
-                    text: info.dir
-                }))
-            );
-        }
-
-        // NEW candle if tick is in a new time bucket
-        if (!currentCandle || bucketTime > currentCandle.time) {
-
-            currentCandle = {
-                time: bucketTime,
-                open: price,
-                high: price,
-                low: price,
-                close: price
-            };
-
-        }
-
-        // Update existing candle
-        else if (bucketTime === currentCandle.time) {
-
-            currentCandle.high = Math.max(currentCandle.high, price);
-            currentCandle.low = Math.min(currentCandle.low, price);
-            currentCandle.close = price;
-
-        }
-
-        // Ignore old ticks
-        else {
-            console.log("Ignoring delayed tick:", bucketTime);
-            return;
-        }
-
-        updateOrderBar(price);
-
-        if (
-            currentCandle &&
-            !isNaN(currentCandle.open) &&
-            !isNaN(currentCandle.high) &&
-            !isNaN(currentCandle.low) &&
-            !isNaN(currentCandle.close)
-        ) {
-            candleSeries.update(currentCandle);
-        }
-
-        checkGapFill(currentCandle);
-        // chart.timeScale().scrollToRealTime();
-    };
-
-    socket.onclose = (event) => {
-        if (event.target._intentionalClose) return;  // symbol switch — don't reconnect
-        if (!activeSymbol) return;
-        console.log("Socket closed. Reconnecting in 3s...");
-        reconnectTimeout = setTimeout(() => {
-            connectWebSocket(activeSymbol);
-        }, 3000);
-    };
-
-    socket.onerror = (err) => {
-        console.error("Socket error", err);
-        socket.close();
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
     };
 }
 
 /* ======================
-   ENTER KEY SUPPORT
+   CONSTANTS & GLOBALS
 ====================== */
-document.getElementById("symbolSelect")
-.addEventListener("change", async function() {
-
-    const displayValue = this.value;
-
-    if (strikeMap[displayValue]) {
-        loadSymbol(strikeMap[displayValue]);
-        return;
-    }
-
-    // If manually typed, resolve from backend
-    const response = await fetch(`/api/resolve-symbol?display=${displayValue}`);
-    const data = await response.json();
-
-    if (data.symbol) {
-        loadSymbol(data.symbol);
-    } else {
-        alert("Strike not found in DB");
-    }
-});
-
-
-
-let strikeMap = {};  // display → symbol mapping
-
-async function loadStrikes() {
-    const [strikesRes, atmRes] = await Promise.all([
-        fetch("/api/strikes"),
-        fetch("/api/atm-symbol")
-    ]);
-    const strikes = await strikesRes.json();
-    const atm     = await atmRes.json();
-
-    const dataList = document.getElementById("symbolList");
-    dataList.innerHTML = "";
-    strikeMap = {};
-
-    strikes.forEach(item => {
-        const option = document.createElement("option");
-        option.value = item.display;
-        dataList.appendChild(option);
-        strikeMap[item.display] = item.symbol;
-    });
-
-    if (strikes.length > 0) {
-        const atmEntry = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
-        const defaultEntry = atmEntry || strikes[0];
-        document.getElementById("symbolSelect").value = defaultEntry.display;
-        loadSymbol(defaultEntry.symbol);
-    }
-}
-
-
-loadStrikes();
-
-
-/* ======================
-   RESPONSIVE
-====================== */
-window.addEventListener('resize', () => {
-    chart.applyOptions({ width: window.innerWidth, height: getChartHeight() });
-});
-
-/* ======================
-   GO TO LATEST BUTTON
-====================== */
-const goToLiveBtn = document.getElementById('goToLive');
-
-chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-    if (!range || !lastCandleTime) { goToLiveBtn.style.display = 'none'; return; }
-    goToLiveBtn.style.display = lastCandleTime > range.to ? 'flex' : 'none';
-});
-
-goToLiveBtn.addEventListener('click', () => {
-    chart.timeScale().scrollToRealTime();
-});
-
-
-/* ======================
-   SL LINE
-====================== */
-// Colors per state
-const SL_COLOR = {
-    pending: '#FFD700',   // gold   — set, not yet placed
-    placed:  '#FF8C00',   // orange — order active on Kite
-    hit:     '#808080',   // gray   — order executed
+const INTERVAL  = 5;
+const LOT_SIZES = { NIFTY: 65, SENSEX: 20, BANKNIFTY: 30 };
+const SL_COLOR  = { pending: '#FFD700', placed: '#FF8C00', hit: '#808080' };
+const LAYOUT_CONFIGS = {
+    '1':  { cols: 1, rows: 1 }, '2h': { cols: 2, rows: 1 }, '2v': { cols: 1, rows: 2 },
+    '4':  { cols: 2, rows: 2 }, '6a': { cols: 3, rows: 2 }, '6b': { cols: 2, rows: 3 },
+    '8a': { cols: 4, rows: 2 }, '8b': { cols: 2, rows: 4 },
 };
 
-let slPriceLine  = null;   // LightweightCharts price line
-let slPrice      = null;   // current SL price
-let slLineState  = 'none'; // 'none' | 'pending' | 'placed' | 'hit'
-let slOrderId    = null;
-let slDragging   = false;
-let slPollTimer  = null;
+let strikeMap   = {};
+let panels      = [];
+let activePanel = null;
+let activeLayout = '1';
 
-function updateSLLine(price, state) {
-    if (slPriceLine) {
-        candleSeries.removePriceLine(slPriceLine);
-        slPriceLine = null;
-    }
-    if (price == null || state === 'none') {
-        slPrice     = null;
-        slLineState = 'none';
-        updateSLBadge();
-        return;
-    }
-    slPrice     = price;
-    slLineState = state;
-    const color = SL_COLOR[state] || SL_COLOR.pending;
-    slPriceLine = candleSeries.createPriceLine({
-        price:             price,
-        color:             color,
-        lineWidth:         2,
-        lineStyle:         2,   // dashed
-        axisLabelVisible:  true,
-        title:             `SL ${price}`,
+// Order bar state (shared, reflects active panel)
+let currentLTP   = null;
+let orderLots    = 1;
+let orderLotSize = 65;
+let orderType    = 'L';
+let slBuffer     = 0.20;
+let slDistance   = 5;
+
+/* ======================
+   PANEL FACTORY
+====================== */
+function createPanel(id) {
+    // ── DOM ───────────────────────────────────────
+    const panelEl = document.createElement('div');
+    panelEl.className = 'chart-panel';
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'panel-header';
+
+    const symInput = document.createElement('input');
+    symInput.className = 'panel-sym-input';
+    symInput.setAttribute('list', 'symbolList');
+    symInput.placeholder = 'Search strike…';
+
+    const labelEl = document.createElement('div');
+    labelEl.className = 'panel-label';
+
+    headerEl.appendChild(symInput);
+    headerEl.appendChild(labelEl);
+
+    const chartAreaEl = document.createElement('div');
+    chartAreaEl.className = 'panel-chart-area';
+
+    panelEl.appendChild(headerEl);
+    panelEl.appendChild(chartAreaEl);
+    document.getElementById('chartGrid').appendChild(panelEl);
+
+    // ── Chart ─────────────────────────────────────
+    const chart = LightweightCharts.createChart(chartAreaEl, makeChartOptions(400, 300));
+    const candleSeries = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444', thinBars: true });
+
+    // ── Per-panel state ───────────────────────────
+    let symbol         = null;
+    let socket         = null;
+    let reconnectTimeout = null;
+    let currentCandle  = null;
+    let gapDetails     = new Map();
+    let historyLoaded  = false;
+    let lastCandleTime = null;
+    let crosshairPrice = null;
+    let slPriceLine    = null;
+    let slPrice        = null;
+    let slLineState    = 'none';
+    let slOrderId      = null;
+    let slDragging     = false;
+    let slPollTimer    = null;
+
+    // ── Chart crosshair ───────────────────────────
+    chart.subscribeCrosshairMove(param => {
+        if (panel !== activePanel) return;
+        if (!param.point) return;
+        const price = candleSeries.coordinateToPrice(param.point.y);
+        if (price !== null) crosshairPrice = price;
+        const tooltip = document.getElementById('tooltip');
+        if (!param.time || !gapDetails.has(param.time)) { tooltip.style.display = 'none'; return; }
+        const g = gapDetails.get(param.time);
+        tooltip.innerHTML = `<b>Gap ${g.dir}</b><br/>From: ${g.from}<br/>To: ${g.to}<br/>Jump: ${g.jump}<br/>Range: ${g.rangeLow} → ${g.rangeHigh}<br/><b>Volume:</b> ${g.volume}`;
+        tooltip.style.left = param.point.x + 15 + 'px';
+        tooltip.style.top  = param.point.y + 15 + 'px';
+        tooltip.style.display = 'block';
     });
+
+    chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+        if (panel !== activePanel) return;
+        const btn = document.getElementById('goToLive');
+        if (!range || !lastCandleTime) { btn.style.display = 'none'; return; }
+        btn.style.display = lastCandleTime > range.to ? 'flex' : 'none';
+    });
+
+    // ── Helpers ───────────────────────────────────
+    function getBucketTime(t) { return Math.floor(t / INTERVAL) * INTERVAL; }
+
+    function updateChartLabel(sym) {
+        if (!sym) { labelEl.innerHTML = ''; return; }
+        const index = sym.startsWith('SENSEX') ? 'SENSEX' : sym.startsWith('BANKNIFTY') ? 'BANKNIFTY' : 'NIFTY';
+        const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym);
+        if (!display) { labelEl.innerHTML = ''; return; }
+        const part = display.split('|')[1]?.trim() || '';
+        const [strike, type] = part.split(' ');
+        if (!strike || !type) { labelEl.innerHTML = ''; return; }
+        const tc = type === 'CE' ? 'cl-ce' : 'cl-pe';
+        labelEl.innerHTML = `<span class="cl-index">${index}</span><span class="cl-index">·</span><span class="cl-strike">${strike}</span><span class="cl-index">·</span><span class="${tc}">${type}</span>`;
+    }
+
+    function refreshMarkers() {
+        candleSeries.setMarkers(Array.from(gapDetails.entries()).map(([time, info]) => ({
+            time,
+            position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
+            color: info.isFilled ? (info.dir === 'D' ? 'rgba(0,128,0,0.3)' : 'rgba(255,0,0,0.3)') : (info.dir === 'D' ? 'green' : 'red'),
+            shape: 'text', text: info.dir
+        })));
+    }
+
+    function checkGapFill(candle) {
+        let updated = false;
+        gapDetails.forEach(gap => {
+            if (!gap.isFilled && ((gap.dir === 'D' && candle.low <= gap.from) || (gap.dir === 'U' && candle.high >= gap.from))) {
+                gap.isFilled = true; updated = true;
+            }
+        });
+        if (updated) refreshMarkers();
+    }
+
+    // ── SL ────────────────────────────────────────
+    function updateSLLineLocal(price, state) {
+        if (slPriceLine) { candleSeries.removePriceLine(slPriceLine); slPriceLine = null; }
+        if (price == null || state === 'none') {
+            slPrice = null; slLineState = 'none';
+            if (panel === activePanel) updateSLBadge();
+            return;
+        }
+        slPrice = price; slLineState = state;
+        slPriceLine = candleSeries.createPriceLine({
+            price, color: SL_COLOR[state] || SL_COLOR.pending,
+            lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: `SL ${price}`
+        });
+        if (panel === activePanel) updateSLBadge();
+    }
+
+    function stopSLPoll() { if (slPollTimer) { clearInterval(slPollTimer); slPollTimer = null; } }
+
+    function startSLPoll(sym) {
+        stopSLPoll();
+        slPollTimer = setInterval(async () => {
+            if (!sym) return;
+            const res = await fetch(`/api/sl/${sym}`);
+            const data = await res.json();
+            if (data.state && data.state !== 'none') {
+                const price = data.price || slPrice;
+                if (data.state !== slLineState || price !== slPrice) {
+                    updateSLLineLocal(price, data.state);
+                    slOrderId = data.order_id || null;
+                }
+                if (data.state === 'hit') setTimeout(() => updateSLLineLocal(price, 'pending'), 2000);
+            }
+        }, 2000);
+    }
+
+    async function loadSLStateLocal(sym) {
+        updateSLLineLocal(null, 'none'); slOrderId = null;
+        try {
+            const res = await fetch(`/api/sl/${sym}`);
+            const data = await res.json();
+            if (data.state && data.state !== 'none' && data.price) {
+                updateSLLineLocal(data.price, data.state);
+                slOrderId = data.order_id || null;
+            }
+        } catch (_) {}
+    }
+
+    // ── SL drag ───────────────────────────────────
+    function isNearSL(clientY) {
+        if (!slPrice) return false;
+        const rect = chartAreaEl.getBoundingClientRect();
+        const slY  = candleSeries.priceToCoordinate(slPrice);
+        return slY !== null && Math.abs((clientY - rect.top) - slY) < 8;
+    }
+    function disableScroll() { chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false } }); }
+    function enableScroll()  { chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true,  horzTouchDrag: true,  vertTouchDrag: true  } }); }
+
+    chartAreaEl.addEventListener('mousemove', e => {
+        if (!slPrice) return;
+        const y = e.clientY - chartAreaEl.getBoundingClientRect().top;
+        if (isNearSL(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
+        else if (!slDragging)    { chartAreaEl.style.cursor = 'default';   enableScroll();  }
+        if (slDragging) {
+            const p = candleSeries.coordinateToPrice(y);
+            if (p !== null) updateSLLineLocal(Math.round(p * 20) / 20, slLineState === 'none' ? 'pending' : slLineState);
+        }
+    });
+
+    chartAreaEl.addEventListener('mousedown', e => {
+        if (slPrice && isNearSL(e.clientY)) { slDragging = true; disableScroll(); e.stopPropagation(); }
+    });
+
+    chartAreaEl.addEventListener('mouseup', async () => {
+        if (!slDragging) return;
+        slDragging = false; chartAreaEl.style.cursor = 'default'; enableScroll();
+        if (!slPrice || !symbol) return;
+        await fetch('/api/sl/set', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, price: slPrice }) });
+    });
+
+    chartAreaEl.addEventListener('dblclick', async () => {
+        if (!symbol || crosshairPrice === null) return;
+        const p = Math.round(crosshairPrice * 20) / 20;
+        updateSLLineLocal(p, 'pending');
+        await fetch('/api/sl/set', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, price: p }) });
+    });
+
+    // ── WebSocket ─────────────────────────────────
+    function connectWebSocket(sym) {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        socket = new WebSocket(`${proto}//${window.location.host}/ws/${sym}`);
+        socket.onopen = () => console.log(`[P${id}] Connected:`, sym);
+        socket.onmessage = event => {
+            if (!historyLoaded || !symbol) return;
+            const tick = JSON.parse(event.data);
+            if (tick.type === 'ping') return;
+            if (tick.symbol && tick.symbol !== symbol) return;
+            const bucketTime = getBucketTime(Math.floor(Number(tick.time)));
+            const price = tick.value;
+            if (lastCandleTime !== null && bucketTime < lastCandleTime) return;
+            if (tick.is_gap) {
+                const dir = tick.direction === "UP" ? "D" : "U";
+                gapDetails.set(bucketTime, {
+                    dir, from: tick.prev_price, to: price,
+                    jump: Math.abs(price - tick.prev_price).toFixed(2),
+                    rangeLow: Math.min(tick.prev_price, price), rangeHigh: Math.max(tick.prev_price, price),
+                    volume: tick.vol_change || 0, isFilled: false
+                });
+                refreshMarkers();
+            }
+            if (!currentCandle || bucketTime > currentCandle.time) {
+                currentCandle = { time: bucketTime, open: price, high: price, low: price, close: price };
+            } else if (bucketTime === currentCandle.time) {
+                currentCandle.high  = Math.max(currentCandle.high,  price);
+                currentCandle.low   = Math.min(currentCandle.low,   price);
+                currentCandle.close = price;
+            } else return;
+            if (panel === activePanel) updateOrderBar(price);
+            if (currentCandle && !isNaN(currentCandle.open)) candleSeries.update(currentCandle);
+            checkGapFill(currentCandle);
+        };
+        socket.onclose = event => {
+            if (event.target._intentionalClose || !symbol) return;
+            reconnectTimeout = setTimeout(() => connectWebSocket(symbol), 3000);
+        };
+        socket.onerror = () => socket.close();
+    }
+
+    // ── Load symbol ───────────────────────────────
+    async function panelLoadSymbol(sym) {
+        if (!sym) return;
+        historyLoaded = false; symbol = sym;
+        const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
+        symInput.value = display;
+        updateChartLabel(sym);
+        if (panel === activePanel) {
+            document.getElementById('symbolSelect').value = display;
+            resetOrderBar(sym);
+        }
+        if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
+        if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
+        candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null;
+        stopSLPoll();
+        const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}`), fetch(`/api/gaps/${sym}`)]);
+        const history = await histRes.json();
+        const gapsRaw = await gapRes.json();
+        const candles = history.map(c => ({ time: c.time - 19800, open: c.open, high: c.high, low: c.low, close: c.close }));
+        lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
+        gapsRaw.forEach(g => {
+            const dir = g.direction === 'UP' ? 'D' : 'U';
+            gapDetails.set(g.time - 19800, {
+                dir, from: g.prev_price, to: g.curr_price,
+                jump: Math.abs(g.curr_price - g.prev_price).toFixed(2),
+                rangeLow: Math.min(g.prev_price, g.curr_price), rangeHigh: Math.max(g.prev_price, g.curr_price),
+                volume: g.vol_change || 0, isFilled: false
+            });
+        });
+        candles.forEach(candle => gapDetails.forEach((gap, gapTime) => {
+            if (!gap.isFilled && candle.time > gapTime &&
+                ((gap.dir === 'D' && candle.low <= gap.from) || (gap.dir === 'U' && candle.high >= gap.from)))
+                gap.isFilled = true;
+        }));
+        candleSeries.setData(candles);
+        refreshMarkers();
+        chart.timeScale().fitContent();
+        if (candles.length > 0) { currentCandle = { ...candles[candles.length - 1] }; lastCandleTime = currentCandle.time; }
+        historyLoaded = true;
+        setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
+        loadSLStateLocal(sym);
+        startSLPoll(sym);
+        connectWebSocket(sym);
+    }
+
+    // ── Activate on click ─────────────────────────
+    panelEl.addEventListener('mousedown', () => activatePanel(panel));
+
+    // ── Per-panel symbol input ────────────────────
+    symInput.addEventListener('change', async () => {
+        activatePanel(panel);
+        const val = symInput.value;
+        if (strikeMap[val]) { panelLoadSymbol(strikeMap[val]); return; }
+        const resp = await fetch(`/api/resolve-symbol?display=${encodeURIComponent(val)}`);
+        const data = await resp.json();
+        if (data.symbol) panelLoadSymbol(data.symbol);
+        else toast('Strike not found in DB', 'warn');
+    });
+
+    // ── Resize ────────────────────────────────────
+    function resize() {
+        const w = chartAreaEl.offsetWidth;
+        const h = chartAreaEl.offsetHeight;
+        if (w > 0 && h > 0) chart.applyOptions({ width: w, height: h });
+    }
+
+    // ── Destroy ───────────────────────────────────
+    function destroy() {
+        stopSLPoll();
+        if (socket) { socket._intentionalClose = true; socket.close(); }
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        chart.remove();
+        panelEl.remove();
+    }
+
+    const panel = {
+        id, el: panelEl,
+        get symbol()         { return symbol; },
+        get crosshairPrice() { return crosshairPrice; },
+        get slPrice()        { return slPrice; },
+        get slLineState()    { return slLineState; },
+        get slOrderId()      { return slOrderId; },
+        get chart()          { return chart; },
+        loadSymbol: panelLoadSymbol,
+        updateSLLine: updateSLLineLocal,
+        resize, destroy,
+    };
+    return panel;
+}
+
+/* ======================
+   PANEL MANAGEMENT
+====================== */
+function activatePanel(p) {
+    if (activePanel === p) return;
+    if (activePanel) activePanel.el.classList.remove('active');
+    activePanel = p;
+    p.el.classList.add('active');
+    const sym = p.symbol;
+    if (sym) {
+        const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
+        document.getElementById('symbolSelect').value = display;
+        resetOrderBar(sym);
+    }
     updateSLBadge();
 }
 
-function updateSLBadge() {
-    const badge = document.getElementById('slBadge');
-    if (!slPrice || slLineState === 'none') {
-        badge.textContent = 'SL: —';
-        badge.className   = '';
-        return;
-    }
-    const labels = { pending: 'SET', placed: 'PLACED', hit: 'HIT' };
-    badge.textContent = `SL ${slPrice} [${labels[slLineState] || slLineState}]`;
-    badge.className   = slLineState;
-}
-
-// Poll backend every 2s to detect state changes (placed → hit)
-function startSLPoll(symbol) {
-    stopSLPoll();
-    slPollTimer = setInterval(async () => {
-        if (!symbol) return;
-        const res  = await fetch(`/api/sl/${symbol}`);
-        const data = await res.json();
-        if (data.state && data.state !== 'none') {
-            const price = data.price || slPrice;
-            if (data.state !== slLineState || price !== slPrice) {
-                updateSLLine(price, data.state);
-                slOrderId = data.order_id || null;
-            }
-            // After SL is hit, reset to pending with no order_id
-            if (data.state === 'hit') {
-                setTimeout(() => updateSLLine(price, 'pending'), 2000);
-            }
-        }
-    }, 2000);
-}
-
-function stopSLPoll() {
-    if (slPollTimer) { clearInterval(slPollTimer); slPollTimer = null; }
-}
-
-// Fetch SL state when switching symbols
-async function loadSLState(symbol) {
-    updateSLLine(null, 'none');
-    slOrderId = null;
-    try {
-        const res  = await fetch(`/api/sl/${symbol}`);
-        const data = await res.json();
-        if (data.state && data.state !== 'none' && data.price) {
-            updateSLLine(data.price, data.state);
-            slOrderId = data.order_id || null;
-        }
-    } catch (_) {}
-}
-
-/* ── Drag logic ─────────────────────────────── */
-const chartDiv = document.getElementById('chart');
-
-function isNearSLLine(clientY) {
-    if (!slPrice) return false;
-    const rect = chartDiv.getBoundingClientRect();
-    const y    = clientY - rect.top;
-    const slY  = candleSeries.priceToCoordinate(slPrice);
-    return slY !== null && Math.abs(y - slY) < 8;
-}
-
-function disableChartScroll() {
-    chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false } });
-}
-function enableChartScroll() {
-    chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true } });
-}
-
-chartDiv.addEventListener('mousemove', (e) => {
-    if (!slPrice) return;
-    const rect = chartDiv.getBoundingClientRect();
-    const y    = e.clientY - rect.top;
-
-    if (isNearSLLine(e.clientY)) {
-        chartDiv.style.cursor = 'ns-resize';
-        disableChartScroll();   // prevent chart panning when hovering the line
-    } else if (!slDragging) {
-        chartDiv.style.cursor = 'default';
-        enableChartScroll();
-    }
-
-    if (slDragging) {
-        const newPrice = candleSeries.coordinateToPrice(y);
-        if (newPrice !== null) {
-            const p = Math.round(newPrice * 20) / 20;   // round to 0.05
-            updateSLLine(p, slLineState === 'none' ? 'pending' : slLineState);
-        }
-    }
-});
-
-chartDiv.addEventListener('mousedown', (e) => {
-    if (!slPrice) return;
-    if (isNearSLLine(e.clientY)) {
-        slDragging = true;
-        disableChartScroll();
-        e.stopPropagation();   // prevent chart receiving this mousedown
-    }
-});
-
-chartDiv.addEventListener('mouseup', async () => {
-    if (!slDragging) return;
-    slDragging             = false;
-    chartDiv.style.cursor  = 'default';
-    enableChartScroll();
-    if (!slPrice || !activeSymbol) return;
-    // Persist new price to backend (will also modify Kite order if placed)
-    await fetch('/api/sl/set', {
-        method:  'POST',
-        headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ symbol: activeSymbol, price: slPrice }),
-    });
-});
-
-// Double-click on chart → place SL line at that price (if no line yet)
-chartDiv.addEventListener('dblclick', async (e) => {
-    if (!activeSymbol || crosshairPrice === null) return;
-    const p = Math.round(crosshairPrice * 20) / 20;
-    updateSLLine(p, 'pending');
-    await fetch('/api/sl/set', {
-        method:  'POST',
-        headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ symbol: activeSymbol, price: p }),
-    });
-});
+// Global bridges — delegate to activePanel
+function loadSymbol(symbol) { if (activePanel) activePanel.loadSymbol(symbol); }
+function updateSLLine(price, state) { if (activePanel) activePanel.updateSLLine(price, state); }
 
 /* ======================
-   BUY / SELL ORDER BAR
+   LAYOUT MANAGEMENT
 ====================== */
-const LOT_SIZES = { NIFTY: 65, SENSEX: 20, BANKNIFTY: 30 };
+function selectLayout(el) {
+    document.querySelectorAll('.lp-option').forEach(o => o.classList.remove('active'));
+    el.classList.add('active');
+    activeLayout = el.dataset.layout;
+    document.getElementById('layoutPopup').style.display = 'none';
 
-let currentLTP   = null;
-let orderLots    = 1;
-let orderLotSize = 65;   // updated on symbol change
-let orderType    = 'L';  // 'L' | 'M' | 'SL'
-let slBuffer     = 0.20; // trigger buffer for SL orders
-let slDistance   = 5;    // points away from LTP for SL trigger
+    const prevSymbol = activePanel ? activePanel.symbol : null;
+    panels.forEach(p => p.destroy());
+    panels = [];
+    activePanel = null;
 
-function setOrderType(type) {
-    orderType = type;
-    document.querySelectorAll('.ob-type-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.type === type);
+    const cfg     = LAYOUT_CONFIGS[activeLayout];
+    const grid    = document.getElementById('chartGrid');
+    const topbarH = document.querySelector('.topbar').offsetHeight;
+    grid.style.gridTemplateColumns = `repeat(${cfg.cols}, 1fr)`;
+    grid.style.gridTemplateRows    = `repeat(${cfg.rows}, 1fr)`;
+    grid.style.height = (window.innerHeight - topbarH) + 'px';
+
+    const n = cfg.cols * cfg.rows;
+    for (let i = 0; i < n; i++) panels.push(createPanel(i));
+
+    activatePanel(panels[0]);
+
+    requestAnimationFrame(() => {
+        panels.forEach(p => p.resize());
+        if (prevSymbol) panels[0].loadSymbol(prevSymbol);
     });
 }
-
-function openSlConfig(anchorEl) {
-    const popup = document.getElementById('slConfigPopup');
-    document.getElementById('slBufInput').value  = slBuffer;
-    document.getElementById('slDistInput').value = slDistance;
-    const rect = anchorEl.closest('.ob-type-group').getBoundingClientRect();
-    popup.style.left = rect.left + 'px';
-    popup.style.top  = (rect.bottom + 6) + 'px';
-    popup.style.display = 'block';
-    document.getElementById('slBufInput').focus();
-    document.getElementById('slBufInput').select();
-}
-
-function closeSlConfig() {
-    const buf  = parseFloat(document.getElementById('slBufInput').value);
-    const dist = parseFloat(document.getElementById('slDistInput').value);
-    if (!isNaN(buf)  && buf  > 0) slBuffer   = buf;
-    if (!isNaN(dist) && dist > 0) slDistance = dist;
-    document.getElementById('slConfigPopup').style.display = 'none';
-}
-
-// Double-click on either SL toggle button → open config
-document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('.ob-type-btn[data-type="SL"]').forEach(btn => {
-        btn.addEventListener('dblclick', (e) => {
-            e.stopPropagation();
-            openSlConfig(btn);
-        });
-    });
-    // Close on Enter key inside popup inputs
-    ['slBufInput', 'slDistInput'].forEach(id => {
-        document.getElementById(id).addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') closeSlConfig();
-        });
-    });
-    // Close on outside click
-    document.addEventListener('click', (e) => {
-        const popup = document.getElementById('slConfigPopup');
-        if (popup.style.display === 'block' && !popup.contains(e.target) &&
-            !e.target.closest('.ob-type-btn[data-type="SL"]')) {
-            closeSlConfig();
-        }
-    });
-});
-
-function getLotSize(symbol) {
-    if (!symbol) return 65;
-    if (symbol.startsWith('SENSEX'))    return LOT_SIZES.SENSEX;
-    if (symbol.startsWith('BANKNIFTY')) return LOT_SIZES.BANKNIFTY;
-    return LOT_SIZES.NIFTY;
-}
-
-function getIndexName(symbol) {
-    if (!symbol) return 'NIFTY';
-    if (symbol.startsWith('SENSEX'))    return 'SENSEX';
-    if (symbol.startsWith('BANKNIFTY')) return 'BANKNIFTY';
-    return 'NIFTY';
-}
-
-function updateOrderBar(ltp) {
-    if (ltp != null) currentLTP = ltp;
-    const p   = currentLTP != null ? currentLTP.toFixed(2) : '—';
-    const qty = orderLots * orderLotSize;
-    document.getElementById('buyPrice').textContent  = p;
-    document.getElementById('sellPrice').textContent = p;
-    document.getElementById('buyQty').textContent    = `${qty} qty`;
-    document.getElementById('sellQty').textContent   = `${qty} qty`;
-    document.getElementById('calcQtyDisplay').textContent = qty;
-    document.getElementById('calcLotsDisplay').textContent =
-        `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
-    // sync input box (only if not currently focused by user)
-    const inp = document.getElementById('qtyDisplay');
-    if (document.activeElement !== inp) inp.value = qty;
-    document.getElementById('lotsDisplay').textContent =
-        `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
-}
-
-function resetOrderBar(symbol) {
-    orderLotSize = getLotSize(symbol);
-    orderLots    = 1;
-    currentLTP   = null;
-    const idx    = getIndexName(symbol);
-    document.getElementById('qtyPopupTitle').textContent =
-        `Quantity (${idx} · ${orderLotSize}/lot)`;
-    updateOrderBar(null);
-}
-
-
-// ── Layout picker ──
-let activeLayout = '1';
 
 function toggleLayoutPopup(e) {
     if (e) e.stopPropagation();
@@ -1218,69 +921,174 @@ function toggleLayoutPopup(e) {
     p.style.display = 'block';
 }
 
-function selectLayout(el) {
-    document.querySelectorAll('.lp-option').forEach(o => o.classList.remove('active'));
-    el.classList.add('active');
-    activeLayout = el.dataset.layout;
-    document.getElementById('layoutPopup').style.display = 'none';
-    // Layout implementation will go here
-    console.log('Layout selected:', activeLayout);
-}
-
 document.addEventListener('click', (e) => {
     const p   = document.getElementById('layoutPopup');
     const btn = document.getElementById('layoutBtn');
-    if (p && p.style.display === 'block' && !p.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+    if (p && p.style.display === 'block' && !p.contains(e.target) && e.target !== btn && !btn.contains(e.target))
         p.style.display = 'none';
-    }
 });
 
-function toggleQtyPopup(e) {
-    if (e) e.stopPropagation();
-    const p   = document.getElementById('qtyPopup');
-    if (p.style.display === 'block') {
-        p.style.display = 'none';
-        return;
+/* ======================
+   STRIKE MAP & TOPBAR
+====================== */
+async function loadStrikes() {
+    const [strikesRes, atmRes] = await Promise.all([fetch("/api/strikes"), fetch("/api/atm-symbol")]);
+    const strikes = await strikesRes.json();
+    const atm     = await atmRes.json();
+    const dataList = document.getElementById("symbolList");
+    dataList.innerHTML = "";
+    strikeMap = {};
+    strikes.forEach(item => {
+        const opt = document.createElement("option");
+        opt.value = item.display;
+        dataList.appendChild(opt);
+        strikeMap[item.display] = item.symbol;
+    });
+    if (strikes.length > 0) {
+        const atmEntry     = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
+        const defaultEntry = atmEntry || strikes[0];
+        document.getElementById("symbolSelect").value = defaultEntry.display;
+        loadSymbol(defaultEntry.symbol);
     }
-    // Position below the order bar
-    const bar  = document.getElementById('orderBar');
-    const rect = bar.getBoundingClientRect();
-    const margin = 6;
-    p.style.left = rect.left + 'px';
-    p.style.top  = (rect.bottom + margin) + 'px';
-    p.style.display = 'block';
-    const inp = document.getElementById('qtyDisplay');
-    inp.focus();
-    inp.select();
 }
 
-function adjustLots(delta) {
-    orderLots = Math.max(1, orderLots + delta);
+document.getElementById("symbolSelect").addEventListener("change", async function() {
+    const displayValue = this.value;
+    if (strikeMap[displayValue]) { loadSymbol(strikeMap[displayValue]); return; }
+    const response = await fetch(`/api/resolve-symbol?display=${displayValue}`);
+    const data     = await response.json();
+    if (data.symbol) loadSymbol(data.symbol);
+    else alert("Strike not found in DB");
+});
+
+/* ======================
+   RESPONSIVE
+====================== */
+window.addEventListener('resize', () => {
+    const topbarH = document.querySelector('.topbar').offsetHeight;
+    const grid    = document.getElementById('chartGrid');
+    grid.style.height = (window.innerHeight - topbarH) + 'px';
+    panels.forEach(p => p.resize());
+});
+
+/* ======================
+   GO TO LATEST BUTTON
+====================== */
+document.getElementById('goToLive').addEventListener('click', () => {
+    if (activePanel) activePanel.chart.timeScale().scrollToRealTime();
+});
+
+/* ======================
+   SL BADGE
+====================== */
+function updateSLBadge() {
+    const badge = document.getElementById('slBadge');
+    const slP = activePanel ? activePanel.slPrice : null;
+    const slS = activePanel ? activePanel.slLineState : 'none';
+    if (!slP || slS === 'none') { badge.textContent = 'SL: —'; badge.className = ''; return; }
+    const labels = { pending: 'SET', placed: 'PLACED', hit: 'HIT' };
+    badge.textContent = `SL ${slP} [${labels[slS] || slS}]`;
+    badge.className   = slS;
+}
+
+/* ======================
+   BUY / SELL ORDER BAR
+====================== */
+function getLotSize(symbol) {
+    if (!symbol) return 65;
+    if (symbol.startsWith('SENSEX'))    return LOT_SIZES.SENSEX;
+    if (symbol.startsWith('BANKNIFTY')) return LOT_SIZES.BANKNIFTY;
+    return LOT_SIZES.NIFTY;
+}
+function getIndexName(symbol) {
+    if (!symbol) return 'NIFTY';
+    if (symbol.startsWith('SENSEX'))    return 'SENSEX';
+    if (symbol.startsWith('BANKNIFTY')) return 'BANKNIFTY';
+    return 'NIFTY';
+}
+function setOrderType(type) {
+    orderType = type;
+    document.querySelectorAll('.ob-type-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.type === type));
+}
+function updateOrderBar(ltp) {
+    if (ltp != null) currentLTP = ltp;
+    const p   = currentLTP != null ? currentLTP.toFixed(2) : '—';
+    const qty = orderLots * orderLotSize;
+    document.getElementById('buyPrice').textContent  = p;
+    document.getElementById('sellPrice').textContent = p;
+    document.getElementById('buyQty').textContent    = `${qty} qty`;
+    document.getElementById('sellQty').textContent   = `${qty} qty`;
+    document.getElementById('calcQtyDisplay').textContent  = qty;
+    document.getElementById('calcLotsDisplay').textContent = `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
+    const inp = document.getElementById('qtyDisplay');
+    if (document.activeElement !== inp) inp.value = qty;
+    document.getElementById('lotsDisplay').textContent = `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
+}
+function resetOrderBar(symbol) {
+    orderLotSize = getLotSize(symbol); orderLots = 1; currentLTP = null;
+    document.getElementById('qtyPopupTitle').textContent = `Quantity (${getIndexName(symbol)} · ${orderLotSize}/lot)`;
     updateOrderBar(null);
 }
+function openSlConfig(anchorEl) {
+    const popup = document.getElementById('slConfigPopup');
+    document.getElementById('slBufInput').value  = slBuffer;
+    document.getElementById('slDistInput').value = slDistance;
+    const rect = anchorEl.closest('.ob-type-group').getBoundingClientRect();
+    popup.style.left = rect.left + 'px';
+    popup.style.top  = (rect.bottom + 6) + 'px';
+    popup.style.display = 'block';
+    document.getElementById('slBufInput').focus();
+    document.getElementById('slBufInput').select();
+}
+function closeSlConfig() {
+    const buf  = parseFloat(document.getElementById('slBufInput').value);
+    const dist = parseFloat(document.getElementById('slDistInput').value);
+    if (!isNaN(buf)  && buf  > 0) slBuffer   = buf;
+    if (!isNaN(dist) && dist > 0) slDistance = dist;
+    document.getElementById('slConfigPopup').style.display = 'none';
+}
+async function placeOrder(side) {
+    if (!activePanel || !activePanel.symbol) { toast('No symbol selected', 'warn'); return; }
+    const sym = activePanel.symbol;
+    if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
+    const price = parseFloat(currentLTP.toFixed(2));
+    const qty   = orderLots * orderLotSize;
+    const label = `${side} ${qty} ${sym} @ ${price} [${orderType}]`;
+    toast(`⏳ Placing ${label}…`, 'info', 2000);
+    const res = await fetch('/api/place-limit-order', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ symbol: sym, price, side, qty, exchange: 'NFO', order_type: orderType, sl_buffer: slBuffer, sl_distance: slDistance }),
+    });
+    toastOrder(await res.json(), label);
+}
 
-// Hold-to-repeat for +/- buttons
+/* ======================
+   QTY POPUP
+====================== */
+function toggleQtyPopup(e) {
+    if (e) e.stopPropagation();
+    const p = document.getElementById('qtyPopup');
+    if (p.style.display === 'block') { p.style.display = 'none'; return; }
+    const bar  = document.getElementById('orderBar');
+    const rect = bar.getBoundingClientRect();
+    p.style.left = rect.left + 'px';
+    p.style.top  = (rect.bottom + 6) + 'px';
+    p.style.display = 'block';
+    const inp = document.getElementById('qtyDisplay');
+    inp.focus(); inp.select();
+}
+function adjustLots(delta) { orderLots = Math.max(1, orderLots + delta); updateOrderBar(null); }
+
 (function () {
-    let holdTimer = null;
-    let holdInterval = null;
-
+    let holdTimer = null, holdInterval = null;
     function startHold(delta, e) {
-        e.stopPropagation();
-        adjustLots(delta);                              // immediate first step
-        holdTimer = setTimeout(() => {
-            holdInterval = setInterval(() => adjustLots(delta), 80);
-        }, 400);                                        // start repeating after 400ms
+        e.stopPropagation(); adjustLots(delta);
+        holdTimer = setTimeout(() => { holdInterval = setInterval(() => adjustLots(delta), 80); }, 400);
     }
-
-    function stopHold(e) {
-        if (e) e.stopPropagation();
-        clearTimeout(holdTimer);
-        clearInterval(holdInterval);
-    }
-
+    function stopHold(e) { if (e) e.stopPropagation(); clearTimeout(holdTimer); clearInterval(holdInterval); }
     ['mousedown','touchstart'].forEach(ev => {
-        document.getElementById('btnPlus') .addEventListener(ev, (e) => startHold(+1, e), {passive:false});
-        document.getElementById('btnMinus').addEventListener(ev, (e) => startHold(-1, e), {passive:false});
+        document.getElementById('btnPlus') .addEventListener(ev, e => startHold(+1, e), {passive:false});
+        document.getElementById('btnMinus').addEventListener(ev, e => startHold(-1, e), {passive:false});
     });
     ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev => {
         document.getElementById('btnPlus') .addEventListener(ev, stopHold);
@@ -1288,74 +1096,56 @@ function adjustLots(delta) {
     });
 })();
 
-document.getElementById('qtyDisplay').addEventListener('change', (e) => {
+document.getElementById('qtyDisplay').addEventListener('change', e => {
     const typed = parseInt(e.target.value, 10);
-    if (!isNaN(typed) && typed >= 1) {
-        orderLots = Math.max(1, Math.round(typed / orderLotSize));
-        updateOrderBar(null);
-    }
+    if (!isNaN(typed) && typed >= 1) { orderLots = Math.max(1, Math.round(typed / orderLotSize)); updateOrderBar(null); }
 });
-document.getElementById('qtyDisplay').addEventListener('keydown', (e) => {
+document.getElementById('qtyDisplay').addEventListener('keydown', e => {
     if (e.key === 'Enter') {
         e.preventDefault();
         const typed = parseInt(e.target.value, 10);
-        if (!isNaN(typed) && typed >= 1) {
-            orderLots = Math.max(1, Math.round(typed / orderLotSize));
-            updateOrderBar(null);
-        }
+        if (!isNaN(typed) && typed >= 1) { orderLots = Math.max(1, Math.round(typed / orderLotSize)); updateOrderBar(null); }
         toggleQtyPopup();
     }
 });
-
-// Close popup when clicking outside
-document.addEventListener('click', (e) => {
+document.addEventListener('click', e => {
     const popup = document.getElementById('qtyPopup');
     const calc  = document.getElementById('btnCalc');
-    if (popup.style.display === 'block' &&
-        !popup.contains(e.target) && !calc.contains(e.target)) {
+    if (popup.style.display === 'block' && !popup.contains(e.target) && !calc.contains(e.target))
         popup.style.display = 'none';
-    }
 });
 
-async function placeOrder(side) {
-    if (!activeSymbol) { toast('No symbol selected', 'warn'); return; }
-    if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
-
-    const price = parseFloat(currentLTP.toFixed(2));
-    const qty   = orderLots * orderLotSize;
-    const label = `${side} ${qty} ${activeSymbol} @ ${price} [${orderType}]`;
-
-    toast(`⏳ Placing ${label}…`, 'info', 2000);
-
-    const res  = await fetch('/api/place-limit-order', {
-        method:  'POST',
-        headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ symbol: activeSymbol, price, side, qty, exchange: 'NFO', order_type: orderType,
-                                  sl_buffer: slBuffer, sl_distance: slDistance }),
+/* ======================
+   DOM CONTENT LOADED
+====================== */
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.ob-type-btn[data-type="SL"]').forEach(btn => {
+        btn.addEventListener('dblclick', e => { e.stopPropagation(); openSlConfig(btn); });
     });
-    toastOrder(await res.json(), label);
-}
+    ['slBufInput', 'slDistInput'].forEach(id => {
+        document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') closeSlConfig(); });
+    });
+    document.addEventListener('click', e => {
+        const popup = document.getElementById('slConfigPopup');
+        if (popup.style.display === 'block' && !popup.contains(e.target) && !e.target.closest('.ob-type-btn[data-type="SL"]'))
+            closeSlConfig();
+    });
+});
 
 /* ======================
-   TOAST NOTIFICATIONS
+   TOAST
 ====================== */
 function toast(msg, type = 'info', duration = 4000) {
     const container = document.getElementById('toastContainer');
     const el = document.createElement('div');
-    el.className = `toast ${type}`;
-    el.textContent = msg;
+    el.className = `toast ${type}`; el.textContent = msg;
     container.appendChild(el);
-    setTimeout(() => {
-        el.style.opacity = '0';
-        setTimeout(() => el.remove(), 420);
-    }, duration);
+    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 420); }, duration);
 }
-
 function toastOrder(data, actionLabel) {
     if (!data) { toast(`${actionLabel}: no response`, 'error'); return; }
     if (data.status === 'success' || data.status === 'ok') {
-        const detail = data.price ? ` @ ${data.price}` : '';
-        toast(`✅ ${actionLabel}${detail}`, 'success');
+        toast(`✅ ${actionLabel}${data.price ? ` @ ${data.price}` : ''}`, 'success');
     } else if (data.status === 'error') {
         toast(`❌ ${actionLabel} FAILED\n${data.message || ''}`, 'error', 6000);
     } else {
@@ -1366,81 +1156,57 @@ function toastOrder(data, actionLabel) {
 /* ======================
    KEYBOARD SHORTCUTS
 ====================== */
-window.addEventListener("keydown", async (e) => {
-
+window.addEventListener("keydown", async e => {
     if (document.activeElement.tagName === "INPUT") return;
-
+    if (!activePanel || !activePanel.symbol) return;
     const key = e.key;
-    if (!activeSymbol) return;
+    const sym = activePanel.symbol;
+    const cp  = activePanel.crosshairPrice;
 
-    // ── Q: SL BUY ───────────────────────────
     if (key === "q") {
-        if (crosshairPrice === null) { toast('Move mouse over chart first', 'warn'); return; }
-        const price = Number(crosshairPrice.toFixed(2));
+        if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
+        const price = Number(cp.toFixed(2));
         toast(`⏳ Placing SL BUY @ ${price}…`, 'info', 2000);
-        const res  = await fetch("/api/place-sl-order", {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ symbol: activeSymbol, price, side: "BUY" })
-        });
-        toastOrder(await res.json(), `SL BUY ${activeSymbol} @ ${price}`);
+        const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "BUY" }) });
+        toastOrder(await res.json(), `SL BUY ${sym} @ ${price}`);
     }
-
-    // ── W: SL SELL ──────────────────────────
     if (key === "w") {
-        if (crosshairPrice === null) { toast('Move mouse over chart first', 'warn'); return; }
-        const price = Number(crosshairPrice.toFixed(2));
+        if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
+        const price = Number(cp.toFixed(2));
         toast(`⏳ Placing SL SELL @ ${price}…`, 'info', 2000);
-        const res  = await fetch("/api/place-sl-order", {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ symbol: activeSymbol, price, side: "SELL" })
-        });
-        toastOrder(await res.json(), `SL SELL ${activeSymbol} @ ${price}`);
+        const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "SELL" }) });
+        toastOrder(await res.json(), `SL SELL ${sym} @ ${price}`);
     }
-
-    // ── L: Convert SL → LIMIT at crosshair ─
     if (key === "l" || key === "L") {
-        if (crosshairPrice === null) { toast('Move mouse over chart first', 'warn'); return; }
-        const price = Number(crosshairPrice.toFixed(2));
+        if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
+        const price = Number(cp.toFixed(2));
         toast(`⏳ Converting SL → LIMIT @ ${price}…`, 'info', 2000);
-        const res  = await fetch("/api/sl/convert-to-limit", {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ symbol: activeSymbol, price })
-        });
+        const res  = await fetch("/api/sl/convert-to-limit", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price }) });
         const data = await res.json();
         toastOrder(data, `SL→LIMIT @ ${price}`);
-        if (data.status === "ok") updateSLLine(price, 'placed');
+        if (data.status === "ok") activePanel.updateSLLine(price, 'placed');
     }
-
-    // ── S: Convert SL → MARKET ──────────────
     if ((key === "s" || key === "S") && !e.shiftKey) {
         toast(`⏳ Converting SL → MARKET…`, 'info', 2000);
-        const res  = await fetch("/api/sl/convert-to-market", {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ symbol: activeSymbol })
-        });
-        toastOrder(await res.json(), `SL→MARKET ${activeSymbol}`);
+        const res = await fetch("/api/sl/convert-to-market", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym }) });
+        toastOrder(await res.json(), `SL→MARKET ${sym}`);
     }
-
-    // ── Shift+M: Close full position ────────
     if (key === "M" && e.shiftKey) {
-        toast(`⏳ Closing full position for ${activeSymbol}…`, 'info', 3000);
-        const res  = await fetch("/api/sl/close-position", {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ symbol: activeSymbol })
-        });
+        toast(`⏳ Closing full position for ${sym}…`, 'info', 3000);
+        const res  = await fetch("/api/sl/close-position", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym }) });
         const data = await res.json();
         if (data.status === 'ok') {
-            const summary = data.logs ? data.logs[data.logs.length - 1] : 'done';
-            toast(`✅ Position closed\n${summary}`, 'success', 6000);
-        } else {
-            toast(`❌ Close position failed`, 'error', 6000);
-        }
-        updateSLLine(null, 'none');
+            toast(`✅ Position closed\n${data.logs ? data.logs[data.logs.length - 1] : 'done'}`, 'success', 6000);
+        } else { toast(`❌ Close position failed`, 'error', 6000); }
+        activePanel.updateSLLine(null, 'none');
     }
-
 });
 
-
+/* ======================
+   INITIALISE
+====================== */
+selectLayout(document.querySelector('.lp-option[data-layout="1"]'));
+loadStrikes();
 </script>
 
 </body>
