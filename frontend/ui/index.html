@@ -77,8 +77,8 @@
             min-width: 90px;
             text-align: center;
         }
-        #slBadge.pending  { background: #7c6000; color: #FFD700; }
-        #slBadge.placed   { background: #7a3c00; color: #FF8C00; }
+        #slBadge.pending  { background: #164e63; color: #06b6d4; }
+        #slBadge.placed   { background: #7c2d12; color: #fb923c; }
         #slBadge.hit      { background: #333;    color: #aaa;    }
 
         #chartLabel {
@@ -359,25 +359,24 @@
         .panel-label.ce-label { background: rgba(22,163,74,0.80); }
         .panel-label.pe-label { background: rgba(220,38,38,0.80); }
         .panel-label.no-label { background: rgba(51,65,85,0.70); }
-        .panel-label .pl-dim  { opacity: 0.75; }
         .panel-refresh-btn {
             pointer-events: all;
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            border: none;
-            background: rgba(30,41,59,0.75);
-            color: #94a3b8;
+            border: 2px solid #fff;
+            background: #0f172a;
+            color: #fff;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 0;
-            opacity: 0.7;
-            transition: opacity 0.15s, background 0.15s;
+            opacity: 0.75;
+            transition: opacity 0.15s;
             flex-shrink: 0;
         }
-        .panel-refresh-btn:hover { opacity: 1; background: rgba(51,65,85,0.95); color: #e2e8f0; }
+        .panel-refresh-btn:hover { opacity: 1; }
         .panel-refresh-btn.spinning svg { animation: spin 0.6s linear; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     </style>
@@ -540,7 +539,7 @@ function makeChartOptions(w, h) {
 ====================== */
 const INTERVAL  = 5;
 const LOT_SIZES = { NIFTY: 65, SENSEX: 20, BANKNIFTY: 30 };
-const SL_COLOR  = { pending: '#FFD700', placed: '#FF8C00', hit: '#808080' };
+const SL_COLOR  = { pending: '#06b6d4', placed: '#fb923c', hit: '#6b7280' };
 const LAYOUT_CONFIGS = {
     '1':  { cols: 1, rows: 1 }, '2h': { cols: 2, rows: 1 }, '2v': { cols: 1, rows: 2 },
     '4':  { cols: 2, rows: 2 }, '6a': { cols: 3, rows: 2 }, '6b': { cols: 2, rows: 3 },
@@ -650,7 +649,7 @@ function createPanel(id) {
         const [strike, type] = part.split(' ');
         if (!strike || !type) { labelEl.innerHTML = ''; return; }
         labelEl.className = `panel-label ${type === 'CE' ? 'ce-label' : 'pe-label'}`;
-        labelEl.innerHTML = `<span class="pl-dim">${index} ${strike}</span> ${type}`;
+        labelEl.innerHTML = `${index} - ${strike} ${type}`;
     }
 
     function refreshMarkers() {
