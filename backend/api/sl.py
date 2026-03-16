@@ -273,12 +273,14 @@ async def close_position(req: SymbolRequest):
 # Places a regular LIMIT order (Buy/Sell buttons).
 # ─────────────────────────────────────────────
 class LimitOrderRequest(BaseModel):
-    symbol:     str
-    price:      float
-    side:       str        # BUY or SELL
-    qty:        int
-    exchange:   str = "NFO"
-    order_type: str = "L"  # 'L' (LIMIT) | 'M' (MARKET) | 'SL' (SL-LIMIT)
+    symbol:      str
+    price:       float
+    side:        str        # BUY or SELL
+    qty:         int
+    exchange:    str   = "NFO"
+    order_type:  str   = "L"    # 'L' (LIMIT) | 'M' (MARKET) | 'SL' (SL-LIMIT)
+    sl_buffer:   float = 0.20   # gap between trigger and limit price
+    sl_distance: float = 5.0    # points from LTP for SL trigger price
 
 @router.post("/place-limit-order")
 async def place_limit_order(req: LimitOrderRequest):
@@ -293,6 +295,20 @@ async def place_limit_order(req: LimitOrderRequest):
         "User-Agent":      "Kiteconnect-python/5.0.1",
         "Authorization":   f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
     }
+    # For SL orders compute trigger and limit from distance + buffer
+    if kite_order_type == "SL":
+        if req.side.upper() == "SELL":
+            # Closing a BUY position: SL trigger below LTP
+            trigger = _round(price - req.sl_distance)
+            limit   = _round(trigger - req.sl_buffer)
+        else:
+            # Closing a SELL position: SL trigger above LTP
+            trigger = _round(price + req.sl_distance)
+            limit   = _round(trigger + req.sl_buffer)
+    else:
+        trigger = None
+        limit   = price
+
     data = {
         "variety":          "regular",
         "exchange":         req.exchange,
@@ -303,12 +319,10 @@ async def place_limit_order(req: LimitOrderRequest):
         "order_type":       kite_order_type,
         "validity":         "DAY",
     }
-    # LIMIT and SL-LIMIT need a price; MARKET does not
     if kite_order_type in ("LIMIT", "SL"):
-        data["price"] = str(price)
-    # SL also needs a trigger price (same as price for now — user can modify in Kite)
+        data["price"] = str(limit)
     if kite_order_type == "SL":
-        data["trigger_price"] = str(price)
+        data["trigger_price"] = str(trigger)
 
     try:
         r = await kite1.reqsession.post(
@@ -318,8 +332,11 @@ async def place_limit_order(req: LimitOrderRequest):
         r.raise_for_status()
         result = r.json()
         order_id = (result.get("data") or {}).get("order_id")
-        logger.info(f"{kite_order_type} {req.side} {req.qty} {req.symbol} @ {price} → order_id={order_id}")
-        return {"status": "success", "order_id": order_id, "price": price, "qty": req.qty, "side": req.side, "order_type": kite_order_type}
+        if kite_order_type == "SL":
+            logger.info(f"SL {req.side} {req.qty} {req.symbol} trigger={trigger} limit={limit} → order_id={order_id}")
+        else:
+            logger.info(f"{kite_order_type} {req.side} {req.qty} {req.symbol} @ {limit} → order_id={order_id}")
+        return {"status": "success", "order_id": order_id, "price": limit, "qty": req.qty, "side": req.side, "order_type": kite_order_type}
     except Exception as e:
         logger.error(f"place-limit-order error: {e}")
         return {"status": "error", "message": str(e)}

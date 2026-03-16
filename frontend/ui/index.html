@@ -184,6 +184,34 @@
         #qtyClose { margin-top: 5px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 12px; cursor: pointer; font-size: 10px; }
         #qtyClose:hover { background: #1e293b; }
 
+        /* ── SL config popup ── */
+        #slConfigPopup {
+            display: none;
+            position: fixed;
+            z-index: 300;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 7px;
+            padding: 10px 14px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.6);
+            color: #e2e8f0;
+            font-family: Arial, sans-serif;
+            min-width: 170px;
+        }
+        #slConfigPopup h4 { margin: 0 0 8px; font-size: 10px; color: #94a3b8; font-weight: normal; letter-spacing: 0.4px; }
+        .slcfg-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+        .slcfg-row label { font-size: 9px; color: #94a3b8; white-space: nowrap; }
+        .slcfg-input {
+            width: 56px; font-size: 11px; font-weight: bold; color: #f1f5f9;
+            background: #0f172a; border: 1px solid #475569; border-radius: 4px;
+            text-align: center; padding: 3px 4px;
+            appearance: textfield; -moz-appearance: textfield;
+        }
+        .slcfg-input::-webkit-inner-spin-button,
+        .slcfg-input::-webkit-outer-spin-button { -webkit-appearance: none; appearance: none; }
+        #slConfigClose { margin-top: 4px; width: 100%; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 0; cursor: pointer; font-size: 10px; }
+        #slConfigClose:hover { background: #1e293b; }
+
         /* ── Toast notifications ── */
         #toastContainer {
             position: fixed;
@@ -257,6 +285,20 @@
         <button class="ob-type-btn"        data-type="M"  onclick="setOrderType('M')">M</button>
         <button class="ob-type-btn"        data-type="SL" onclick="setOrderType('SL')">SL</button>
     </div>
+</div>
+
+<!-- SL order config popup -->
+<div id="slConfigPopup">
+    <h4>SL Order Settings</h4>
+    <div class="slcfg-row">
+        <label>Trigger Buffer</label>
+        <input id="slBufInput" class="slcfg-input" type="number" min="0.05" step="0.05" value="0.20">
+    </div>
+    <div class="slcfg-row">
+        <label>Distance from LTP</label>
+        <input id="slDistInput" class="slcfg-input" type="number" min="0.5" step="0.5" value="5">
+    </div>
+    <button id="slConfigClose" onclick="closeSlConfig()">Done</button>
 </div>
 
 <!-- Quantity calculator popup -->
@@ -946,6 +988,8 @@ let currentLTP   = null;
 let orderLots    = 1;
 let orderLotSize = 65;   // updated on symbol change
 let orderType    = 'L';  // 'L' | 'M' | 'SL'
+let slBuffer     = 0.20; // trigger buffer for SL orders
+let slDistance   = 5;    // points away from LTP for SL trigger
 
 function setOrderType(type) {
     orderType = type;
@@ -953,6 +997,50 @@ function setOrderType(type) {
         btn.classList.toggle('active', btn.dataset.type === type);
     });
 }
+
+function openSlConfig(anchorEl) {
+    const popup = document.getElementById('slConfigPopup');
+    document.getElementById('slBufInput').value  = slBuffer;
+    document.getElementById('slDistInput').value = slDistance;
+    const rect = anchorEl.closest('.ob-type-group').getBoundingClientRect();
+    popup.style.left = rect.left + 'px';
+    popup.style.top  = (rect.bottom + 6) + 'px';
+    popup.style.display = 'block';
+    document.getElementById('slBufInput').focus();
+    document.getElementById('slBufInput').select();
+}
+
+function closeSlConfig() {
+    const buf  = parseFloat(document.getElementById('slBufInput').value);
+    const dist = parseFloat(document.getElementById('slDistInput').value);
+    if (!isNaN(buf)  && buf  > 0) slBuffer   = buf;
+    if (!isNaN(dist) && dist > 0) slDistance = dist;
+    document.getElementById('slConfigPopup').style.display = 'none';
+}
+
+// Double-click on either SL toggle button → open config
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.ob-type-btn[data-type="SL"]').forEach(btn => {
+        btn.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            openSlConfig(btn);
+        });
+    });
+    // Close on Enter key inside popup inputs
+    ['slBufInput', 'slDistInput'].forEach(id => {
+        document.getElementById(id).addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') closeSlConfig();
+        });
+    });
+    // Close on outside click
+    document.addEventListener('click', (e) => {
+        const popup = document.getElementById('slConfigPopup');
+        if (popup.style.display === 'block' && !popup.contains(e.target) &&
+            !e.target.closest('.ob-type-btn[data-type="SL"]')) {
+            closeSlConfig();
+        }
+    });
+});
 
 function getLotSize(symbol) {
     if (!symbol) return 65;
@@ -1092,7 +1180,8 @@ async function placeOrder(side) {
     const res  = await fetch('/api/place-limit-order', {
         method:  'POST',
         headers: {'Content-Type': 'application/json'},
-        body:    JSON.stringify({ symbol: activeSymbol, price, side, qty, exchange: 'NFO', order_type: orderType }),
+        body:    JSON.stringify({ symbol: activeSymbol, price, side, qty, exchange: 'NFO', order_type: orderType,
+                                  sl_buffer: slBuffer, sl_distance: slDistance }),
     });
     toastOrder(await res.json(), label);
 }
