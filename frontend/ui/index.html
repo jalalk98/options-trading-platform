@@ -317,10 +317,10 @@
             display: flex;
             flex-direction: column;
             background: #000;
-            border: 1px solid transparent;
+            border: 2px solid #1e293b;
             overflow: hidden;
         }
-        .chart-panel.active { border-color: #3b82f6; }
+        .chart-panel.active { border-color: #3b82f6; border-width: 3px; }
         .panel-header {
             display: flex;
             align-items: center;
@@ -329,17 +329,6 @@
             min-height: 22px;
             gap: 6px;
             flex-shrink: 0;
-        }
-        .panel-sym-input {
-            background: transparent;
-            border: none;
-            border-bottom: 1px solid #334155;
-            color: #94a3b8;
-            font-size: 10px;
-            font-family: Arial;
-            padding: 1px 2px;
-            width: 130px;
-            outline: none;
         }
         .panel-label {
             font-size: 11px;
@@ -546,15 +535,9 @@ function createPanel(id) {
     const headerEl = document.createElement('div');
     headerEl.className = 'panel-header';
 
-    const symInput = document.createElement('input');
-    symInput.className = 'panel-sym-input';
-    symInput.setAttribute('list', 'symbolList');
-    symInput.placeholder = 'Search strike…';
-
     const labelEl = document.createElement('div');
     labelEl.className = 'panel-label';
 
-    headerEl.appendChild(symInput);
     headerEl.appendChild(labelEl);
 
     const chartAreaEl = document.createElement('div');
@@ -772,7 +755,6 @@ function createPanel(id) {
         if (!sym) return;
         historyLoaded = false; symbol = sym;
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
-        symInput.value = display;
         updateChartLabel(sym);
         if (panel === activePanel) {
             document.getElementById('symbolSelect').value = display;
@@ -814,17 +796,6 @@ function createPanel(id) {
 
     // ── Activate on click ─────────────────────────
     panelEl.addEventListener('mousedown', () => activatePanel(panel));
-
-    // ── Per-panel symbol input ────────────────────
-    symInput.addEventListener('change', async () => {
-        activatePanel(panel);
-        const val = symInput.value;
-        if (strikeMap[val]) { panelLoadSymbol(strikeMap[val]); return; }
-        const resp = await fetch(`/api/resolve-symbol?display=${encodeURIComponent(val)}`);
-        const data = await resp.json();
-        if (data.symbol) panelLoadSymbol(data.symbol);
-        else toast('Strike not found in DB', 'warn');
-    });
 
     // ── Resize ────────────────────────────────────
     function resize() {
