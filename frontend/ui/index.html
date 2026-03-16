@@ -319,7 +319,7 @@
             background: #000;
             overflow: hidden;
         }
-        .chart-panel.active { outline: 2px solid #3b82f6; outline-offset: -2px; }
+        .chart-panel.active { outline: 4px solid #60a5fa; outline-offset: -4px; }
         .panel-label {
             position: absolute;
             top: 10px;
@@ -848,6 +848,17 @@ function selectLayout(el) {
     el.classList.add('active');
     activeLayout = el.dataset.layout;
     document.getElementById('layoutPopup').style.display = 'none';
+
+    // Sync the topbar button icon to the selected layout's SVG
+    const optSvg = el.querySelector('svg');
+    if (optSvg) {
+        const btn = document.getElementById('layoutBtn');
+        const clone = optSvg.cloneNode(true);
+        clone.setAttribute('width', '18');
+        clone.setAttribute('height', '14');
+        btn.innerHTML = '';
+        btn.appendChild(clone);
+    }
 
     const prevSymbol = activePanel ? activePanel.symbol : null;
     panels.forEach(p => p.destroy());
