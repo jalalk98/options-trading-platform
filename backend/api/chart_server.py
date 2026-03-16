@@ -60,13 +60,10 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
 
     try:
         while True:
-            # Keep connection alive
-            await asyncio.sleep(60)
-    except WebSocketDisconnect:
-        print("Client disconnected from:", symbol)
+            await asyncio.sleep(20)
+            await websocket.send_json({"type": "ping"})  # heartbeat — prevents idle timeout
+    except (WebSocketDisconnect, Exception):
         manager.disconnect(symbol, websocket)
-        print("Remaining WS symbols:",
-        list(manager.active_connections.keys()))
 
 
 app.mount("/", StaticFiles(directory="frontend/ui", html=True), name="static")

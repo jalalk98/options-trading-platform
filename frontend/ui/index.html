@@ -472,6 +472,7 @@ async function loadSymbol(symbol) {
     resetOrderBar(symbol);
 
     if (socket) {
+        socket._intentionalClose = true;  // suppress auto-reconnect in onclose
         socket.close();
         socket = null;
     }
@@ -626,7 +627,7 @@ function connectWebSocket(symbol) {
         if (!activeSymbol) return;
 
         const tick = JSON.parse(event.data);
-        console.log(tick);
+        if (tick.type === 'ping') return;  // heartbeat — ignore
 
         // Ignore ticks for previous symbol
         if (tick.symbol && tick.symbol !== activeSymbol) {
@@ -714,14 +715,12 @@ function connectWebSocket(symbol) {
     };
 
     socket.onclose = (event) => {
-
-    if (!activeSymbol) return;
-
-    console.log("Socket closed. Reconnecting in 3s...");
-
-    reconnectTimeout = setTimeout(() => {
-        connectWebSocket(activeSymbol);
-    }, 3000);
+        if (event.target._intentionalClose) return;  // symbol switch — don't reconnect
+        if (!activeSymbol) return;
+        console.log("Socket closed. Reconnecting in 3s...");
+        reconnectTimeout = setTimeout(() => {
+            connectWebSocket(activeSymbol);
+        }, 3000);
     };
 
     socket.onerror = (err) => {
