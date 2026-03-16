@@ -9,7 +9,7 @@
     <style>
 
         #tooltip {
-            position: absolute;
+            position: fixed;
             display: none;
             background: rgba(0,0,0,0.8);
             color: #fff;
@@ -567,16 +567,23 @@ function createPanel(id) {
 
     // ── Chart crosshair ───────────────────────────
     chart.subscribeCrosshairMove(param => {
-        if (panel !== activePanel) return;
-        if (!param.point) return;
-        const price = candleSeries.coordinateToPrice(param.point.y);
-        if (price !== null) crosshairPrice = price;
+        if (!param.point) {
+            document.getElementById('tooltip').style.display = 'none';
+            return;
+        }
+        // crosshairPrice only tracked on active panel
+        if (panel === activePanel) {
+            const price = candleSeries.coordinateToPrice(param.point.y);
+            if (price !== null) crosshairPrice = price;
+        }
         const tooltip = document.getElementById('tooltip');
         if (!param.time || !gapDetails.has(param.time)) { tooltip.style.display = 'none'; return; }
         const g = gapDetails.get(param.time);
         tooltip.innerHTML = `<b>Gap ${g.dir}</b><br/>From: ${g.from}<br/>To: ${g.to}<br/>Jump: ${g.jump}<br/>Range: ${g.rangeLow} → ${g.rangeHigh}<br/><b>Volume:</b> ${g.volume}`;
-        tooltip.style.left = param.point.x + 15 + 'px';
-        tooltip.style.top  = param.point.y + 15 + 'px';
+        // offset by panel position so tooltip appears in the correct panel
+        const rect = chartAreaEl.getBoundingClientRect();
+        tooltip.style.left = (rect.left + param.point.x + 15) + 'px';
+        tooltip.style.top  = (rect.top  + param.point.y + 15) + 'px';
         tooltip.style.display = 'block';
     });
 
