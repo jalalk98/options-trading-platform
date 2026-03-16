@@ -56,6 +56,26 @@
         }
         #goToLive:hover { background: #1d4ed8; }
 
+        #maximizeBtn {
+            display: flex;
+            position: fixed;
+            bottom: 24px;
+            right: 16px;
+            z-index: 100;
+            background: #0f172a;
+            color: #fff;
+            border: 2px solid #fff;
+            border-radius: 6px;
+            width: 32px;
+            height: 32px;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            padding: 0;
+        }
+        #maximizeBtn:hover { background: #1e3a5f; border-color: #60a5fa; }
+
         select {
             padding: 6px;
         }
@@ -77,9 +97,9 @@
             min-width: 90px;
             text-align: center;
         }
-        #slBadge.pending  { background: #164e63; color: #06b6d4; }
-        #slBadge.placed   { background: #7c2d12; color: #fb923c; }
-        #slBadge.hit      { background: #333;    color: #aaa;    }
+        #slBadge.pending  { background: #06b6d4; color: #fff; }
+        #slBadge.placed   { background: #fb923c; color: #fff; }
+        #slBadge.hit      { background: #6b7280; color: #fff; }
 
         #chartLabel {
             position: absolute;
@@ -228,6 +248,37 @@
         }
         #layoutBtn:hover { background: #e4e4e4; }
         #layoutBtn svg { display: block; }
+
+        #topbarRight {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        #autoPopulateSelect {
+            font-size: 10px;
+            padding: 2px 4px;
+            height: 22px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: #fff;
+            color: #333;
+            cursor: pointer;
+        }
+        #refreshAllBtn {
+            background: none;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 2px 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #555;
+            height: 22px;
+        }
+        #refreshAllBtn:hover { background: #e4e4e4; }
+        #refreshAllBtn.spinning svg { animation: spin 0.6s linear; }
 
         #layoutPopup {
             display: none;
@@ -397,6 +448,19 @@
             <rect x="8" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
         </svg>
     </button>
+    <!-- Right-side controls -->
+    <div id="topbarRight">
+        <select id="autoPopulateSelect" title="Auto populate panels">
+            <option value="">Auto populate...</option>
+            <option value="nifty-sensex-ce">Nifty &amp; Sensex CE</option>
+            <option value="nifty-sensex-pe">Nifty &amp; Sensex PE</option>
+            <option value="nifty-ce-pe">Nifty CE &amp; PE</option>
+            <option value="sensex-ce-pe">Sensex CE &amp; PE</option>
+        </select>
+        <button id="refreshAllBtn" title="Refresh all charts" onclick="refreshAllPanels()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+    </div>
 </div>
 
 <!-- Layout picker popup -->
@@ -447,6 +511,11 @@
 
 <div id="chartGrid"></div>
 <button id="goToLive">&#9654; Latest</button>
+<button id="maximizeBtn" title="Maximize panel" onclick="toggleMaximize()">
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 6V1h5"/><path d="M10 1h5v5"/><path d="M15 10v5h-5"/><path d="M6 15H1v-5"/>
+    </svg>
+</button>
 <div id="tooltip"></div>
 <div id="toastContainer"></div>
 
@@ -513,7 +582,7 @@ function makeChartOptions(w, h) {
     return {
         width: w, height: h,
         timeScale: {
-            timeVisible: true, secondsVisible: true, rightOffset: 40,
+            timeVisible: true, secondsVisible: true, rightOffset: 10,
             tickMarkFormatter: (time) => {
                 const date = new Date(time * 1000);
                 return date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
@@ -546,10 +615,14 @@ const LAYOUT_CONFIGS = {
     '8a': { cols: 4, rows: 2 }, '8b': { cols: 2, rows: 4 },
 };
 
-let strikeMap   = {};
-let panels      = [];
-let activePanel = null;
+let strikeMap    = {};
+let panels       = [];
+let activePanel  = null;
 let activeLayout = '1';
+let isMaximized  = false;
+
+const ICON_EXPAND  = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6V1h5"/><path d="M10 1h5v5"/><path d="M15 10v5h-5"/><path d="M6 15H1v-5"/></svg>`;
+const ICON_RESTORE = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1v5H1"/><path d="M15 6h-5V1"/><path d="M10 15v-5h5"/><path d="M1 10h5v5"/></svg>`;
 
 // Order bar state (shared, reflects active panel)
 let currentLTP   = null;
@@ -926,6 +999,13 @@ function selectLayout(el) {
         btn.appendChild(clone);
     }
 
+    // Reset maximize if active
+    if (isMaximized) {
+        isMaximized = false;
+        document.getElementById('maximizeBtn').innerHTML = ICON_EXPAND;
+        document.getElementById('maximizeBtn').title = 'Maximize panel';
+    }
+
     const prevSymbol = activePanel ? activePanel.symbol : null;
     panels.forEach(p => p.destroy());
     panels = [];
@@ -1016,6 +1096,53 @@ window.addEventListener('resize', () => {
 document.getElementById('goToLive').addEventListener('click', () => {
     if (activePanel) activePanel.chart.timeScale().scrollToRealTime();
 });
+
+/* ======================
+   MAXIMIZE / RESTORE
+====================== */
+function toggleMaximize() {
+    if (!activePanel) return;
+    const grid = document.getElementById('chartGrid');
+    const btn  = document.getElementById('maximizeBtn');
+    if (!isMaximized) {
+        isMaximized = true;
+        panels.forEach(p => { if (p !== activePanel) p.el.style.display = 'none'; });
+        grid.style.gridTemplateColumns = '1fr';
+        grid.style.gridTemplateRows    = '1fr';
+        btn.innerHTML = ICON_RESTORE;
+        btn.title = 'Restore layout';
+    } else {
+        isMaximized = false;
+        panels.forEach(p => { p.el.style.display = ''; });
+        const cfg = LAYOUT_CONFIGS[activeLayout];
+        grid.style.gridTemplateColumns = `repeat(${cfg.cols}, 1fr)`;
+        grid.style.gridTemplateRows    = `repeat(${cfg.rows}, 1fr)`;
+        btn.innerHTML = ICON_EXPAND;
+        btn.title = 'Maximize panel';
+    }
+    requestAnimationFrame(() => panels.forEach(p => p.resize()));
+}
+
+/* ======================
+   REFRESH ALL / AUTO POPULATE
+====================== */
+async function refreshAllPanels() {
+    const btn = document.getElementById('refreshAllBtn');
+    btn.classList.add('spinning');
+    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol)));
+    btn.classList.remove('spinning');
+}
+
+document.getElementById('autoPopulateSelect').addEventListener('change', function() {
+    const value = this.value;
+    if (!value) return;
+    autoPopulatePanels(value);
+    this.value = '';
+});
+
+async function autoPopulatePanels(mode) {
+    // Logic to be implemented
+}
 
 /* ======================
    SL BADGE
