@@ -21,12 +21,12 @@ _tg() {
 trap '_tg "❌ daily_summary.sh crashed on '"$TODAY"'. Check the server."' ERR
 
 # ── DB health — query each value separately to avoid space-in-value parsing issues
-PG="PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq"
+_pg() { PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c "$1" 2>/dev/null | tr -d ' \n'; }
 
-TABLE_SIZE=$(eval $PG -c "SELECT pg_size_pretty(pg_total_relation_size('gap_ticks'));" 2>/dev/null | tr -d ' ')
-TOTAL_ROWS=$(eval $PG -c "SELECT COUNT(*) FROM gap_ticks;" 2>/dev/null | tr -d ' ')
-DEAD_TUPLES=$(eval $PG -c "SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='gap_ticks';" 2>/dev/null | tr -d ' ')
-LAST_ANALYZE_DATE=$(eval $PG -c "SELECT COALESCE(DATE(last_analyze)::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';" 2>/dev/null | tr -d ' ')
+TABLE_SIZE=$(_pg "SELECT pg_size_pretty(pg_total_relation_size('gap_ticks'));")
+TOTAL_ROWS=$(_pg "SELECT COUNT(*) FROM gap_ticks;")
+DEAD_TUPLES=$(_pg "SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='gap_ticks';")
+LAST_ANALYZE_DATE=$(_pg "SELECT COALESCE(DATE(last_analyze)::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';")
 
 if [ "$LAST_ANALYZE_DATE" = "$TODAY" ]; then
     VACUUM_STATUS="today ✅"
@@ -36,8 +36,8 @@ else
 fi
 
 # ── Today's tick data ─────────────────────────────────────────────────────────
-SYMBOLS_TODAY=$(eval $PG -c "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;" 2>/dev/null | tr -d ' ')
-TICKS_TODAY=$(eval $PG -c "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;" 2>/dev/null | tr -d ' ')
+SYMBOLS_TODAY=$(_pg "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
+TICKS_TODAY=$(_pg "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
 
 # Format ticks with thousands separator
 TICKS_FMT=$(printf "%'d" "${TICKS_TODAY:-0}" 2>/dev/null || echo "${TICKS_TODAY:-0}")
