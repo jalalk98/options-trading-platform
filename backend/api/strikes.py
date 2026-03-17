@@ -266,12 +266,12 @@ async def _query_history(conn, symbol: str):
 
 
 @router.get("/history/{symbol}")
-async def get_history(symbol: str, request: Request):
+async def get_history(symbol: str, request: Request, nocache: bool = False):
     pool = request.app.state.pool
 
-    cached = _history_cache.get(symbol)
-    if cached:
-        if time.monotonic() - cached["ts"] < cached.get("ttl", 300):
+    if not nocache:
+        cached = _history_cache.get(symbol)
+        if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
             return cached["data"]
 
     async with pool.acquire() as conn:
@@ -339,12 +339,13 @@ async def _query_gaps(conn, symbol: str):
 
 
 @router.get("/gaps/{symbol}")
-async def get_gaps(symbol: str, request: Request):
+async def get_gaps(symbol: str, request: Request, nocache: bool = False):
     pool = request.app.state.pool
 
-    cached = _gaps_cache.get(symbol)
-    if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
-        return cached["data"]
+    if not nocache:
+        cached = _gaps_cache.get(symbol)
+        if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
+            return cached["data"]
 
     async with pool.acquire() as conn:
         data = await _query_gaps(conn, symbol)
@@ -355,6 +356,7 @@ async def get_gaps(symbol: str, request: Request):
 
 class BatchRequest(BaseModel):
     symbols: list[str]
+    nocache: bool = False
 
 
 @router.post("/batch")
@@ -364,12 +366,13 @@ async def get_batch(body: BatchRequest, request: Request):
     symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
 
     async def fetch_one(symbol):
-        # Serve from cache if fresh
-        h_cached = _history_cache.get(symbol)
-        g_cached  = _gaps_cache.get(symbol)
-        now = time.monotonic()
-        if (h_cached and now - h_cached["ts"] < h_cached.get("ttl", 300)) and (g_cached and now - g_cached["ts"] < g_cached.get("ttl", 300)):
-            return symbol, h_cached["data"], g_cached["data"]
+        # Serve from cache if fresh and not bypassed
+        if not body.nocache:
+            h_cached = _history_cache.get(symbol)
+            g_cached  = _gaps_cache.get(symbol)
+            now = time.monotonic()
+            if (h_cached and now - h_cached["ts"] < h_cached.get("ttl", 300)) and (g_cached and now - g_cached["ts"] < g_cached.get("ttl", 300)):
+                return symbol, h_cached["data"], g_cached["data"]
 
         # Each query needs its own connection (asyncpg doesn't allow concurrent queries on one conn)
         async def do_history():

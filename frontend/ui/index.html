@@ -872,7 +872,7 @@ function createPanel(id) {
     }
 
     // ── Load symbol ───────────────────────────────
-    async function panelLoadSymbol(sym, prefetched = null) {
+    async function panelLoadSymbol(sym, prefetched = null, nocache = false) {
         if (!sym) return;
         historyLoaded = false; symbol = sym;
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
@@ -890,7 +890,8 @@ function createPanel(id) {
             history  = prefetched.history;
             gapsRaw  = prefetched.gaps;
         } else {
-            const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}`), fetch(`/api/gaps/${sym}`)]);
+            const qs = nocache ? '?nocache=true' : '';
+            const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}${qs}`), fetch(`/api/gaps/${sym}${qs}`)]);
             history  = await histRes.json();
             gapsRaw  = await gapRes.json();
         }
@@ -929,7 +930,7 @@ function createPanel(id) {
         e.stopPropagation();
         if (!symbol) return;
         refreshBtn.classList.add('spinning');
-        await panelLoadSymbol(symbol);
+        await panelLoadSymbol(symbol, null, true);
         refreshBtn.classList.remove('spinning');
     });
 
@@ -1135,7 +1136,7 @@ function toggleMaximize() {
 async function refreshAllPanels() {
     const btn = document.getElementById('refreshAllBtn');
     btn.classList.add('spinning');
-    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol)));
+    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
     btn.classList.remove('spinning');
 }
 
@@ -1225,7 +1226,7 @@ async function autoPopulatePanels(mode) {
         ? await fetch('/api/batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbols }),
+            body: JSON.stringify({ symbols, nocache: true }),
           }).then(r => r.json())
         : {};
 
