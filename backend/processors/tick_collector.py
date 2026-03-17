@@ -45,8 +45,8 @@ def should_subscribe(index_name, expiry_str):
     if index_name in ["NIFTY", "SENSEX"]:
         return True
 
-    # BANKNIFTY only in last 2 days
-    if index_name == "BANKNIFTY":
+    # BANKNIFTY, FINNIFTY, MIDCPNIFTY only in last 2 days of expiry
+    if index_name in ["BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]:
         return 0 <= days_left <= 1
 
     return True
@@ -101,21 +101,11 @@ async def main():
     logger.info("Instrument file loaded successfully")
 
     subscriptions = [
-    {
-        "index": "NIFTY",
-        "ltp_symbol": "NSE:NIFTY 50",
-        "gap": 50
-    },
-    {
-        "index": "SENSEX",
-        "ltp_symbol": "BSE:SENSEX",
-        "gap": 100
-    },
-    {
-        "index": "BANKNIFTY",
-        "ltp_symbol": "NSE:NIFTY BANK",
-        "gap": 100
-    }
+        {"index": "NIFTY",      "ltp_symbol": "NSE:NIFTY 50",          "gap": 50,  "count": 8},
+        {"index": "SENSEX",     "ltp_symbol": "BSE:SENSEX",             "gap": 100, "count": 8},
+        {"index": "BANKNIFTY",  "ltp_symbol": "NSE:NIFTY BANK",         "gap": 100, "count": 6},
+        {"index": "FINNIFTY",   "ltp_symbol": "NSE:NIFTY FIN SERVICE",  "gap": 50,  "count": 6},
+        {"index": "MIDCPNIFTY", "ltp_symbol": "NSE:NIFTY MID SELECT",   "gap": 25,  "count": 6},
     ]
 
     all_tokens = []
@@ -156,7 +146,7 @@ async def main():
         strikes = generate_strikes(
             ltp,
             sub["gap"],
-            8
+            sub["count"]
         )
 
         logger.info(
