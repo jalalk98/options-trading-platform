@@ -1256,11 +1256,23 @@ async function autoPopulatePanels(mode) {
     const g1Strikes = getStrikes(g1Index, g1Type, g1Size);
     const g2Strikes = getStrikes(g2Index, g2Type, g2Size);
 
-    // Map each panel to its symbol (null if not found)
-    const panelSymbols = [
-        ...g1Strikes.map(s => findSymbol(s, g1Type)),
-        ...g2Strikes.map(s => findSymbol(s, g2Type)),
-    ];
+    const g1Symbols = g1Strikes.map(s => findSymbol(s, g1Type));
+    const g2Symbols = g2Strikes.map(s => findSymbol(s, g2Type));
+
+    // For 2-column layouts with >2 rows: fill column-by-column so g1 goes down
+    // the left column and g2 goes down the right column (e.g. CE left, PE right).
+    // For all other layouts keep the default sequential (row-major) order.
+    const cfg = LAYOUT_CONFIGS[activeLayout];
+    let panelSymbols;
+    if (cfg.cols === 2 && cfg.rows > 2) {
+        panelSymbols = [];
+        for (let row = 0; row < cfg.rows; row++) {
+            panelSymbols.push(g1Symbols[row] || null);
+            panelSymbols.push(g2Symbols[row] || null);
+        }
+    } else {
+        panelSymbols = [...g1Symbols, ...g2Symbols];
+    }
 
     // Batch-fetch all symbols in one request so all data arrives together
     const symbols = panelSymbols.filter(Boolean);
