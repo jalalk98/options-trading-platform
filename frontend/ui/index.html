@@ -1079,9 +1079,9 @@ async function loadStrikes() {
         const atmEntry     = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
         const defaultEntry = atmEntry || strikes[0];
         document.getElementById("symbolSelect").value = defaultEntry.display;
-        if (activePanel) activePanel.loadSymbol(defaultEntry.symbol, null, true);
+        if (activePanel) await activePanel.loadSymbol(defaultEntry.symbol, null, true);
     }
-    // Background pre-warm: fetch likely auto-populate symbols so first click is instant
+    // Background pre-warm: fires AFTER default symbol loads to avoid DB pool contention
     prewarmAutoPopulate(atm);
 }
 
@@ -1120,7 +1120,7 @@ async function prewarmAutoPopulate(atm) {
         fetch('/api/batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbols: allSymbols, nocache: true }),
+            body: JSON.stringify({ symbols: allSymbols, nocache: false }),
         }).catch(() => {});
     } catch (_) {}
 }

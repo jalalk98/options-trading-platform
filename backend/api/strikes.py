@@ -59,10 +59,12 @@ async def prewarm_strikes_cache(pool):
         else:
             atm_symbol = result[0]["symbol"] if result else None
 
-        # Prewarm history cache for the ATM symbol
+        # Prewarm history + gaps cache for the ATM symbol
         if atm_symbol:
             data = await _query_history(conn, atm_symbol)
             _history_cache[atm_symbol] = {"data": data, "ts": time.monotonic()}
+            gaps_data = await _query_gaps(conn, atm_symbol)
+            _gaps_cache[atm_symbol] = {"data": gaps_data, "ts": time.monotonic()}
 
 
 @router.get("/strikes")
