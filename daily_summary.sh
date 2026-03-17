@@ -20,35 +20,24 @@ _tg() {
 
 trap '_tg "❌ daily_summary.sh crashed on '"$TODAY"'. Check the server."' ERR
 
-# ── DB health ─────────────────────────────────────────────────────────────────
-read TABLE_SIZE TOTAL_ROWS LAST_VACUUM LAST_ANALYZE DEAD_TUPLES <<< $(
-    PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c "
-    SELECT
-        pg_size_pretty(pg_total_relation_size('gap_ticks')),
-        (SELECT COUNT(*) FROM gap_ticks),
-        COALESCE(to_char(last_vacuum,  'DD Mon HH24:MI'), 'never'),
-        COALESCE(to_char(last_analyze, 'DD Mon HH24:MI'), 'never'),
-        n_dead_tup
-    FROM pg_stat_user_tables WHERE relname = 'gap_ticks';" 2>/dev/null | tr '|' ' '
-)
+# ── DB health — query each value separately to avoid space-in-value parsing issues
+PG="PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq"
 
-# Vacuum age indicator
-LAST_ANALYZE_DATE=$(PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c \
-    "SELECT COALESCE(DATE(last_analyze), '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';" 2>/dev/null | tr -d ' ')
+TABLE_SIZE=$(eval $PG -c "SELECT pg_size_pretty(pg_total_relation_size('gap_ticks'));" 2>/dev/null | tr -d ' ')
+TOTAL_ROWS=$(eval $PG -c "SELECT COUNT(*) FROM gap_ticks;" 2>/dev/null | tr -d ' ')
+DEAD_TUPLES=$(eval $PG -c "SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='gap_ticks';" 2>/dev/null | tr -d ' ')
+LAST_ANALYZE_DATE=$(eval $PG -c "SELECT COALESCE(DATE(last_analyze)::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';" 2>/dev/null | tr -d ' ')
+
 if [ "$LAST_ANALYZE_DATE" = "$TODAY" ]; then
     VACUUM_STATUS="today ✅"
 else
-    DAYS_AGO=$(( ( $(date +%s) - $(date -d "$LAST_ANALYZE_DATE" +%s 2>/dev/null || echo $(date +%s)) ) / 86400 ))
+    DAYS_AGO=$(( ( $(date +%s) - $(date -d "${LAST_ANALYZE_DATE:-1970-01-01}" +%s 2>/dev/null || echo $(date +%s)) ) / 86400 ))
     VACUUM_STATUS="${DAYS_AGO}d ago ⚠️"
 fi
 
 # ── Today's tick data ─────────────────────────────────────────────────────────
-read SYMBOLS_TODAY TICKS_TODAY <<< $(
-    PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c "
-    SELECT COUNT(DISTINCT symbol), COUNT(*)
-    FROM gap_ticks
-    WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;" 2>/dev/null | tr '|' ' '
-)
+SYMBOLS_TODAY=$(eval $PG -c "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;" 2>/dev/null | tr -d ' ')
+TICKS_TODAY=$(eval $PG -c "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;" 2>/dev/null | tr -d ' ')
 
 # Format ticks with thousands separator
 TICKS_FMT=$(printf "%'d" "${TICKS_TODAY:-0}" 2>/dev/null || echo "${TICKS_TODAY:-0}")
