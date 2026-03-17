@@ -895,7 +895,7 @@ function createPanel(id) {
             history  = await histRes.json();
             gapsRaw  = await gapRes.json();
         }
-        const candles = history.map(c => ({ time: c.time - 19800, open: c.open, high: c.high, low: c.low, close: c.close }));
+        const candles = history.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
         lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
         gapsRaw.forEach(g => {
             const dir = g.direction === 'UP' ? 'D' : 'U';
@@ -1083,21 +1083,39 @@ async function loadStrikes() {
 async function prewarmAutoPopulate(atm) {
     try {
         const STEP = { NIFTY: 50, SENSEX: 100 };
-        const atmStrike = atm && atm.strike ? Math.round(atm.strike) : null;
-        if (!atmStrike) return;
         const n = 8;
-        const s = STEP.NIFTY;
-        const ceStrikes = Array.from({ length: n }, (_, i) => atmStrike + (i - (n - 2)) * s);
-        const peStrikes = Array.from({ length: n }, (_, i) => atmStrike + (n - 1 - i) * s);
-        const symbols = [
-            ...ceStrikes.map(strike => { const suffix = `| ${strike} CE`; const k = Object.keys(strikeMap).find(d => d.endsWith(suffix)); return k ? strikeMap[k] : null; }),
-            ...peStrikes.map(strike => { const suffix = `| ${strike} PE`; const k = Object.keys(strikeMap).find(d => d.endsWith(suffix)); return k ? strikeMap[k] : null; }),
-        ].filter(Boolean);
-        if (symbols.length === 0) return;
+
+        // Collect all symbols for both NIFTY and SENSEX across CE and PE
+        const allSymbols = [];
+        for (const [idx, s] of Object.entries(STEP)) {
+            // Get ATM for this index: NIFTY uses the passed atm, SENSEX fetches separately
+            let atmStrike = null;
+            if (idx === 'NIFTY' && atm && atm.strike) {
+                atmStrike = Math.round(atm.strike);
+            } else {
+                try {
+                    const r = await fetch(`/api/atm-symbol?index=${idx}`);
+                    const d = await r.json();
+                    if (d.strike) atmStrike = Math.round(d.strike);
+                } catch (_) {}
+            }
+            if (!atmStrike) continue;
+            const ceStrikes = Array.from({ length: n }, (_, i) => atmStrike + (i - (n - 2)) * s);
+            const peStrikes = Array.from({ length: n }, (_, i) => atmStrike + (n - 1 - i) * s);
+            for (const strike of ceStrikes) {
+                const k = Object.keys(strikeMap).find(d => d.endsWith(`| ${strike} CE`));
+                if (k) allSymbols.push(strikeMap[k]);
+            }
+            for (const strike of peStrikes) {
+                const k = Object.keys(strikeMap).find(d => d.endsWith(`| ${strike} PE`));
+                if (k) allSymbols.push(strikeMap[k]);
+            }
+        }
+        if (allSymbols.length === 0) return;
         fetch('/api/batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbols, nocache: true }),
+            body: JSON.stringify({ symbols: allSymbols, nocache: true }),
         }).catch(() => {});
     } catch (_) {}
 }

@@ -4,6 +4,7 @@ import asyncio
 import asyncpg
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from config.credentials import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 )
@@ -21,6 +22,7 @@ app = FastAPI()
 app.include_router(strikes_router, prefix="/api")
 app.include_router(sl_router, prefix="/api")
 
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,7 +39,7 @@ async def create_pool():
         password=DB_PASSWORD,
         database=DB_NAME,
         min_size=2,
-        max_size=20,
+        max_size=40,
     )
 
 
