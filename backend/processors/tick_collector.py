@@ -103,7 +103,7 @@ async def main():
     subscriptions = [
         {"index": "NIFTY",      "ltp_symbol": "NSE:NIFTY 50",          "gap": 50,  "count": 8},
         {"index": "SENSEX",     "ltp_symbol": "BSE:SENSEX",             "gap": 100, "count": 8},
-        {"index": "BANKNIFTY",  "ltp_symbol": "NSE:NIFTY BANK",         "gap": 100, "count": 6},
+        {"index": "BANKNIFTY",  "ltp_symbol": "NSE:NIFTY BANK",         "gap": 100, "count": 8},
         {"index": "FINNIFTY",   "ltp_symbol": "NSE:NIFTY FIN SERVICE",  "gap": 50,  "count": 6},
         {"index": "MIDCPNIFTY", "ltp_symbol": "NSE:NIFTY MID SELECT",   "gap": 25,  "count": 6},
     ]
