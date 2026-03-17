@@ -219,40 +219,37 @@ _history_cache = {}   # symbol → {"day": date, "data": [...]}
 
 
 async def _query_history(conn, symbol: str):
-    # Step 1: O(1) index lookup — find the latest timestamp for this symbol
-    max_ts = await conn.fetchval(
-        "SELECT MAX(timestamp) FROM gap_ticks WHERE symbol = $1", symbol
-    )
-    if not max_ts:
-        return []
-
-    # Step 2: compute IST day boundaries (asyncpg returns naive UTC datetimes)
-    max_ist = max_ts.replace(tzinfo=timezone.utc).astimezone(_IST)
-    day_start_ist = max_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Strip back to naive UTC for asyncpg
-    day_start = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
-    day_end   = (day_start_ist + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
-
-    # Step 3: range query — uses covering index, zero heap reads
+    # Single query: compute IST day bounds inside SQL, then aggregate OHLC.
+    # Uses idx_gap_ticks_history_cover (symbol, timestamp) INCLUDE (curr_price).
     rows = await conn.fetch("""
+        WITH bounds AS (
+            SELECT
+                DATE_TRUNC('day',
+                    (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
+                ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+            FROM gap_ticks
+            WHERE symbol = $1
+        ),
+        ticks AS (
+            SELECT
+                FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                g.curr_price,
+                g.timestamp
+            FROM gap_ticks g, bounds
+            WHERE g.symbol = $1
+              AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
+              AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+        )
         SELECT
             bucket,
             (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
             MAX(curr_price)                                     AS high,
             MIN(curr_price)                                     AS low,
             (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
-        FROM (
-            SELECT
-                FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
-                curr_price, timestamp
-            FROM gap_ticks
-            WHERE symbol = $1
-              AND timestamp >= $2
-              AND timestamp <  $3
-        ) t
+        FROM ticks
         GROUP BY bucket
         ORDER BY bucket ASC
-    """, symbol, day_start, day_end)
+    """, symbol)
 
     return [
         {
@@ -272,7 +269,7 @@ async def get_history(symbol: str, request: Request):
 
     cached = _history_cache.get(symbol)
     if cached:
-        if time.monotonic() - cached["ts"] < 10:
+        if time.monotonic() - cached["ts"] < 60:
             return cached["data"]
 
     async with pool.acquire() as conn:
@@ -290,60 +287,52 @@ async def get_gaps(symbol: str, request: Request):
     pool = request.app.state.pool
 
     cached = _gaps_cache.get(symbol)
-    if cached and time.monotonic() - cached["ts"] < 10:
+    if cached and time.monotonic() - cached["ts"] < 60:
         return cached["data"]
 
+    is_sensex = symbol.startswith("SENSEX")
+
     async with pool.acquire() as conn:
-        max_ts = await conn.fetchval(
-            "SELECT MAX(timestamp) FROM gap_ticks WHERE symbol = $1", symbol
-        )
-        if not max_ts:
-            return []
-
-        max_ist      = max_ts.replace(tzinfo=timezone.utc).astimezone(_IST)
-        day_start_ist = max_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_start    = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
-        day_end      = (day_start_ist + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
-
-        # Check if this symbol has any is_gap rows (NIFTY) or needs fallback (SENSEX)
-        is_sensex = symbol.startswith("SENSEX")
-
         if is_sensex:
-            # SENSEX historical data was collected before per-symbol gap detection.
-            # Detect gaps on-the-fly using SENSEX-specific thresholds (3x NIFTY):
-            #   price_jump >= 3.0, time_diff = 0.0, spread_pct <= 0.75
             rows = await conn.fetch("""
+                WITH bounds AS (
+                    SELECT
+                        DATE_TRUNC('day',
+                            (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
+                        ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+                    FROM gap_ticks WHERE symbol = $1
+                )
                 SELECT DISTINCT ON (bucket)
-                    FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
-                    direction,
-                    prev_price,
-                    curr_price,
-                    vol_change
-                FROM gap_ticks
-                WHERE symbol    = $1
-                  AND timestamp >= $2
-                  AND timestamp <  $3
-                  AND ABS(price_jump) >= 3.0
-                  AND time_diff  = 0.0
-                  AND spread_pct <= 0.75
-                ORDER BY bucket, timestamp ASC
-            """, symbol, day_start, day_end)
+                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                    g.direction, g.prev_price, g.curr_price, g.vol_change
+                FROM gap_ticks g, bounds
+                WHERE g.symbol    = $1
+                  AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
+                  AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+                  AND ABS(g.price_jump) >= 3.0
+                  AND g.time_diff  = 0.0
+                  AND g.spread_pct <= 0.75
+                ORDER BY bucket, g.timestamp ASC
+            """, symbol)
         else:
-            # NIFTY/BANKNIFTY: use the is_gap flag set by the gap processor
             rows = await conn.fetch("""
+                WITH bounds AS (
+                    SELECT
+                        DATE_TRUNC('day',
+                            (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
+                        ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+                    FROM gap_ticks WHERE symbol = $1
+                )
                 SELECT DISTINCT ON (bucket)
-                    FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
-                    direction,
-                    prev_price,
-                    curr_price,
-                    vol_change
-                FROM gap_ticks
-                WHERE symbol   = $1
-                  AND is_gap    = true
-                  AND timestamp >= $2
-                  AND timestamp <  $3
-                ORDER BY bucket, timestamp ASC
-            """, symbol, day_start, day_end)
+                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                    g.direction, g.prev_price, g.curr_price, g.vol_change
+                FROM gap_ticks g, bounds
+                WHERE g.symbol   = $1
+                  AND g.is_gap    = true
+                  AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
+                  AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+                ORDER BY bucket, g.timestamp ASC
+            """, symbol)
 
     data = [
         {
