@@ -1076,6 +1076,30 @@ async function loadStrikes() {
         document.getElementById("symbolSelect").value = defaultEntry.display;
         if (activePanel) activePanel.loadSymbol(defaultEntry.symbol, null, true);
     }
+    // Background pre-warm: fetch likely auto-populate symbols so first click is instant
+    prewarmAutoPopulate(atm);
+}
+
+async function prewarmAutoPopulate(atm) {
+    try {
+        const STEP = { NIFTY: 50, SENSEX: 100 };
+        const atmStrike = atm && atm.strike ? Math.round(atm.strike) : null;
+        if (!atmStrike) return;
+        const n = 8;
+        const s = STEP.NIFTY;
+        const ceStrikes = Array.from({ length: n }, (_, i) => atmStrike + (i - (n - 2)) * s);
+        const peStrikes = Array.from({ length: n }, (_, i) => atmStrike + (n - 1 - i) * s);
+        const symbols = [
+            ...ceStrikes.map(strike => { const suffix = `| ${strike} CE`; const k = Object.keys(strikeMap).find(d => d.endsWith(suffix)); return k ? strikeMap[k] : null; }),
+            ...peStrikes.map(strike => { const suffix = `| ${strike} PE`; const k = Object.keys(strikeMap).find(d => d.endsWith(suffix)); return k ? strikeMap[k] : null; }),
+        ].filter(Boolean);
+        if (symbols.length === 0) return;
+        fetch('/api/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbols, nocache: true }),
+        }).catch(() => {});
+    } catch (_) {}
 }
 
 document.getElementById("symbolSelect").addEventListener("focus", function() { this.select(); });
