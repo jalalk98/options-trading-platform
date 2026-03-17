@@ -150,24 +150,6 @@
         }
         #slCmCancel  { background: #374151; color: #e5e7eb; }
         #slCmConfirm { background: #06b6d4; color: #fff; font-weight: bold; }
-        .sl-cm-divider { border: none; border-top: 1px solid #374151; margin: 8px 0; }
-        .sl-cm-check {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            margin-bottom: 6px;
-            cursor: pointer;
-            font-size: 11px;
-            color: #e5e7eb;
-            user-select: none;
-        }
-        .sl-cm-check input[type=checkbox] {
-            width: 13px;
-            height: 13px;
-            accent-color: #06b6d4;
-            cursor: pointer;
-            margin: 0;
-        }
 
         #chartLabel {
             position: absolute;
@@ -298,8 +280,17 @@
         }
         .slcfg-input::-webkit-inner-spin-button,
         .slcfg-input::-webkit-outer-spin-button { -webkit-appearance: none; appearance: none; }
-        #slConfigClose { margin-top: 4px; width: 100%; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 0; cursor: pointer; font-size: 10px; }
+        #slConfigClose { margin-top: 8px; width: 100%; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 0; cursor: pointer; font-size: 10px; }
         #slConfigClose:hover { background: #1e293b; }
+        .slcfg-divider { border: none; border-top: 1px solid #334155; margin: 7px 0; }
+        .slcfg-check {
+            display: flex; align-items: center; gap: 7px;
+            margin-bottom: 5px; cursor: pointer;
+            font-size: 9px; color: #94a3b8; user-select: none;
+        }
+        .slcfg-check input[type=checkbox] {
+            width: 12px; height: 12px; accent-color: #38bdf8; cursor: pointer; margin: 0;
+        }
 
         /* ── Layout picker ── */
         #layoutBtn {
@@ -618,18 +609,9 @@
 
 <!-- SL right-click context menu -->
 <div id="slContextMenu">
-    <div class="sl-cm-title">SL Settings</div>
-    <label>Trigger buffer (points)</label>
+    <div class="sl-cm-title">Trigger Buffer</div>
+    <label>Points between SL and trigger</label>
     <input type="number" id="slCmBuffer" step="0.05" min="0.05">
-    <hr class="sl-cm-divider">
-    <label class="sl-cm-check">
-        <input type="checkbox" id="slCmAutoCancel">
-        Auto cancel
-    </label>
-    <label class="sl-cm-check">
-        <input type="checkbox" id="slCmAutoSlInc">
-        Auto SL INC
-    </label>
     <div class="sl-cm-btns">
         <button id="slCmCancel">Cancel</button>
         <button id="slCmConfirm">Set</button>
@@ -732,6 +714,15 @@
         <label>Distance from LTP</label>
         <input id="slDistInput" class="slcfg-input" type="number" min="0.5" step="0.5" value="5">
     </div>
+    <hr class="slcfg-divider">
+    <label class="slcfg-check">
+        <input type="checkbox" id="slCfgAutoCancel">
+        Auto cancel
+    </label>
+    <label class="slcfg-check">
+        <input type="checkbox" id="slCfgAutoSlInc">
+        Auto SL INC
+    </label>
     <button id="slConfigClose" onclick="closeSlConfig()">Done</button>
 </div>
 
@@ -1011,10 +1002,8 @@ function createPanel(id) {
         e.preventDefault();
         const menu = document.getElementById('slContextMenu');
         document.getElementById('slCmBuffer').value = slTriggerBuffer;
-        document.getElementById('slCmAutoCancel').checked = false;
-        document.getElementById('slCmAutoSlInc').checked  = false;
         // position near cursor, keep within viewport
-        const mw = 200, mh = 160;
+        const mw = 200, mh = 120;
         const left = Math.min(e.clientX, window.innerWidth  - mw - 8);
         const top  = Math.min(e.clientY, window.innerHeight - mh - 8);
         menu.style.left    = left + 'px';
