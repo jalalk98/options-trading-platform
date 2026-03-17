@@ -1032,7 +1032,12 @@ function selectLayout(el) {
 
     requestAnimationFrame(() => {
         panels.forEach(p => p.resize());
-        if (prevSymbol) panels[0].loadSymbol(prevSymbol);
+        const autoMode = document.getElementById('autoPopulateSelect').value;
+        if (autoMode) {
+            autoPopulatePanels(autoMode).catch(() => {});
+        } else if (prevSymbol) {
+            panels[0].loadSymbol(prevSymbol);
+        }
     });
 }
 
