@@ -1078,6 +1078,7 @@ async function loadStrikes() {
     }
 }
 
+document.getElementById("symbolSelect").addEventListener("focus", function() { this.select(); });
 document.getElementById("symbolSelect").addEventListener("change", async function() {
     const displayValue = this.value;
     if (strikeMap[displayValue]) { loadSymbol(strikeMap[displayValue]); return; }
@@ -1143,7 +1144,6 @@ async function refreshAllPanels() {
 document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
     const value = this.value;
     if (!value) return;
-    this.value = '';
     try {
         await autoPopulatePanels(value);
     } catch (e) {
