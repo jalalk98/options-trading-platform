@@ -2,7 +2,7 @@
 
 SESSION="trading"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$HOME/trading_start.log"
+LOG_FILE="$HOME/trading_start.txt"
 
 # Holiday check — manual flag
 if [ -f "$HOME/.trading_paused" ]; then

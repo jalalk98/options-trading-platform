@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$HOME/trading_stop.log"
+LOG_FILE="$HOME/trading_stop.txt"
 
 # Holiday check — manual flag
 if [ -f "$HOME/.trading_paused" ]; then
