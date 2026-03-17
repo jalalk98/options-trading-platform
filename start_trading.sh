@@ -22,14 +22,6 @@ fi
 
 tmux kill-session -t $SESSION 2>/dev/null
 
-# Kill any stale process on port 8000
-STALE_PID=$(lsof -ti:8000 2>/dev/null)
-if [ -n "$STALE_PID" ]; then
-    echo "Killing stale process on port 8000 (PID $STALE_PID)..."
-    kill -9 $STALE_PID 2>/dev/null
-    sleep 1
-fi
-
 echo "Clearing old Redis ticks..."
 redis-cli DEL ticks_stream
 
@@ -46,22 +38,18 @@ tmux new-window -t $SESSION -n tick_collector
 
 tmux send-keys -t $SESSION:1 "cd ~/projects/options-trading-platform && ~/projects/options-trading-platform/venv/bin/python -m backend.processors.tick_collector" C-m
 
-tmux new-window -t $SESSION -n api_server
-
-tmux send-keys -t $SESSION:2 "cd ~/projects/options-trading-platform && ~/projects/options-trading-platform/venv/bin/uvicorn backend.api.chart_server:app --host 0.0.0.0 --port 8000" C-m
-
 # Wait for processes to settle then check health
 sleep 5
 
 WINDOWS=$(tmux list-windows -t $SESSION 2>/dev/null | wc -l)
 
-if [ "$WINDOWS" -eq 3 ]; then
+if [ "$WINDOWS" -eq 2 ]; then
     "$SCRIPT_DIR/notify.sh" "✅ Trading session started successfully.
 - db_writer      running
 - tick_collector running
-- api_server     running (port 8000)" "$LOG_FILE"
+- api_server     running via systemd (always on)" "$LOG_FILE"
     echo "Trading session started."
 else
-    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — only $WINDOWS/3 tmux windows are running." "$LOG_FILE"
+    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — only $WINDOWS/2 tmux windows are running." "$LOG_FILE"
     echo "Trading session start may have failed."
 fi

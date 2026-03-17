@@ -66,8 +66,8 @@ else
     BOT_STATUS="❌ stopped"
 fi
 
-if curl -s --max-time 3 http://localhost:8000/api/strikes > /dev/null 2>&1; then
-    API_STATUS="✅ running (port 8000)"
+if systemctl is-active --quiet trading-api && curl -s --max-time 3 http://localhost:8000/api/strikes > /dev/null 2>&1; then
+    API_STATUS="✅ running (systemd)"
 else
     API_STATUS="❌ not responding"
 fi
