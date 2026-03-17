@@ -271,7 +271,7 @@ async def get_history(symbol: str, request: Request):
 
     cached = _history_cache.get(symbol)
     if cached:
-        if time.monotonic() - cached["ts"] < cached["ttl"]:
+        if time.monotonic() - cached["ts"] < cached.get("ttl", 300):
             return cached["data"]
 
     async with pool.acquire() as conn:
