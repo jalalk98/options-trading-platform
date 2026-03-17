@@ -908,7 +908,7 @@ function createPanel(id) {
         menu.style.display = 'block';
         menu._panel  = panel;
         menu._symbol = symbol;
-        setTimeout(() => document.getElementById('slCmBuffer').focus(), 0);
+        setTimeout(() => { const el = document.getElementById('slCmBuffer'); el.focus(); el.select(); }, 0);
     });
 
     // ── WebSocket ─────────────────────────────────
@@ -1415,6 +1415,10 @@ function updateSLBadge() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ symbol: sym, price: p.slPrice, trigger_buffer: buffer }),
         });
+    });
+
+    document.getElementById('slCmBuffer').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('slCmConfirm').click();
     });
 
     // Close on outside click or Escape
