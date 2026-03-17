@@ -299,6 +299,34 @@
         #layoutBtn:hover { background: #e4e4e4; }
         #layoutBtn svg { display: block; }
 
+        #indexTicker {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            font-size: 11px;
+            margin: 0 6px;
+        }
+        .idx-chip {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            line-height: 1.2;
+            min-width: 70px;
+        }
+        .idx-name {
+            font-size: 9px;
+            color: #888;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .idx-price {
+            font-size: 11px;
+            font-weight: 700;
+            color: #222;
+        }
+        .idx-price.up   { color: #16a34a; }
+        .idx-price.down { color: #dc2626; }
+
         #topbarRight {
             margin-left: auto;
             display: flex;
@@ -489,6 +517,13 @@
     <input list="symbolList" id="symbolSelect" placeholder="Search strike...">
     <datalist id="symbolList"></datalist>
     <span id="slBadge">SL: —</span>
+
+    <div id="indexTicker">
+        <div class="idx-chip"><span class="idx-name">NIFTY</span><span class="idx-price" id="idx-NIFTY">—</span></div>
+        <div class="idx-chip"><span class="idx-name">SENSEX</span><span class="idx-price" id="idx-SENSEX">—</span></div>
+        <div class="idx-chip"><span class="idx-name">BANKNIFTY</span><span class="idx-price" id="idx-BANKNIFTY">—</span></div>
+        <div class="idx-chip"><span class="idx-name">MID SELECT</span><span class="idx-price" id="idx-MIDCPNIFTY">—</span></div>
+    </div>
     <!-- Layout picker button -->
     <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
         <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1640,6 +1675,30 @@ window.addEventListener("keydown", async e => {
         activePanel.updateSLLine(null, 'none');
     }
 });
+
+/* ======================
+   INDEX TICKER
+====================== */
+const _idxPrev = {};
+async function updateIndexTicker() {
+    try {
+        const data = await fetch('/api/index-ltp').then(r => r.json());
+        const keys = { NIFTY: 'NIFTY', SENSEX: 'SENSEX', BANKNIFTY: 'BANKNIFTY', MIDCPNIFTY: 'MIDCPNIFTY' };
+        for (const [key] of Object.entries(keys)) {
+            const el = document.getElementById('idx-' + key);
+            if (!el) continue;
+            const price = data[key];
+            if (price == null) { el.textContent = '—'; el.className = 'idx-price'; continue; }
+            const formatted = price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const prev = _idxPrev[key];
+            el.textContent = formatted;
+            el.className = 'idx-price' + (prev == null ? '' : price > prev ? ' up' : price < prev ? ' down' : '');
+            _idxPrev[key] = price;
+        }
+    } catch (e) {}
+}
+updateIndexTicker();
+setInterval(updateIndexTicker, 5000);
 
 /* ======================
    INITIALISE

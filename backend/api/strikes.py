@@ -169,16 +169,18 @@ async def get_index_ltp():
     if _ltp_cache["data"] and (now - _ltp_cache["ts"]) < LTP_CACHE_TTL:
         return _ltp_cache["data"]
     try:
-        data = _kite.ltp(["NSE:NIFTY 50", "BSE:SENSEX"])
+        data = _kite.ltp(["NSE:NIFTY 50", "BSE:SENSEX", "NSE:NIFTY BANK", "NSE:NIFTY MID SELECT"])
         result = {
-            "NIFTY":  data.get("NSE:NIFTY 50",  {}).get("last_price"),
-            "SENSEX": data.get("BSE:SENSEX",     {}).get("last_price"),
+            "NIFTY":     data.get("NSE:NIFTY 50",        {}).get("last_price"),
+            "SENSEX":    data.get("BSE:SENSEX",           {}).get("last_price"),
+            "BANKNIFTY": data.get("NSE:NIFTY BANK",       {}).get("last_price"),
+            "MIDCPNIFTY":data.get("NSE:NIFTY MID SELECT", {}).get("last_price"),
         }
         _ltp_cache["data"] = result
         _ltp_cache["ts"] = now
         return result
     except Exception:
-        return {"NIFTY": None, "SENSEX": None}
+        return {"NIFTY": None, "SENSEX": None, "BANKNIFTY": None, "MIDCPNIFTY": None}
 
 
 @router.get("/resolve-symbol")
