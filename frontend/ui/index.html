@@ -521,20 +521,18 @@
     <div id="indexTicker">
         <div class="idx-chip"><span class="idx-name">NIFTY</span><span class="idx-price" id="idx-NIFTY">—</span></div>
         <div class="idx-chip"><span class="idx-name">SENSEX</span><span class="idx-price" id="idx-SENSEX">—</span></div>
-        <div class="idx-chip"><span class="idx-name">BANKNIFTY</span><span class="idx-price" id="idx-BANKNIFTY">—</span></div>
-        <div class="idx-chip"><span class="idx-name">MID SELECT</span><span class="idx-price" id="idx-MIDCPNIFTY">—</span></div>
     </div>
-    <!-- Layout picker button -->
-    <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
-        <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="0" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
-            <rect x="8" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
-            <rect x="0" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
-            <rect x="8" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
-        </svg>
-    </button>
     <!-- Right-side controls -->
     <div id="topbarRight">
+        <!-- Layout picker button -->
+        <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
+            <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="0" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
+                <rect x="8" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
+                <rect x="0" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
+                <rect x="8" y="7" width="6" height="5" rx="0.5" fill="currentColor"/>
+            </svg>
+        </button>
         <select id="autoPopulateSelect" title="Auto populate panels">
             <option value="">Auto populate...</option>
             <option value="nifty-sensex-ce">Nifty &amp; Sensex CE</option>
