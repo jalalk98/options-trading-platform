@@ -1074,7 +1074,7 @@ async function loadStrikes() {
         const atmEntry     = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
         const defaultEntry = atmEntry || strikes[0];
         document.getElementById("symbolSelect").value = defaultEntry.display;
-        loadSymbol(defaultEntry.symbol);
+        if (activePanel) activePanel.loadSymbol(defaultEntry.symbol, null, true);
     }
 }
 
