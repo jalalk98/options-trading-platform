@@ -872,7 +872,7 @@ function createPanel(id) {
     }
 
     // ── Load symbol ───────────────────────────────
-    async function panelLoadSymbol(sym) {
+    async function panelLoadSymbol(sym, prefetched = null) {
         if (!sym) return;
         historyLoaded = false; symbol = sym;
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
@@ -885,9 +885,15 @@ function createPanel(id) {
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null;
         stopSLPoll();
-        const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}`), fetch(`/api/gaps/${sym}`)]);
-        const history = await histRes.json();
-        const gapsRaw = await gapRes.json();
+        let history, gapsRaw;
+        if (prefetched) {
+            history  = prefetched.history;
+            gapsRaw  = prefetched.gaps;
+        } else {
+            const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}`), fetch(`/api/gaps/${sym}`)]);
+            history  = await histRes.json();
+            gapsRaw  = await gapRes.json();
+        }
         const candles = history.map(c => ({ time: c.time - 19800, open: c.open, high: c.high, low: c.low, close: c.close }));
         lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
         gapsRaw.forEach(g => {
@@ -1195,18 +1201,27 @@ async function autoPopulatePanels(mode) {
     const g1Strikes = getStrikes(g1Index, g1Type, g1Size);
     const g2Strikes = getStrikes(g2Index, g2Type, g2Size);
 
-    const loads = [];
-    g1Strikes.forEach((strike, i) => {
-        const sym = findSymbol(strike, g1Type);
-        if (sym) loads.push(panels[i].loadSymbol(sym));
-    });
-    g2Strikes.forEach((strike, i) => {
-        const sym = findSymbol(strike, g2Type);
-        if (sym) loads.push(panels[g1Size + i].loadSymbol(sym));
-        // if sym is null (Sensex not tracked), panel stays as-is
-    });
+    // Map each panel to its symbol (null if not found)
+    const panelSymbols = [
+        ...g1Strikes.map(s => findSymbol(s, g1Type)),
+        ...g2Strikes.map(s => findSymbol(s, g2Type)),
+    ];
 
-    await Promise.all(loads);
+    // Batch-fetch all symbols in one request so all data arrives together
+    const symbols = panelSymbols.filter(Boolean);
+    const batchData = symbols.length
+        ? await fetch('/api/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbols }),
+          }).then(r => r.json())
+        : {};
+
+    // Now load all panels simultaneously using pre-fetched data — no staggered rendering
+    await Promise.all(panelSymbols.map((sym, i) => {
+        if (!sym) return Promise.resolve();
+        return panels[i].loadSymbol(sym, batchData[sym] || null);
+    }));
 }
 
 /* ======================

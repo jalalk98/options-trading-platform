@@ -1,6 +1,7 @@
 # backend/api/strikes.py
 
 import time
+import asyncio
 from datetime import timezone, timedelta
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -282,59 +283,49 @@ async def get_history(symbol: str, request: Request):
 _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 
 
-@router.get("/gaps/{symbol}")
-async def get_gaps(symbol: str, request: Request):
-    pool = request.app.state.pool
-
-    cached = _gaps_cache.get(symbol)
-    if cached and time.monotonic() - cached["ts"] < 60:
-        return cached["data"]
-
+async def _query_gaps(conn, symbol: str):
     is_sensex = symbol.startswith("SENSEX")
-
-    async with pool.acquire() as conn:
-        if is_sensex:
-            rows = await conn.fetch("""
-                WITH bounds AS (
-                    SELECT
-                        DATE_TRUNC('day',
-                            (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
-                        ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
-                    FROM gap_ticks WHERE symbol = $1
-                )
-                SELECT DISTINCT ON (bucket)
-                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                    g.direction, g.prev_price, g.curr_price, g.vol_change
-                FROM gap_ticks g, bounds
-                WHERE g.symbol    = $1
-                  AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
-                  AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
-                  AND ABS(g.price_jump) >= 3.0
-                  AND g.time_diff  = 0.0
-                  AND g.spread_pct <= 0.75
-                ORDER BY bucket, g.timestamp ASC
-            """, symbol)
-        else:
-            rows = await conn.fetch("""
-                WITH bounds AS (
-                    SELECT
-                        DATE_TRUNC('day',
-                            (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
-                        ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
-                    FROM gap_ticks WHERE symbol = $1
-                )
-                SELECT DISTINCT ON (bucket)
-                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                    g.direction, g.prev_price, g.curr_price, g.vol_change
-                FROM gap_ticks g, bounds
-                WHERE g.symbol   = $1
-                  AND g.is_gap    = true
-                  AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
-                  AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
-                ORDER BY bucket, g.timestamp ASC
-            """, symbol)
-
-    data = [
+    if is_sensex:
+        rows = await conn.fetch("""
+            WITH bounds AS (
+                SELECT
+                    DATE_TRUNC('day',
+                        (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
+                    ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+                FROM gap_ticks WHERE symbol = $1
+            )
+            SELECT DISTINCT ON (bucket)
+                FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                g.direction, g.prev_price, g.curr_price, g.vol_change
+            FROM gap_ticks g, bounds
+            WHERE g.symbol    = $1
+              AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
+              AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+              AND ABS(g.price_jump) >= 3.0
+              AND g.time_diff  = 0.0
+              AND g.spread_pct <= 0.75
+            ORDER BY bucket, g.timestamp ASC
+        """, symbol)
+    else:
+        rows = await conn.fetch("""
+            WITH bounds AS (
+                SELECT
+                    DATE_TRUNC('day',
+                        (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
+                    ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+                FROM gap_ticks WHERE symbol = $1
+            )
+            SELECT DISTINCT ON (bucket)
+                FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                g.direction, g.prev_price, g.curr_price, g.vol_change
+            FROM gap_ticks g, bounds
+            WHERE g.symbol   = $1
+              AND g.is_gap    = true
+              AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
+              AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+            ORDER BY bucket, g.timestamp ASC
+        """, symbol)
+    return [
         {
             "time":       int(row["bucket"]),
             "direction":  row["direction"],
@@ -344,8 +335,57 @@ async def get_gaps(symbol: str, request: Request):
         }
         for row in rows
     ]
+
+
+@router.get("/gaps/{symbol}")
+async def get_gaps(symbol: str, request: Request):
+    pool = request.app.state.pool
+
+    cached = _gaps_cache.get(symbol)
+    if cached and time.monotonic() - cached["ts"] < 60:
+        return cached["data"]
+
+    async with pool.acquire() as conn:
+        data = await _query_gaps(conn, symbol)
+
     _gaps_cache[symbol] = {"data": data, "ts": time.monotonic()}
     return data
+
+
+class BatchRequest(BaseModel):
+    symbols: list[str]
+
+
+@router.post("/batch")
+async def get_batch(body: BatchRequest, request: Request):
+    """Fetch history + gaps for multiple symbols in parallel. Used by auto-populate."""
+    pool = request.app.state.pool
+    symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
+
+    async def fetch_one(symbol):
+        # Serve from cache if fresh
+        h_cached = _history_cache.get(symbol)
+        g_cached  = _gaps_cache.get(symbol)
+        now = time.monotonic()
+        if (h_cached and now - h_cached["ts"] < 60) and (g_cached and now - g_cached["ts"] < 60):
+            return symbol, h_cached["data"], g_cached["data"]
+
+        # Each query needs its own connection (asyncpg doesn't allow concurrent queries on one conn)
+        async def do_history():
+            async with pool.acquire() as conn:
+                return await _query_history(conn, symbol)
+
+        async def do_gaps():
+            async with pool.acquire() as conn:
+                return await _query_gaps(conn, symbol)
+
+        history, gaps = await asyncio.gather(do_history(), do_gaps())
+        _history_cache[symbol] = {"data": history, "ts": time.monotonic()}
+        _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic()}
+        return symbol, history, gaps
+
+    results = await asyncio.gather(*[fetch_one(s) for s in symbols])
+    return {sym: {"history": h, "gaps": g} for sym, h, g in results}
 
 class SLOrder(BaseModel):
     symbol: str
