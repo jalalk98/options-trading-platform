@@ -209,12 +209,13 @@ def setup_websocket_events():
                     order_id = (result.get("data") or {}).get("order_id")
 
                 sl_state[trade_symbol] = {
-                    "price":    stop_loss_price,
-                    "order_id": order_id,
-                    "side":     "SELL",
-                    "qty":      qty,
-                    "exchange": exchange,
-                    "state":    "placed",
+                    "price":          stop_loss_price,
+                    "trigger_buffer": trigger_buffer,
+                    "order_id":       order_id,
+                    "side":           "SELL",
+                    "qty":            qty,
+                    "exchange":       exchange,
+                    "state":          "placed",
                 }
                 logger.info(f"SL state updated for {trade_symbol}: order_id={order_id}")
                 return {"status": "success"}
@@ -253,12 +254,13 @@ def setup_websocket_events():
                     order_id = (result.get("data") or {}).get("order_id")
 
                 sl_state[trade_symbol] = {
-                    "price":    stop_loss_price,
-                    "order_id": order_id,
-                    "side":     "BUY",
-                    "qty":      qty,
-                    "exchange": exchange,
-                    "state":    "placed",
+                    "price":          stop_loss_price,
+                    "trigger_buffer": trigger_buffer,
+                    "order_id":       order_id,
+                    "side":           "BUY",
+                    "qty":            qty,
+                    "exchange":       exchange,
+                    "state":          "placed",
                 }
                 logger.info(f"SL state updated for {trade_symbol}: order_id={order_id}")
                 return {"status": "success"}
