@@ -301,19 +301,27 @@
 
         #indexTicker {
             display: flex;
-            gap: 10px;
+            gap: 8px;
             align-items: center;
             font-size: 11px;
             margin: 0 6px;
+        }
+        .idx-group {
+            position: relative;
         }
         .idx-chip {
             display: flex;
             flex-direction: column;
             align-items: flex-end;
             line-height: 1.2;
-            min-width: 70px;
+            min-width: 72px;
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 4px;
+            user-select: none;
         }
-        .idx-name {
+        .idx-chip:hover { background: #f0f0f0; }
+        .idx-label {
             font-size: 9px;
             color: #888;
             font-weight: 600;
@@ -326,6 +334,29 @@
         }
         .idx-price.up   { color: #16a34a; }
         .idx-price.down { color: #dc2626; }
+        .idx-menu {
+            display: none;
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.12);
+            z-index: 2000;
+            min-width: 100px;
+            overflow: hidden;
+        }
+        .idx-menu.open { display: block; }
+        .idx-menu-item {
+            padding: 5px 12px;
+            font-size: 11px;
+            cursor: pointer;
+            white-space: nowrap;
+            color: #333;
+        }
+        .idx-menu-item:hover { background: #f5f5f5; }
+        .idx-menu-item.active { font-weight: 700; color: #1d4ed8; }
 
         #topbarRight {
             margin-left: auto;
@@ -519,8 +550,29 @@
     <span id="slBadge">SL: —</span>
 
     <div id="indexTicker">
-        <div class="idx-chip"><span class="idx-name">NIFTY</span><span class="idx-price" id="idx-NIFTY">—</span></div>
-        <div class="idx-chip"><span class="idx-name">SENSEX</span><span class="idx-price" id="idx-SENSEX">—</span></div>
+        <!-- Group 1: NIFTY / FINNIFTY / MIDCPNIFTY -->
+        <div class="idx-group">
+            <div class="idx-chip" onclick="toggleIdxMenu(1, event)">
+                <span class="idx-label" id="idxLabel1">NIFTY ▾</span>
+                <span class="idx-price" id="idxPrice1">—</span>
+            </div>
+            <div class="idx-menu" id="idxMenu1">
+                <div class="idx-menu-item active" onclick="selectIdx(1,'NIFTY',this)">NIFTY</div>
+                <div class="idx-menu-item" onclick="selectIdx(1,'FINNIFTY',this)">FINNIFTY</div>
+                <div class="idx-menu-item" onclick="selectIdx(1,'MIDCPNIFTY',this)">MIDCPNIFTY</div>
+            </div>
+        </div>
+        <!-- Group 2: SENSEX / BANKNIFTY -->
+        <div class="idx-group">
+            <div class="idx-chip" onclick="toggleIdxMenu(2, event)">
+                <span class="idx-label" id="idxLabel2">SENSEX ▾</span>
+                <span class="idx-price" id="idxPrice2">—</span>
+            </div>
+            <div class="idx-menu" id="idxMenu2">
+                <div class="idx-menu-item active" onclick="selectIdx(2,'SENSEX',this)">SENSEX</div>
+                <div class="idx-menu-item" onclick="selectIdx(2,'BANKNIFTY',this)">BANKNIFTY</div>
+            </div>
+        </div>
     </div>
     <!-- Right-side controls -->
     <div id="topbarRight">
@@ -1678,19 +1730,42 @@ window.addEventListener("keydown", async e => {
    INDEX TICKER
 ====================== */
 const _idxPrev = {};
+const idxSelection = { 1: 'NIFTY', 2: 'SENSEX' };
+
+function toggleIdxMenu(group, e) {
+    e.stopPropagation();
+    const menu = document.getElementById('idxMenu' + group);
+    const other = document.getElementById('idxMenu' + (group === 1 ? 2 : 1));
+    other.classList.remove('open');
+    menu.classList.toggle('open');
+}
+
+function selectIdx(group, key, el) {
+    idxSelection[group] = key;
+    document.getElementById('idxLabel' + group).textContent = key + ' ▾';
+    document.getElementById('idxMenu' + group).querySelectorAll('.idx-menu-item').forEach(i => i.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('idxMenu' + group).classList.remove('open');
+    updateIndexTicker();
+}
+
+document.addEventListener('click', () => {
+    document.getElementById('idxMenu1').classList.remove('open');
+    document.getElementById('idxMenu2').classList.remove('open');
+});
+
 async function updateIndexTicker() {
     try {
         const data = await fetch('/api/index-ltp').then(r => r.json());
-        const keys = { NIFTY: 'NIFTY', SENSEX: 'SENSEX', BANKNIFTY: 'BANKNIFTY', MIDCPNIFTY: 'MIDCPNIFTY' };
-        for (const [key] of Object.entries(keys)) {
-            const el = document.getElementById('idx-' + key);
-            if (!el) continue;
+        for (const [group, key] of Object.entries(idxSelection)) {
+            const priceEl = document.getElementById('idxPrice' + group);
+            if (!priceEl) continue;
             const price = data[key];
-            if (price == null) { el.textContent = '—'; el.className = 'idx-price'; continue; }
+            if (price == null) { priceEl.textContent = '—'; priceEl.className = 'idx-price'; continue; }
             const formatted = price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             const prev = _idxPrev[key];
-            el.textContent = formatted;
-            el.className = 'idx-price' + (prev == null ? '' : price > prev ? ' up' : price < prev ? ' down' : '');
+            priceEl.textContent = formatted;
+            priceEl.className = 'idx-price' + (prev == null ? '' : price > prev ? ' up' : price < prev ? ' down' : '');
             _idxPrev[key] = price;
         }
     } catch (e) {}
