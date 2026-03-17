@@ -1,6 +1,7 @@
 # backend/api/strikes.py
 
 import time
+import random
 import asyncio
 from datetime import timezone, timedelta
 from fastapi import APIRouter, Request
@@ -270,13 +271,13 @@ async def get_history(symbol: str, request: Request):
 
     cached = _history_cache.get(symbol)
     if cached:
-        if time.monotonic() - cached["ts"] < 60:
+        if time.monotonic() - cached["ts"] < cached["ttl"]:
             return cached["data"]
 
     async with pool.acquire() as conn:
         data = await _query_history(conn, symbol)
 
-    _history_cache[symbol] = {"data": data, "ts": time.monotonic()}
+    _history_cache[symbol] = {"data": data, "ts": time.monotonic(), "ttl": 300 + random.randint(0, 60)}
     return data
 
 
@@ -342,13 +343,13 @@ async def get_gaps(symbol: str, request: Request):
     pool = request.app.state.pool
 
     cached = _gaps_cache.get(symbol)
-    if cached and time.monotonic() - cached["ts"] < 60:
+    if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
         return cached["data"]
 
     async with pool.acquire() as conn:
         data = await _query_gaps(conn, symbol)
 
-    _gaps_cache[symbol] = {"data": data, "ts": time.monotonic()}
+    _gaps_cache[symbol] = {"data": data, "ts": time.monotonic(), "ttl": 300 + random.randint(0, 60)}
     return data
 
 
@@ -367,7 +368,7 @@ async def get_batch(body: BatchRequest, request: Request):
         h_cached = _history_cache.get(symbol)
         g_cached  = _gaps_cache.get(symbol)
         now = time.monotonic()
-        if (h_cached and now - h_cached["ts"] < 60) and (g_cached and now - g_cached["ts"] < 60):
+        if (h_cached and now - h_cached["ts"] < h_cached.get("ttl", 300)) and (g_cached and now - g_cached["ts"] < g_cached.get("ttl", 300)):
             return symbol, h_cached["data"], g_cached["data"]
 
         # Each query needs its own connection (asyncpg doesn't allow concurrent queries on one conn)
@@ -380,8 +381,9 @@ async def get_batch(body: BatchRequest, request: Request):
                 return await _query_gaps(conn, symbol)
 
         history, gaps = await asyncio.gather(do_history(), do_gaps())
-        _history_cache[symbol] = {"data": history, "ts": time.monotonic()}
-        _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic()}
+        ttl = 300 + random.randint(0, 60)
+        _history_cache[symbol] = {"data": history, "ts": time.monotonic(), "ttl": ttl}
+        _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic(), "ttl": ttl}
         return symbol, history, gaps
 
     results = await asyncio.gather(*[fetch_one(s) for s in symbols])
