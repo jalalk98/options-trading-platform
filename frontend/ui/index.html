@@ -515,10 +515,8 @@
 
 <!-- SL right-click context menu -->
 <div id="slContextMenu">
-    <div class="sl-cm-title">SL Settings</div>
-    <label>SL Price</label>
-    <input type="number" id="slCmPrice" step="0.05">
-    <label>Trigger Buffer</label>
+    <div class="sl-cm-title">Trigger Buffer</div>
+    <label>Points between SL and trigger</label>
     <input type="number" id="slCmBuffer" step="0.05" min="0.05">
     <div class="sl-cm-btns">
         <button id="slCmCancel">Cancel</button>
@@ -900,10 +898,9 @@ function createPanel(id) {
         if (!slPrice || !isNearSL(e.clientY)) return;
         e.preventDefault();
         const menu = document.getElementById('slContextMenu');
-        document.getElementById('slCmPrice').value  = slPrice;
         document.getElementById('slCmBuffer').value = slTriggerBuffer;
         // position near cursor, keep within viewport
-        const mw = 200, mh = 160;
+        const mw = 200, mh = 120;
         const left = Math.min(e.clientX, window.innerWidth  - mw - 8);
         const top  = Math.min(e.clientY, window.innerHeight - mh - 8);
         menu.style.left    = left + 'px';
@@ -911,7 +908,7 @@ function createPanel(id) {
         menu.style.display = 'block';
         menu._panel  = panel;
         menu._symbol = symbol;
-        setTimeout(() => document.getElementById('slCmPrice').focus(), 0);
+        setTimeout(() => document.getElementById('slCmBuffer').focus(), 0);
     });
 
     // ── WebSocket ─────────────────────────────────
@@ -1403,34 +1400,20 @@ function updateSLBadge() {
 
     function closeMenu() { menu.style.display = 'none'; }
 
-    document.getElementById('slCmCancel').addEventListener('click', () => {
-        // Restore original price on cancel in case user moved the line preview
-        const p = menu._panel;
-        if (p && p.slPrice) p.updateSLLine(p.slPrice, p.slLineState);
-        closeMenu();
-    });
-
-    document.getElementById('slCmPrice').addEventListener('input', () => {
-        const price = parseFloat(document.getElementById('slCmPrice').value);
-        const p = menu._panel;
-        if (!p || isNaN(price)) return;
-        p.updateSLLine(price, p.slLineState === 'none' ? 'pending' : p.slLineState);
-    });
+    document.getElementById('slCmCancel').addEventListener('click', closeMenu);
 
     document.getElementById('slCmConfirm').addEventListener('click', async () => {
-        const price  = parseFloat(document.getElementById('slCmPrice').value);
         const buffer = parseFloat(document.getElementById('slCmBuffer').value);
-        if (isNaN(price) || isNaN(buffer) || buffer <= 0) return;
+        if (isNaN(buffer) || buffer <= 0) return;
         const p   = menu._panel;
         const sym = menu._symbol;
         closeMenu();
         if (!p || !sym) return;
         p.slTriggerBuffer = buffer;
-        p.updateSLLineLocal(price, p.slLineState === 'none' ? 'pending' : p.slLineState);
         await fetch('/api/sl/set', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbol: sym, price, trigger_buffer: buffer }),
+            body: JSON.stringify({ symbol: sym, price: p.slPrice, trigger_buffer: buffer }),
         });
     });
 
