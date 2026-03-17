@@ -168,11 +168,12 @@ def setup_websocket_events():
             def round_to_tick(price, tick_size=0.05):
                 return round(round(price / tick_size) * tick_size, 2)
 
-            trigger_buffer = 0.20
+            stored_sl_state = sl_state.get(trade_symbol, {})
+            trigger_buffer  = stored_sl_state.get("trigger_buffer", 0.20)
 
             # Use SL price from dragged line if available for this symbol,
             # otherwise fall back to ±10 points from entry price.
-            stored_sl = sl_state.get(trade_symbol, {}).get("price")
+            stored_sl = stored_sl_state.get("price")
 
             # ============================
             # BUY ENTRY → SELL SL

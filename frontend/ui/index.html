@@ -101,6 +101,56 @@
         #slBadge.placed   { background: #fb923c; color: #fff; }
         #slBadge.hit      { background: #6b7280; color: #fff; }
 
+        #slContextMenu {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            background: #1e2330;
+            border: 1px solid #374151;
+            border-radius: 6px;
+            padding: 10px 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            font-size: 11px;
+            color: #e5e7eb;
+            min-width: 180px;
+        }
+        #slContextMenu .sl-cm-title {
+            font-weight: bold;
+            font-size: 11px;
+            color: #9ca3af;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        #slContextMenu label {
+            display: block;
+            margin-bottom: 3px;
+            color: #9ca3af;
+            font-size: 10px;
+        }
+        #slContextMenu input[type=number] {
+            width: 100%;
+            box-sizing: border-box;
+            background: #111827;
+            border: 1px solid #374151;
+            color: #f9fafb;
+            border-radius: 4px;
+            padding: 4px 6px;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        #slContextMenu input[type=number]:focus { outline: none; border-color: #06b6d4; }
+        .sl-cm-btns { display: flex; gap: 6px; justify-content: flex-end; }
+        .sl-cm-btns button {
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: none;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        #slCmCancel  { background: #374151; color: #e5e7eb; }
+        #slCmConfirm { background: #06b6d4; color: #fff; font-weight: bold; }
+
         #chartLabel {
             position: absolute;
             top: 12px;
@@ -463,6 +513,19 @@
     </div>
 </div>
 
+<!-- SL right-click context menu -->
+<div id="slContextMenu">
+    <div class="sl-cm-title">SL Settings</div>
+    <label>SL Price</label>
+    <input type="number" id="slCmPrice" step="0.05">
+    <label>Trigger Buffer</label>
+    <input type="number" id="slCmBuffer" step="0.05" min="0.05">
+    <div class="sl-cm-btns">
+        <button id="slCmCancel">Cancel</button>
+        <button id="slCmConfirm">Set</button>
+    </div>
+</div>
+
 <!-- Layout picker popup -->
 <div id="layoutPopup">
     <div class="lp-title">Layout</div>
@@ -674,12 +737,13 @@ function createPanel(id) {
     let historyLoaded  = false;
     let lastCandleTime = null;
     let crosshairPrice = null;
-    let slPriceLine    = null;
-    let slPrice        = null;
-    let slLineState    = 'none';
-    let slOrderId      = null;
-    let slDragging     = false;
-    let slPollTimer    = null;
+    let slPriceLine      = null;
+    let slPrice          = null;
+    let slLineState      = 'none';
+    let slOrderId        = null;
+    let slDragging       = false;
+    let slPollTimer      = null;
+    let slTriggerBuffer  = 0.20;
 
     // ── Chart crosshair ───────────────────────────
     chart.subscribeCrosshairMove(param => {
@@ -774,6 +838,7 @@ function createPanel(id) {
                     updateSLLineLocal(price, data.state);
                     slOrderId = data.order_id || null;
                 }
+                if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
                 if (data.state === 'hit') setTimeout(() => updateSLLineLocal(price, 'pending'), 2000);
             }
         }, 2000);
@@ -788,6 +853,7 @@ function createPanel(id) {
                 updateSLLineLocal(data.price, data.state);
                 slOrderId = data.order_id || null;
             }
+            if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
         } catch (_) {}
     }
 
@@ -828,6 +894,23 @@ function createPanel(id) {
         const p = Math.round(crosshairPrice * 20) / 20;
         updateSLLineLocal(p, 'pending');
         await fetch('/api/sl/set', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, price: p }) });
+    });
+
+    chartAreaEl.addEventListener('contextmenu', e => {
+        if (!slPrice || !isNearSL(e.clientY)) return;
+        e.preventDefault();
+        const menu = document.getElementById('slContextMenu');
+        document.getElementById('slCmPrice').value  = slPrice;
+        document.getElementById('slCmBuffer').value = slTriggerBuffer;
+        // position near cursor, keep within viewport
+        const mw = 200, mh = 160;
+        const left = Math.min(e.clientX, window.innerWidth  - mw - 8);
+        const top  = Math.min(e.clientY, window.innerHeight - mh - 8);
+        menu.style.left    = left + 'px';
+        menu.style.top     = top  + 'px';
+        menu.style.display = 'block';
+        menu._panel  = panel;
+        menu._symbol = symbol;
     });
 
     // ── WebSocket ─────────────────────────────────
@@ -954,10 +1037,12 @@ function createPanel(id) {
         id, el: panelEl,
         get symbol()         { return symbol; },
         get crosshairPrice() { return crosshairPrice; },
-        get slPrice()        { return slPrice; },
-        get slLineState()    { return slLineState; },
-        get slOrderId()      { return slOrderId; },
-        get chart()          { return chart; },
+        get slPrice()           { return slPrice; },
+        get slLineState()       { return slLineState; },
+        get slOrderId()         { return slOrderId; },
+        get slTriggerBuffer()   { return slTriggerBuffer; },
+        set slTriggerBuffer(v)  { slTriggerBuffer = v; },
+        get chart()             { return chart; },
         loadSymbol: panelLoadSymbol,
         updateSLLine: updateSLLineLocal,
         resize, destroy,
@@ -1308,6 +1393,42 @@ function updateSLBadge() {
     badge.textContent = `SL ${slP} [${labels[slS] || slS}]`;
     badge.className   = slS;
 }
+
+/* ======================
+   SL CONTEXT MENU
+====================== */
+(function() {
+    const menu = document.getElementById('slContextMenu');
+
+    function closeMenu() { menu.style.display = 'none'; }
+
+    document.getElementById('slCmCancel').addEventListener('click', closeMenu);
+
+    document.getElementById('slCmConfirm').addEventListener('click', async () => {
+        const price  = parseFloat(document.getElementById('slCmPrice').value);
+        const buffer = parseFloat(document.getElementById('slCmBuffer').value);
+        if (isNaN(price) || isNaN(buffer) || buffer <= 0) return;
+        const p   = menu._panel;
+        const sym = menu._symbol;
+        closeMenu();
+        if (!p || !sym) return;
+        p.slTriggerBuffer = buffer;
+        p.updateSLLineLocal(price, p.slLineState === 'none' ? 'pending' : p.slLineState);
+        await fetch('/api/sl/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: sym, price, trigger_buffer: buffer }),
+        });
+    });
+
+    // Close on outside click or Escape
+    document.addEventListener('mousedown', e => {
+        if (menu.style.display !== 'none' && !menu.contains(e.target)) closeMenu();
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeMenu();
+    });
+})();
 
 /* ======================
    BUY / SELL ORDER BAR

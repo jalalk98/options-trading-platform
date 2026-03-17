@@ -34,28 +34,31 @@ async def get_sl(symbol: str):
 # Only updates price; does not place an order.
 # ─────────────────────────────────────────────
 class SetSLRequest(BaseModel):
-    symbol: str
-    price: float
+    symbol:          str
+    price:           float
+    trigger_buffer:  Optional[float] = None   # if None, keep existing or default 0.20
 
 @router.post("/sl/set")
 async def set_sl(req: SetSLRequest):
-    existing  = sl_state.get(req.symbol, {})
-    new_price = _round(req.price)
+    existing       = sl_state.get(req.symbol, {})
+    new_price      = _round(req.price)
+    new_buffer     = req.trigger_buffer if req.trigger_buffer is not None else existing.get("trigger_buffer", 0.20)
 
     sl_state[req.symbol] = {
-        "price":    new_price,
-        "order_id": existing.get("order_id"),
-        "side":     existing.get("side"),
-        "qty":      existing.get("qty"),
-        "exchange": existing.get("exchange"),
-        "state":    existing.get("state", "pending"),
+        "price":          new_price,
+        "trigger_buffer": new_buffer,
+        "order_id":       existing.get("order_id"),
+        "side":           existing.get("side"),
+        "qty":            existing.get("qty"),
+        "exchange":       existing.get("exchange"),
+        "state":          existing.get("state", "pending"),
     }
 
     # If an order is already placed, modify it on Kite too
     order_id = existing.get("order_id")
     if order_id and existing.get("state") == "placed":
         try:
-            trigger = _round(new_price + 0.20) if existing.get("side") == "SELL" else _round(new_price - 0.20)
+            trigger = _round(new_price + new_buffer) if existing.get("side") == "SELL" else _round(new_price - new_buffer)
             result = await kite1.hard_code_regular_modify_order(
                 order_id=order_id,
                 price=new_price,
