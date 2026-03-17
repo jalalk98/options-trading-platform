@@ -4,8 +4,18 @@ from backend.services.websocket_handler import run_websocket
 from backend.services.instrument_registry import (
     load_instruments,
     get_tokens_by_strikes,
-    get_nearest_expiry
+    get_nearest_expiry,
+    register_index_instrument,
 )
+
+# 5 indexes to always subscribe and record ticks for
+INDEX_DEFINITIONS = [
+    {"exchange_sym": "NSE:NIFTY 50",         "symbol": "NIFTY"},
+    {"exchange_sym": "BSE:SENSEX",            "symbol": "SENSEX"},
+    {"exchange_sym": "NSE:NIFTY BANK",        "symbol": "BANKNIFTY"},
+    {"exchange_sym": "NSE:NIFTY FIN SERVICE", "symbol": "FINNIFTY"},
+    {"exchange_sym": "NSE:NIFTY MID SELECT",  "symbol": "MIDCPNIFTY"},
+]
 
 from kiteconnect import KiteConnect
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
@@ -109,6 +119,22 @@ async def main():
     ]
 
     all_tokens = []
+
+    # ── Register and subscribe to the 5 index instruments ──────────────────
+    logger.info("Resolving index instrument tokens via LTP call")
+    try:
+        ltp_data = kite.ltp([d["exchange_sym"] for d in INDEX_DEFINITIONS])
+        for defn in INDEX_DEFINITIONS:
+            entry = ltp_data.get(defn["exchange_sym"], {})
+            token = entry.get("instrument_token")
+            if token:
+                register_index_instrument(int(token), defn["symbol"])
+                all_tokens.append(int(token))
+                logger.info(f"Index token resolved: {defn['symbol']} → {token}")
+            else:
+                logger.warning(f"Could not resolve token for {defn['exchange_sym']}")
+    except Exception as e:
+        logger.error(f"Failed to resolve index tokens: {e}")
 
     for sub in subscriptions:
 

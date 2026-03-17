@@ -1,8 +1,12 @@
 import pandas as pd
 import logging
+from datetime import datetime
 from pathlib import Path
 from kiteconnect import KiteConnect
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
+
+# Sentinel expiry used for index instruments (no real expiry)
+INDEX_SENTINEL_EXPIRY = datetime(1970, 1, 1)
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
@@ -138,3 +142,14 @@ def get_tokens_by_strikes(strike_list, expiry_date, index_name):
 
 def get_metadata(token):
     return active_instruments.get(token)
+
+
+def register_index_instrument(token: int, symbol: str):
+    """Register a cash-market index token with sentinel option fields."""
+    active_instruments[token] = {
+        "symbol":      symbol,
+        "expiry_date": INDEX_SENTINEL_EXPIRY,
+        "strike":      0,
+        "option_type": "INDEX",
+    }
+    logging.info(f"Registered index instrument: token={token} symbol={symbol}")

@@ -20,20 +20,43 @@ SENSEX_MAX_SPREAD_PCT  = 0.75  # 3x NIFTY spread threshold
 
 def process_tick(tick: dict):
 
-    if tick.get("mode") != "full":
-        return None
-
-    # print("Tick received at:", datetime.now())
-
     instrument_token = tick.get("instrument_token")
     metadata = get_metadata(instrument_token)
 
-    # print("\nTICK RECEIVED")
-    # print("Token:", instrument_token)
-    # print("Metadata Symbol:", metadata["symbol"])
-    # print("Metadata Expiry:", metadata["expiry_date"])
-
     if not metadata:
+        return None
+
+    # Index ticks: record every LTP — no gap detection, no depth data
+    if metadata.get("option_type") == "INDEX":
+        curr_price = tick.get("last_price")
+        timestamp  = tick.get("exchange_timestamp")
+        if not curr_price or not timestamp:
+            return None
+        return {
+            "instrument_token": instrument_token,
+            "symbol":           metadata["symbol"],
+            "expiry_date":      metadata["expiry_date"],
+            "strike":           metadata["strike"],
+            "option_type":      "INDEX",
+            "timestamp":        timestamp,
+            "prev_price":       None,
+            "curr_price":       curr_price,
+            "price_jump":       None,
+            "direction":        None,
+            "prev_volume":      None,
+            "curr_volume":      None,
+            "vol_change":       None,
+            "time_diff":        None,
+            "best_bid":         None,
+            "best_ask":         None,
+            "spread":           None,
+            "spread_pct":       None,
+            "only_gap":         False,
+            "gap_with_spread":  False,
+            "is_gap":           False,
+        }
+
+    if tick.get("mode") != "full":
         return None
 
     curr_price = tick.get("last_price")
