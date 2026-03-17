@@ -94,8 +94,6 @@ def get_tokens_by_strikes(strike_list, expiry_date, index_name):
     if df is None:
         load_instruments()
 
-    active_instruments.clear()
-
     expiry_date = pd.to_datetime(expiry_date, dayfirst=True)
 
     tokens = []

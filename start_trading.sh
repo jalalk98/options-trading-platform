@@ -22,6 +22,14 @@ fi
 
 tmux kill-session -t $SESSION 2>/dev/null
 
+# Kill any stale process on port 8000
+STALE_PID=$(lsof -ti:8000 2>/dev/null)
+if [ -n "$STALE_PID" ]; then
+    echo "Killing stale process on port 8000 (PID $STALE_PID)..."
+    kill -9 $STALE_PID 2>/dev/null
+    sleep 1
+fi
+
 echo "Clearing old Redis ticks..."
 redis-cli DEL ticks_stream
 
