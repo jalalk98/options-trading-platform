@@ -911,6 +911,7 @@ function createPanel(id) {
         menu.style.display = 'block';
         menu._panel  = panel;
         menu._symbol = symbol;
+        setTimeout(() => document.getElementById('slCmPrice').focus(), 0);
     });
 
     // ── WebSocket ─────────────────────────────────
@@ -1402,7 +1403,19 @@ function updateSLBadge() {
 
     function closeMenu() { menu.style.display = 'none'; }
 
-    document.getElementById('slCmCancel').addEventListener('click', closeMenu);
+    document.getElementById('slCmCancel').addEventListener('click', () => {
+        // Restore original price on cancel in case user moved the line preview
+        const p = menu._panel;
+        if (p && p.slPrice) p.updateSLLine(p.slPrice, p.slLineState);
+        closeMenu();
+    });
+
+    document.getElementById('slCmPrice').addEventListener('input', () => {
+        const price = parseFloat(document.getElementById('slCmPrice').value);
+        const p = menu._panel;
+        if (!p || isNaN(price)) return;
+        p.updateSLLine(price, p.slLineState === 'none' ? 'pending' : p.slLineState);
+    });
 
     document.getElementById('slCmConfirm').addEventListener('click', async () => {
         const price  = parseFloat(document.getElementById('slCmPrice').value);
