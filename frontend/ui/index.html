@@ -937,8 +937,14 @@ function createPanel(id) {
             [strike, type] = part.split(' ');
         } else {
             // Parse from symbol name e.g. NIFTY2631723300PE → strike=23300, type=PE
-            const m = sym.match(/(\d+)(CE|PE)$/);
-            if (m) { strike = m[1]; type = m[2]; }
+            // Format: {INDEX}{YY}{M}{DD}{STRIKE}{CE|PE} — expiry is always 5 chars after index
+            const prefixes = ['BANKNIFTY', 'MIDCPNIFTY', 'FINNIFTY', 'SENSEX', 'NIFTY'];
+            const prefix = prefixes.find(p => sym.startsWith(p));
+            if (prefix) {
+                const rest = sym.slice(prefix.length); // e.g. "2631723300PE"
+                type   = rest.slice(-2);               // "CE" or "PE"
+                strike = rest.slice(5, -2);            // skip 5 expiry chars, remove type
+            }
         }
         if (!strike || !type) { labelEl.innerHTML = ''; labelEl.className = 'panel-label no-label'; return; }
         labelEl.className = `panel-label ${type === 'CE' ? 'ce-label' : 'pe-label'}`;
