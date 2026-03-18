@@ -24,7 +24,7 @@ _atm_cache = {}          # keyed by index, e.g. "NIFTY" / "SENSEX"
 ATM_CACHE_TTL = 300      # 5 minutes
 
 _ltp_cache = {"data": None, "ts": 0}
-LTP_CACHE_TTL = 10       # 10 seconds — keep near real-time
+LTP_CACHE_TTL = 2        # 2 seconds — live index prices
 
 
 async def _query_strikes(pool):
@@ -162,26 +162,36 @@ async def get_atm_symbol(request: Request, index: str = "NIFTY"):
         return {"symbol": None, "strike": None}
 
 
+def _idx_entry(d):
+    ltp  = d.get("last_price")
+    prev = d.get("ohlc", {}).get("close")
+    if ltp is None:
+        return {"ltp": None, "change": None, "change_pct": None}
+    change     = round(ltp - prev, 2) if prev else None
+    change_pct = round(change * 100 / prev, 2) if prev and prev != 0 else None
+    return {"ltp": ltp, "change": change, "change_pct": change_pct}
+
 @router.get("/index-ltp")
 async def get_index_ltp():
-    """Returns live LTP for NIFTY and SENSEX indices from Kite API."""
+    """Returns live LTP + change from prev close for all tracked indices."""
     now = time.monotonic()
     if _ltp_cache["data"] and (now - _ltp_cache["ts"]) < LTP_CACHE_TTL:
         return _ltp_cache["data"]
     try:
-        data = _kite.ltp(["NSE:NIFTY 50", "BSE:SENSEX", "NSE:NIFTY BANK", "NSE:NIFTY FIN SERVICE", "NSE:NIFTY MID SELECT"])
+        data = _kite.quote(["NSE:NIFTY 50", "BSE:SENSEX", "NSE:NIFTY BANK", "NSE:NIFTY FIN SERVICE", "NSE:NIFTY MID SELECT"])
         result = {
-            "NIFTY":      data.get("NSE:NIFTY 50",          {}).get("last_price"),
-            "SENSEX":     data.get("BSE:SENSEX",             {}).get("last_price"),
-            "BANKNIFTY":  data.get("NSE:NIFTY BANK",         {}).get("last_price"),
-            "FINNIFTY":   data.get("NSE:NIFTY FIN SERVICE",  {}).get("last_price"),
-            "MIDCPNIFTY": data.get("NSE:NIFTY MID SELECT",   {}).get("last_price"),
+            "NIFTY":      _idx_entry(data.get("NSE:NIFTY 50",          {})),
+            "SENSEX":     _idx_entry(data.get("BSE:SENSEX",             {})),
+            "BANKNIFTY":  _idx_entry(data.get("NSE:NIFTY BANK",         {})),
+            "FINNIFTY":   _idx_entry(data.get("NSE:NIFTY FIN SERVICE",  {})),
+            "MIDCPNIFTY": _idx_entry(data.get("NSE:NIFTY MID SELECT",   {})),
         }
         _ltp_cache["data"] = result
         _ltp_cache["ts"] = now
         return result
     except Exception:
-        return {"NIFTY": None, "SENSEX": None, "BANKNIFTY": None, "FINNIFTY": None, "MIDCPNIFTY": None}
+        empty = {"ltp": None, "change": None, "change_pct": None}
+        return {"NIFTY": empty, "SENSEX": empty, "BANKNIFTY": empty, "FINNIFTY": empty, "MIDCPNIFTY": empty}
 
 
 @router.get("/resolve-symbol")

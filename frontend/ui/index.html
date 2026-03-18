@@ -357,29 +357,35 @@
         }
         .idx-chip {
             display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            line-height: 1.2;
-            min-width: 72px;
+            flex-direction: row;
+            align-items: center;
+            gap: 5px;
             cursor: pointer;
-            padding: 2px 4px;
+            padding: 2px 5px;
             border-radius: 4px;
             user-select: none;
         }
         .idx-chip:hover { background: #f0f0f0; }
         .idx-label {
-            font-size: 9px;
-            color: #888;
-            font-weight: 600;
-            letter-spacing: 0.3px;
+            font-size: 10px;
+            color: #555;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            white-space: nowrap;
         }
         .idx-price {
             font-size: 11px;
             font-weight: 700;
             color: #222;
         }
-        .idx-price.up   { color: #16a34a; }
-        .idx-price.down { color: #dc2626; }
+        .idx-change {
+            font-size: 10px;
+            font-weight: 500;
+            color: #888;
+            white-space: nowrap;
+        }
+        .idx-price.up, .idx-change.up   { color: #16a34a; }
+        .idx-price.down, .idx-change.down { color: #dc2626; }
         .idx-menu {
             display: none;
             position: absolute;
@@ -601,6 +607,7 @@
             <div class="idx-chip" onclick="toggleIdxMenu(1, event)">
                 <span class="idx-label" id="idxLabel1">NIFTY ▾</span>
                 <span class="idx-price" id="idxPrice1">—</span>
+                <span class="idx-change" id="idxChange1"></span>
             </div>
             <div class="idx-menu" id="idxMenu1">
                 <div class="idx-menu-item active" onclick="selectIdx(1,'NIFTY',this)">NIFTY</div>
@@ -613,6 +620,7 @@
             <div class="idx-chip" onclick="toggleIdxMenu(2, event)">
                 <span class="idx-label" id="idxLabel2">SENSEX ▾</span>
                 <span class="idx-price" id="idxPrice2">—</span>
+                <span class="idx-change" id="idxChange2"></span>
             </div>
             <div class="idx-menu" id="idxMenu2">
                 <div class="idx-menu-item active" onclick="selectIdx(2,'SENSEX',this)">SENSEX</div>
@@ -798,7 +806,7 @@ function makeChartOptions(w, h) {
     return {
         width: w, height: h,
         timeScale: {
-            timeVisible: true, secondsVisible: true, rightOffset: 10,
+            timeVisible: true, secondsVisible: true, rightOffset: 20, shiftVisibleRangeOnNewBar: false, fixRightEdge: false,
             tickMarkFormatter: (time) => {
                 const date = new Date(time * 1000);
                 return date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
@@ -937,12 +945,15 @@ function createPanel(id) {
         tooltip.style.display = 'block';
     });
 
-    chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+    function updateGoToLiveBtn() {
         if (panel !== activePanel) return;
         const btn = document.getElementById('goToLive');
-        if (!range || !lastCandleTime) { btn.style.display = 'none'; return; }
-        btn.style.display = lastCandleTime > range.to ? 'flex' : 'none';
-    });
+        if (!lastCandleTime) { btn.style.display = 'none'; return; }
+        const range = chart.timeScale().getVisibleRange();
+        btn.style.display = (!range || lastCandleTime > range.to) ? 'flex' : 'none';
+    }
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(() => updateGoToLiveBtn());
 
     // ── Helpers ───────────────────────────────────
     function getBucketTime(t) { return Math.floor(t / INTERVAL) * INTERVAL; }
@@ -1121,6 +1132,8 @@ function createPanel(id) {
             }
             if (!currentCandle || bucketTime > currentCandle.time) {
                 currentCandle = { time: bucketTime, open: price, high: price, low: price, close: price };
+                lastCandleTime = bucketTime;
+                updateGoToLiveBtn();
             } else if (bucketTime === currentCandle.time) {
                 currentCandle.high  = Math.max(currentCandle.high,  price);
                 currentCandle.low   = Math.min(currentCandle.low,   price);
@@ -1182,10 +1195,11 @@ function createPanel(id) {
         }));
         candleSeries.setData(candles);
         refreshMarkers();
-        chart.timeScale().fitContent();
+        chart.timeScale().scrollToRealTime();
         if (candles.length > 0) { currentCandle = { ...candles[candles.length - 1] }; lastCandleTime = currentCandle.time; }
         historyLoaded = true;
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
+        if (!histDate) saveViewState();
         // Skip live features in historical mode
         if (!histDate) {
             loadSLStateLocal(sym);
@@ -1232,6 +1246,7 @@ function createPanel(id) {
         get slTriggerBuffer()   { return slTriggerBuffer; },
         set slTriggerBuffer(v)  { slTriggerBuffer = v; },
         get chart()             { return chart; },
+        updateGoToLiveBtn,
         loadSymbol: panelLoadSymbol,
         updateSLLine: updateSLLineLocal,
         resize, destroy,
@@ -1254,6 +1269,7 @@ function activatePanel(p) {
         resetOrderBar(sym);
     }
     updateSLBadge();
+    if (p.updateGoToLiveBtn) p.updateGoToLiveBtn();
 }
 
 // Global bridges — delegate to activePanel
@@ -1527,7 +1543,32 @@ window.addEventListener('resize', updateLayout);
    GO TO LATEST BUTTON
 ====================== */
 document.getElementById('goToLive').addEventListener('click', () => {
-    if (activePanel) activePanel.chart.timeScale().scrollToRealTime();
+    if (!activePanel) return;
+    document.getElementById('goToLive').style.display = 'none';
+    if (!syncCharts) {
+        activePanel.chart.timeScale().scrollToRealTime();
+        return;
+    }
+    // Disable sync while active panel animates to avoid cross-panel interference
+    const wasSynced = syncCharts;
+    syncCharts = false;
+    activePanel.chart.timeScale().scrollToRealTime();
+    // After animation (~300ms), copy resulting range to all other panels
+    setTimeout(() => {
+        syncCharts = wasSynced;
+        const range = activePanel.chart.timeScale().getVisibleLogicalRange();
+        if (!range) return;
+        _syncLock = true;
+        try {
+            panels.forEach(p => {
+                if (p.symbol && p.id !== activePanel.id) {
+                    p.chart.timeScale().setVisibleLogicalRange(range);
+                }
+            });
+        } finally {
+            _syncLock = false;
+        }
+    }, 350);
 });
 
 /* ======================
@@ -1569,6 +1610,8 @@ async function refreshAllPanels() {
 document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
     const value = this.value;
     if (!value) return;
+    const label = this.options[this.selectedIndex].text;
+    document.title = label;
     try {
         await autoPopulatePanels(value);
     } catch (e) {
@@ -1600,7 +1643,7 @@ async function autoPopulatePanels(mode) {
     const atmMap = {};
     let usedFallback = false;
     for (const idx of ['NIFTY', 'SENSEX']) {
-        const ltp = ltpData[idx];
+        const ltp = ltpData[idx] && ltpData[idx].ltp;
         if (ltp) {
             atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx];
         } else {
@@ -1672,6 +1715,7 @@ async function autoPopulatePanels(mode) {
         if (!sym) return Promise.resolve();
         return panels[i].loadSymbol(sym, batchData[sym] || null);
     }));
+    saveViewState();
 }
 
 /* ======================
@@ -1968,26 +2012,81 @@ async function updateIndexTicker() {
     try {
         const data = await fetch('/api/index-ltp').then(r => r.json());
         for (const [group, key] of Object.entries(idxSelection)) {
-            const priceEl = document.getElementById('idxPrice' + group);
+            const priceEl  = document.getElementById('idxPrice'  + group);
+            const changeEl = document.getElementById('idxChange' + group);
             if (!priceEl) continue;
-            const price = data[key];
-            if (price == null) { priceEl.textContent = '—'; priceEl.className = 'idx-price'; continue; }
-            const formatted = price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            const prev = _idxPrev[key];
+            const entry = data[key];
+            const ltp = entry && entry.ltp;
+            if (ltp == null) {
+                priceEl.textContent  = '—';
+                priceEl.className    = 'idx-price';
+                if (changeEl) { changeEl.textContent = ''; changeEl.className = 'idx-change'; }
+                continue;
+            }
+            const formatted = ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const dir = entry.change > 0 ? ' up' : entry.change < 0 ? ' down' : '';
             priceEl.textContent = formatted;
-            priceEl.className = 'idx-price' + (prev == null ? '' : price > prev ? ' up' : price < prev ? ' down' : '');
-            _idxPrev[key] = price;
+            priceEl.className   = 'idx-price' + dir;
+            _idxPrev[key] = ltp;
+
+            if (changeEl && entry.change != null && entry.change_pct != null) {
+                const sign = entry.change >= 0 ? '+' : '';
+                const chgDir = entry.change > 0 ? ' up' : entry.change < 0 ? ' down' : '';
+                changeEl.textContent = `${sign}${entry.change.toFixed(2)} (${entry.change_pct.toFixed(2)}%)`;
+                changeEl.className   = 'idx-change' + chgDir;
+            }
         }
     } catch (e) {}
 }
 updateIndexTicker();
-setInterval(updateIndexTicker, 5000);
+setInterval(updateIndexTicker, 2000);
+
+/* ======================
+   SAVE / RESTORE STATE
+====================== */
+function saveViewState() {
+    try {
+        localStorage.setItem('otpViewState', JSON.stringify({
+            layout: activeLayout,
+            autoPopulate: document.getElementById('autoPopulateSelect').value,
+            symbols: panels.map(p => p.symbol || null)
+        }));
+    } catch (e) {}
+}
 
 /* ======================
    INITIALISE
 ====================== */
-selectLayout(document.querySelector('.lp-option[data-layout="1"]'));
-loadStrikes();
+(async function init() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('otpViewState')); } catch (e) {}
+
+    const layoutKey = saved && saved.layout ? saved.layout : '1';
+    selectLayout(document.querySelector(`.lp-option[data-layout="${layoutKey}"]`));
+
+    await loadStrikes();
+
+    if (saved && saved.autoPopulate) {
+        const sel = document.getElementById('autoPopulateSelect');
+        sel.value = saved.autoPopulate;
+        document.title = sel.options[sel.selectedIndex]?.text || document.title;
+        try { await autoPopulatePanels(saved.autoPopulate); } catch (e) {}
+    } else if (saved && saved.symbols && saved.symbols.some(Boolean)) {
+        const syms = saved.symbols;
+        const validSyms = syms.filter(Boolean);
+        const batchData = validSyms.length
+            ? await fetch('/api/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: validSyms, nocache: false }),
+              }).then(r => r.json()).catch(() => ({}))
+            : {};
+        await Promise.all(syms.map((sym, i) => {
+            if (!sym || !panels[i]) return Promise.resolve();
+            return panels[i].loadSymbol(sym, batchData[sym] || null);
+        }));
+    }
+})();
 </script>
 
 </body>
