@@ -1458,7 +1458,7 @@ function updateLayout() {
     const headerH  = topbarH + histBarH;
     const grid     = document.getElementById('chartGrid');
     grid.style.height = (window.innerHeight - headerH) + 'px';
-    document.getElementById('orderBar').style.top = headerH + 'px';
+    document.getElementById('orderBar').style.top = (headerH + 6) + 'px';
     panels.forEach(p => p.resize());
 }
 
