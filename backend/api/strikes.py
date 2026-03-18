@@ -234,20 +234,15 @@ async def _query_history(conn, symbol: str, date: str = None):
     if date:
         date_obj = PyDate.fromisoformat(date)
         rows = await conn.fetch("""
-            WITH bounds AS (
-                SELECT
-                    $2::date AT TIME ZONE 'Asia/Kolkata' AS day_start,
-                    ($2::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata' AS day_end
-            ),
-            ticks AS (
+            WITH ticks AS (
                 SELECT
                     FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
                     g.curr_price,
                     g.timestamp
-                FROM gap_ticks g, bounds
+                FROM gap_ticks g
                 WHERE g.symbol = $1
-                  AND g.timestamp >= bounds.day_start
-                  AND g.timestamp <  bounds.day_end
+                  AND g.timestamp >= $2::date + TIME '09:00:00'
+                  AND g.timestamp <= $2::date + TIME '16:00:00'
             )
             SELECT
                 bucket,
@@ -321,11 +316,8 @@ _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 async def _query_gaps(conn, symbol: str, date: str = None):
     is_sensex = symbol.startswith("SENSEX")
     if date:
-        bounds_cte = """
-            SELECT
-                $2::date AT TIME ZONE 'Asia/Kolkata' AS day_start,
-                ($2::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata' AS day_end"""
-        ts_filter  = "g.timestamp >= bounds.day_start AND g.timestamp < bounds.day_end"
+        bounds_cte = None
+        ts_filter  = "g.timestamp >= $2::date + TIME '09:00:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
         query_arg  = (symbol, PyDate.fromisoformat(date))
     else:
         bounds_cte = """
@@ -336,13 +328,16 @@ async def _query_gaps(conn, symbol: str, date: str = None):
         ts_filter  = "g.timestamp >= bounds.day_start AND g.timestamp < bounds.day_end"
         query_arg  = (symbol,)
 
+    cte_clause = f"WITH bounds AS ({bounds_cte})" if bounds_cte else ""
+    from_extra = ", bounds" if bounds_cte else ""
+
     if is_sensex:
         rows = await conn.fetch(f"""
-            WITH bounds AS ({bounds_cte})
+            {cte_clause}
             SELECT DISTINCT ON (bucket)
                 FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
                 g.direction, g.prev_price, g.curr_price, g.vol_change
-            FROM gap_ticks g, bounds
+            FROM gap_ticks g{from_extra}
             WHERE g.symbol    = $1
               AND {ts_filter}
               AND ABS(g.price_jump) >= 3.0
@@ -352,11 +347,11 @@ async def _query_gaps(conn, symbol: str, date: str = None):
         """, *query_arg)
     else:
         rows = await conn.fetch(f"""
-            WITH bounds AS ({bounds_cte})
+            {cte_clause}
             SELECT DISTINCT ON (bucket)
                 FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
                 g.direction, g.prev_price, g.curr_price, g.vol_change
-            FROM gap_ticks g, bounds
+            FROM gap_ticks g{from_extra}
             WHERE g.symbol   = $1
               AND g.is_gap    = true
               AND {ts_filter}
@@ -407,14 +402,14 @@ async def get_hist_symbols(date: str, request: Request):
         rows = await conn.fetch("""
             SELECT DISTINCT symbol, strike, option_type, expiry_date
             FROM gap_ticks
-            WHERE timestamp >= $1::date AT TIME ZONE 'Asia/Kolkata'
-              AND timestamp <  ($1::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata'
+            WHERE timestamp >= $1::date + TIME '09:10:00'
+              AND timestamp <= $1::date + TIME '15:35:00'
             ORDER BY expiry_date, strike, option_type
         """, date_obj)
     result = [
         {
             "symbol": r["symbol"],
-            "display": f'{int(r["strike"])} {r["option_type"]}  ({r["expiry_date"].strftime("%d %b")})'
+            "display": f'{int(r["strike"])} {r["option_type"]}  [exp {r["expiry_date"].strftime("%d %b")}]'
         }
         for r in rows
     ]

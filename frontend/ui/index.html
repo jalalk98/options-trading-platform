@@ -1310,6 +1310,7 @@ function toggleHistMode() {
     _histMode = true;
     document.getElementById('histBar').classList.add('active');
     document.getElementById('histBtn').classList.add('active');
+    document.getElementById('orderBar').style.display = 'none';
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('histDatePicker').max = today;
     requestAnimationFrame(updateLayout);
@@ -1367,6 +1368,7 @@ function clearHistMode() {
     _histDate = null;
     document.getElementById('histBar').classList.remove('active');
     document.getElementById('histBtn').classList.remove('active');
+    document.getElementById('orderBar').style.display = '';
     document.getElementById('histDatePicker').value = '';
     document.getElementById('histSymbolPicker').innerHTML = '<option value="">— select date first —</option>';
     document.getElementById('histNoData').style.display = 'none';
