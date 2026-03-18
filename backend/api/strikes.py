@@ -5,7 +5,7 @@ import random
 import asyncio
 import orjson
 from fastapi import Response
-from datetime import timezone, timedelta
+from datetime import timezone, timedelta, date as PyDate
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from kiteconnect import KiteConnect
@@ -232,6 +232,7 @@ async def _query_history(conn, symbol: str, date: str = None):
     # Uses idx_gap_ticks_history_cover (symbol, timestamp) INCLUDE (curr_price).
     # When date (YYYY-MM-DD) is provided, fetch that specific IST day.
     if date:
+        date_obj = PyDate.fromisoformat(date)
         rows = await conn.fetch("""
             WITH bounds AS (
                 SELECT
@@ -257,7 +258,7 @@ async def _query_history(conn, symbol: str, date: str = None):
             FROM ticks
             GROUP BY bucket
             ORDER BY bucket ASC
-        """, symbol, date)
+        """, symbol, date_obj)
     else:
         rows = await conn.fetch("""
             WITH bounds AS (
@@ -325,7 +326,7 @@ async def _query_gaps(conn, symbol: str, date: str = None):
                 $2::date AT TIME ZONE 'Asia/Kolkata' AS day_start,
                 ($2::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata' AS day_end"""
         ts_filter  = "g.timestamp >= bounds.day_start AND g.timestamp < bounds.day_end"
-        query_arg  = (symbol, date)
+        query_arg  = (symbol, PyDate.fromisoformat(date))
     else:
         bounds_cte = """
             SELECT
@@ -395,6 +396,7 @@ async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: s
 async def get_hist_symbols(date: str, request: Request):
     """Returns all distinct symbols that have tick data for a given IST date (YYYY-MM-DD)."""
     pool = request.app.state.pool
+    date_obj = PyDate.fromisoformat(date)
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT DISTINCT symbol, strike, option_type, expiry_date
@@ -402,7 +404,7 @@ async def get_hist_symbols(date: str, request: Request):
             WHERE timestamp >= $1::date AT TIME ZONE 'Asia/Kolkata'
               AND timestamp <  ($1::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata'
             ORDER BY expiry_date, strike, option_type
-        """, date)
+        """, date_obj)
     return [
         {
             "symbol": r["symbol"],
