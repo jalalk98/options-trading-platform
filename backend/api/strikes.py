@@ -251,7 +251,7 @@ async def _query_history(conn, symbol: str, date: str = None):
                     g.timestamp
                 FROM gap_ticks g
                 WHERE g.symbol = $1
-                  AND g.timestamp >= $2::date + TIME '09:00:00'
+                  AND g.timestamp >= $2::date + TIME '09:15:00'
                   AND g.timestamp <= $2::date + TIME '16:00:00'
             )
             SELECT
@@ -268,9 +268,7 @@ async def _query_history(conn, symbol: str, date: str = None):
         rows = await conn.fetch("""
             WITH bounds AS (
                 SELECT
-                    DATE_TRUNC('day',
-                        (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
-                    ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+                    DATE_TRUNC('day', MAX(timestamp)) AS day_start
                 FROM gap_ticks
                 WHERE symbol = $1
             ),
@@ -281,8 +279,8 @@ async def _query_history(conn, symbol: str, date: str = None):
                     g.timestamp
                 FROM gap_ticks g, bounds
                 WHERE g.symbol = $1
-                  AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
-                  AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+                  AND g.timestamp >= bounds.day_start + INTERVAL '9 hours 15 minutes'
+                  AND g.timestamp <  bounds.day_start + INTERVAL '1 day'
             )
             SELECT
                 bucket,
@@ -327,15 +325,15 @@ async def _query_gaps(conn, symbol: str, date: str = None):
     is_sensex = symbol.startswith("SENSEX")
     if date:
         bounds_cte = None
-        ts_filter  = "g.timestamp >= $2::date + TIME '09:00:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
+        ts_filter  = "g.timestamp >= $2::date + TIME '09:15:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
         query_arg  = (symbol, PyDate.fromisoformat(date))
     else:
         bounds_cte = """
             SELECT
-                DATE_TRUNC('day', (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' AS day_start,
-                DATE_TRUNC('day', (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' + INTERVAL '1 day' AS day_end
+                DATE_TRUNC('day', MAX(timestamp)) AS day_start,
+                DATE_TRUNC('day', MAX(timestamp)) + INTERVAL '1 day' AS day_end
             FROM gap_ticks WHERE symbol = $1"""
-        ts_filter  = "g.timestamp >= bounds.day_start AND g.timestamp < bounds.day_end"
+        ts_filter  = "g.timestamp >= bounds.day_start + INTERVAL '9 hours 15 minutes' AND g.timestamp < bounds.day_end"
         query_arg  = (symbol,)
 
     cte_clause = f"WITH bounds AS ({bounds_cte})" if bounds_cte else ""
@@ -412,7 +410,7 @@ async def get_hist_symbols(date: str, request: Request):
         rows = await conn.fetch("""
             SELECT DISTINCT symbol, strike, option_type, expiry_date
             FROM gap_ticks
-            WHERE timestamp >= $1::date + TIME '09:10:00'
+            WHERE timestamp >= $1::date + TIME '09:15:00'
               AND timestamp <= $1::date + TIME '15:35:00'
             ORDER BY expiry_date, strike, option_type
         """, date_obj)

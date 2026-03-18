@@ -591,6 +591,33 @@
         .panel-refresh-btn:hover { opacity: 1; }
         .panel-refresh-btn.spinning svg { animation: spin 0.6s linear; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .panel-bottom-bar {
+            position: absolute;
+            bottom: 38px;
+            left: 4px;
+            z-index: 10;
+            display: flex;
+            gap: 4px;
+        }
+        .panel-scroll-btn {
+            pointer-events: all;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #fff;
+            background: #0f172a;
+            color: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            opacity: 0.75;
+            transition: opacity 0.15s;
+            font-size: 10px;
+            line-height: 1;
+        }
+        .panel-scroll-btn:hover { opacity: 1; }
     </style>
 </head>
 <body>
@@ -806,9 +833,12 @@ function makeChartOptions(w, h) {
     return {
         width: w, height: h,
         timeScale: {
-            timeVisible: true, secondsVisible: true, rightOffset: 20, shiftVisibleRangeOnNewBar: false, fixRightEdge: false,
+            timeVisible: true, secondsVisible: true, rightOffset: 10, shiftVisibleRangeOnNewBar: false, fixRightEdge: false,
             tickMarkFormatter: (time) => {
                 const date = new Date(time * 1000);
+                const ist = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+                const h = ist.getHours(), m = ist.getMinutes();
+                if (h < 9 || (h === 9 && m < 15)) return '';
                 return date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
             }
         },
@@ -884,15 +914,47 @@ function createPanel(id) {
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
 
+    const bottomBarEl = document.createElement('div');
+    bottomBarEl.className = 'panel-bottom-bar';
+    const scrollLeftBtn = document.createElement('button');
+    scrollLeftBtn.className = 'panel-scroll-btn';
+    scrollLeftBtn.title = 'Scroll left 200 candles';
+    scrollLeftBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>`;
+    bottomBarEl.appendChild(scrollLeftBtn);
+    chartAreaEl.appendChild(bottomBarEl);
+
     panelEl.appendChild(chartAreaEl);
     document.getElementById('chartGrid').appendChild(panelEl);
 
     // ── Chart ─────────────────────────────────────
     const chart = LightweightCharts.createChart(chartAreaEl, makeChartOptions(400, 300));
-    const candleSeries = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444', thinBars: true });
+    const candleSeries = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444', thinBars: true, lastValueVisible: false });
 
-    // ── Axis sync ─────────────────────────────────
+    // ── Scroll-left button ────────────────────────
+    scrollLeftBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const SHIFT = 90;
+        const applyShift = p => {
+            const r = p.chart.timeScale().getVisibleLogicalRange();
+            if (!r) return;
+            p.chart.timeScale().setVisibleLogicalRange({ from: r.from - SHIFT, to: r.to - SHIFT });
+        };
+        if (syncCharts) {
+            _syncLock = true;
+            try { panels.filter(p => p.symbol).forEach(applyShift); }
+            finally { _syncLock = false; }
+        } else {
+            applyShift(panel);
+        }
+    });
+
+    // ── Axis sync + lazy historical load ──────────
     chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+        // Lazy-load previous day when user scrolls to the beginning
+        if (range && range.from <= 2 && historyLoaded && !_histMode && !isLoadingHistory && !noMoreHistory) {
+            loadPreviousDay();
+        }
+        // X-axis sync
         if (!syncCharts || _syncLock || !range) return;
         _syncLock = true;
         try {
@@ -915,6 +977,7 @@ function createPanel(id) {
     let historyLoaded  = false;
     let lastCandleTime = null;
     let crosshairPrice = null;
+    let livePriceLine    = null;
     let slPriceLine      = null;
     let slPrice          = null;
     let slLineState      = 'none';
@@ -922,6 +985,64 @@ function createPanel(id) {
     let slDragging       = false;
     let slPollTimer      = null;
     let slTriggerBuffer  = 0.20;
+    // ── Lazy history load state ───────────────────
+    let allCandles       = [];
+    let earliestDate     = null;
+    let isLoadingHistory = false;
+    let noMoreHistory    = false;
+
+    // ── Lazy previous-day loader ──────────────────
+    async function loadPreviousDay() {
+        if (isLoadingHistory || noMoreHistory || !symbol || _histMode) return;
+        isLoadingHistory = true;
+        let prevDate = new Date(earliestDate + 'T00:00:00Z');
+        let attempts = 0, prevCandles = [], prevGapsRaw = [], foundDate = null;
+        while (attempts < 7 && prevCandles.length === 0) {
+            prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+            const dow = prevDate.getUTCDay();
+            if (dow === 0 || dow === 6) { attempts++; continue; }
+            const dateStr = prevDate.toISOString().split('T')[0];
+            try {
+                const [histRes, gapRes] = await Promise.all([
+                    fetch(`/api/history/${symbol}?date=${dateStr}`),
+                    fetch(`/api/gaps/${symbol}?date=${dateStr}`)
+                ]);
+                const histData = await histRes.json();
+                const gapData  = await gapRes.json();
+                prevCandles = histData.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
+                prevGapsRaw = gapData;
+                if (prevCandles.length > 0) foundDate = dateStr;
+            } catch (_) {}
+            attempts++;
+        }
+        if (prevCandles.length === 0) { noMoreHistory = true; isLoadingHistory = false; return; }
+        earliestDate = foundDate;
+        prevGapsRaw.forEach(g => {
+            const dir = g.direction === 'UP' ? 'D' : 'U';
+            gapDetails.set(g.time - 19800, {
+                dir, from: g.prev_price, to: g.curr_price,
+                jump: Math.abs(g.curr_price - g.prev_price).toFixed(2),
+                rangeLow: Math.min(g.prev_price, g.curr_price), rangeHigh: Math.max(g.prev_price, g.curr_price),
+                volume: g.vol_change || 0, isFilled: false
+            });
+        });
+        allCandles = [...prevCandles, ...allCandles];
+        allCandles.forEach(candle => gapDetails.forEach((gap, gapTime) => {
+            if (!gap.isFilled && candle.time > gapTime &&
+                ((gap.dir === 'D' && candle.low <= gap.from) || (gap.dir === 'U' && candle.high >= gap.from)))
+                gap.isFilled = true;
+        }));
+        const range = chart.timeScale().getVisibleLogicalRange();
+        candleSeries.setData(allCandles);
+        refreshMarkers();
+        if (range) {
+            _syncLock = true;
+            try {
+                chart.timeScale().setVisibleLogicalRange({ from: range.from + prevCandles.length, to: range.to + prevCandles.length });
+            } finally { _syncLock = false; }
+        }
+        isLoadingHistory = false;
+    }
 
     // ── Chart crosshair ───────────────────────────
     chart.subscribeCrosshairMove(param => {
@@ -1141,6 +1262,10 @@ function createPanel(id) {
             } else return;
             if (panel === activePanel) updateOrderBar(price);
             if (currentCandle && !isNaN(currentCandle.open)) candleSeries.update(currentCandle);
+            if (livePriceLine) livePriceLine.applyOptions({
+                price,
+                color: price >= currentCandle.open ? '#22c55e' : '#ef4444'
+            });
             checkGapFill(currentCandle);
         };
         socket.onclose = event => {
@@ -1162,6 +1287,7 @@ function createPanel(id) {
         }
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
+        if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null;
         stopSLPoll();
         let history, gapsRaw;
@@ -1179,6 +1305,13 @@ function createPanel(id) {
         }
         const candles = history.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
         lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
+        // Initialise lazy-load state for new symbol
+        allCandles       = [...candles];
+        isLoadingHistory = false;
+        noMoreHistory    = false;
+        earliestDate     = candles.length
+            ? new Date((candles[0].time + 19800) * 1000).toISOString().split('T')[0]
+            : new Date().toISOString().split('T')[0];
         gapsRaw.forEach(g => {
             const dir = g.direction === 'UP' ? 'D' : 'U';
             gapDetails.set(g.time - 19800, {
@@ -1195,8 +1328,22 @@ function createPanel(id) {
         }));
         candleSeries.setData(candles);
         refreshMarkers();
-        chart.timeScale().scrollToRealTime();
-        if (candles.length > 0) { currentCandle = { ...candles[candles.length - 1] }; lastCandleTime = currentCandle.time; }
+        if (candles.length > 0) {
+            const halfBars = Math.max(10, Math.floor(chartAreaEl.offsetWidth / 12));
+            chart.timeScale().applyOptions({ rightOffset: halfBars });
+            chart.timeScale().scrollToRealTime();
+        }
+        if (candles.length > 0) {
+            currentCandle = { ...candles[candles.length - 1] };
+            lastCandleTime = currentCandle.time;
+            if (!histDate) {
+                livePriceLine = candleSeries.createPriceLine({
+                    price: currentCandle.close,
+                    color: currentCandle.close >= currentCandle.open ? '#22c55e' : '#ef4444',
+                    lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: ''
+                });
+            }
+        }
         historyLoaded = true;
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
         if (!histDate) saveViewState();
@@ -1603,8 +1750,25 @@ function toggleMaximize() {
 async function refreshAllPanels() {
     const btn = document.getElementById('refreshAllBtn');
     btn.classList.add('spinning');
+    const wasSynced = syncCharts;
+    syncCharts = false;
     await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
+    syncCharts = wasSynced;
     btn.classList.remove('spinning');
+    if (syncCharts && activePanel && activePanel.symbol) {
+        const range = activePanel.chart.timeScale().getVisibleLogicalRange();
+        if (range) {
+            _syncLock = true;
+            try {
+                panels.forEach(p => {
+                    if (p.id !== activePanel.id && p.symbol)
+                        p.chart.timeScale().setVisibleLogicalRange(range);
+                });
+            } finally {
+                _syncLock = false;
+            }
+        }
+    }
 }
 
 document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
@@ -1669,12 +1833,21 @@ async function autoPopulatePanels(mode) {
             return Array.from({ length: n }, (_, i) => atm + (n - 1 - i) * s);
     }
 
-    // Find symbol in strikeMap by strike + type (nearest expiry comes first)
-    function findSymbol(strike, type) {
+    // Find symbol in strikeMap by strike + type (nearest expiry comes first).
+    // If not found (symbol not yet in DB), construct it using the expiry from
+    // an existing strikeMap entry for the same index.
+    function findSymbol(strike, type, index) {
         if (!strike) return null;
         const suffix = `| ${strike} ${type}`;
         for (const [display, sym] of Object.entries(strikeMap)) {
             if (display.endsWith(suffix)) return sym;
+        }
+        // Fallback: extract expiry from existing strikeMap entry for same index
+        for (const sym of Object.values(strikeMap)) {
+            if (sym.startsWith(index)) {
+                const expiry = sym.slice(index.length, index.length + 5); // e.g. "26319"
+                return `${index}${expiry}${strike}${type}`;
+            }
         }
         return null;
     }
@@ -1682,8 +1855,8 @@ async function autoPopulatePanels(mode) {
     const g1Strikes = getStrikes(g1Index, g1Type, g1Size);
     const g2Strikes = getStrikes(g2Index, g2Type, g2Size);
 
-    const g1Symbols = g1Strikes.map(s => findSymbol(s, g1Type));
-    const g2Symbols = g2Strikes.map(s => findSymbol(s, g2Type));
+    const g1Symbols = g1Strikes.map(s => findSymbol(s, g1Type, g1Index));
+    const g2Symbols = g2Strikes.map(s => findSymbol(s, g2Type, g2Index));
 
     // For 2-column layouts with >2 rows: fill column-by-column so g1 goes down
     // the left column and g2 goes down the right column (e.g. CE left, PE right).
