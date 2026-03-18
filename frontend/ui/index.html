@@ -320,13 +320,14 @@
             background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-left: 4px;
         }
         #histClearBtn:hover { background: #b45309; }
-        #histBtn {
+        #histBtn, #syncBtn {
             background: none; border: 1px solid #ccc; border-radius: 4px;
             cursor: pointer; padding: 2px 5px; display: flex; align-items: center;
             justify-content: center; color: #555; height: 22px; font-size: 13px;
         }
-        #histBtn:hover { background: #e4e4e4; }
+        #histBtn:hover, #syncBtn:hover { background: #e4e4e4; }
         #histBtn.active { background: #fef3c7; border-color: #d97706; color: #d97706; }
+        #syncBtn.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; }
 
         /* ── Layout picker ── */
         #layoutBtn {
@@ -640,6 +641,9 @@
         <button id="refreshAllBtn" title="Refresh all charts" onclick="refreshAllPanels()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
+        <button id="syncBtn" title="Sync chart axes" onclick="toggleSyncCharts()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        </button>
         <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
     </div>
 </div>
@@ -832,6 +836,8 @@ let panels       = [];
 let activePanel  = null;
 let activeLayout = '1';
 let isMaximized  = false;
+let syncCharts   = false;
+let _syncLock    = false;
 
 const ICON_EXPAND  = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6V1h5"/><path d="M10 1h5v5"/><path d="M15 10v5h-5"/><path d="M6 15H1v-5"/></svg>`;
 const ICON_RESTORE = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1v5H1"/><path d="M15 6h-5V1"/><path d="M10 15v-5h5"/><path d="M1 10h5v5"/></svg>`;
@@ -876,6 +882,22 @@ function createPanel(id) {
     // ── Chart ─────────────────────────────────────
     const chart = LightweightCharts.createChart(chartAreaEl, makeChartOptions(400, 300));
     const candleSeries = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444', thinBars: true });
+
+    // ── Axis sync ─────────────────────────────────
+    chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+        if (!syncCharts || _syncLock || !range) return;
+        _syncLock = true;
+        try {
+            panels.forEach(other => {
+                if (other.id !== id && other.symbol) {
+                    other.chart.timeScale().setVisibleLogicalRange(range);
+                    other.chart.priceScale('right').applyOptions({ autoScale: true });
+                }
+            });
+        } finally {
+            _syncLock = false;
+        }
+    });
 
     // ── Per-panel state ───────────────────────────
     let symbol         = null;
@@ -1314,6 +1336,32 @@ document.addEventListener('click', (e) => {
 /* ======================
    STRIKE MAP & TOPBAR
 ====================== */
+// ── Chart axis sync ───────────────────────────────────────────────────────
+function toggleSyncCharts() {
+    syncCharts = !syncCharts;
+    const btn = document.getElementById('syncBtn');
+    btn.classList.toggle('active', syncCharts);
+    btn.title = syncCharts ? 'Chart sync ON — click to disable' : 'Sync chart axes';
+    // On enable: immediately sync all panels to the active panel's range
+    if (syncCharts && activePanel && activePanel.symbol) {
+        const range = activePanel.chart.timeScale().getVisibleLogicalRange();
+        if (range) {
+            _syncLock = true;
+            try {
+                panels.forEach(p => {
+                    if (p.id !== activePanel.id && p.symbol) {
+                        p.chart.timeScale().setVisibleLogicalRange(range);
+                        p.chart.priceScale('right').applyOptions({ autoScale: true });
+                    }
+                });
+            } finally {
+                _syncLock = false;
+            }
+        }
+    }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Historical analysis mode ──────────────────────────────────────────────
 let _histMode = false;
 let _histDate = null;
