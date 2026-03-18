@@ -392,9 +392,15 @@ async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: s
     return data
 
 
+_hist_symbols_cache: dict = {}  # date_str → list of {symbol, display}
+
 @router.get("/hist-symbols")
 async def get_hist_symbols(date: str, request: Request):
-    """Returns all distinct symbols that have tick data for a given IST date (YYYY-MM-DD)."""
+    """Returns all distinct symbols that have tick data for a given IST date (YYYY-MM-DD).
+    Historical data never changes so results are cached indefinitely after first load."""
+    if date in _hist_symbols_cache:
+        return _hist_symbols_cache[date]
+
     pool = request.app.state.pool
     date_obj = PyDate.fromisoformat(date)
     async with pool.acquire() as conn:
@@ -405,13 +411,15 @@ async def get_hist_symbols(date: str, request: Request):
               AND timestamp <  ($1::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata'
             ORDER BY expiry_date, strike, option_type
         """, date_obj)
-    return [
+    result = [
         {
             "symbol": r["symbol"],
             "display": f'{int(r["strike"])} {r["option_type"]}  ({r["expiry_date"].strftime("%d %b")})'
         }
         for r in rows
     ]
+    _hist_symbols_cache[date] = result
+    return result
 
 
 class BatchRequest(BaseModel):
