@@ -928,12 +928,19 @@ function createPanel(id) {
 
     function updateChartLabel(sym) {
         if (!sym) { labelEl.innerHTML = ''; labelEl.className = 'panel-label no-label'; return; }
-        const index = sym.startsWith('SENSEX') ? 'SENSEX' : sym.startsWith('BANKNIFTY') ? 'BANKNIFTY' : 'NIFTY';
+        const index = sym.startsWith('SENSEX') ? 'SENSEX' : sym.startsWith('BANKNIFTY') ? 'BANKNIFTY' : sym.startsWith('FINNIFTY') ? 'FINNIFTY' : sym.startsWith('MIDCPNIFTY') ? 'MIDCPNIFTY' : 'NIFTY';
+        // Try strikeMap first (live mode), fall back to parsing symbol name directly (historical mode)
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym);
-        if (!display) { labelEl.innerHTML = ''; return; }
-        const part = display.split('|')[1]?.trim() || '';
-        const [strike, type] = part.split(' ');
-        if (!strike || !type) { labelEl.innerHTML = ''; return; }
+        let strike, type;
+        if (display) {
+            const part = display.split('|')[1]?.trim() || '';
+            [strike, type] = part.split(' ');
+        } else {
+            // Parse from symbol name e.g. NIFTY2631723300PE → strike=23300, type=PE
+            const m = sym.match(/(\d+)(CE|PE)$/);
+            if (m) { strike = m[1]; type = m[2]; }
+        }
+        if (!strike || !type) { labelEl.innerHTML = ''; labelEl.className = 'panel-label no-label'; return; }
         labelEl.className = `panel-label ${type === 'CE' ? 'ce-label' : 'pe-label'}`;
         labelEl.innerHTML = `${index} - ${strike} ${type}`;
     }
