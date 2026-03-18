@@ -227,38 +227,67 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 _history_cache = {}   # symbol → {"day": date, "data": [...]}
 
 
-async def _query_history(conn, symbol: str):
+async def _query_history(conn, symbol: str, date: str = None):
     # Single query: compute IST day bounds inside SQL, then aggregate OHLC.
     # Uses idx_gap_ticks_history_cover (symbol, timestamp) INCLUDE (curr_price).
-    rows = await conn.fetch("""
-        WITH bounds AS (
+    # When date (YYYY-MM-DD) is provided, fetch that specific IST day.
+    if date:
+        rows = await conn.fetch("""
+            WITH bounds AS (
+                SELECT
+                    $2::date AT TIME ZONE 'Asia/Kolkata' AS day_start,
+                    ($2::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata' AS day_end
+            ),
+            ticks AS (
+                SELECT
+                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                    g.curr_price,
+                    g.timestamp
+                FROM gap_ticks g, bounds
+                WHERE g.symbol = $1
+                  AND g.timestamp >= bounds.day_start
+                  AND g.timestamp <  bounds.day_end
+            )
             SELECT
-                DATE_TRUNC('day',
-                    (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
-                ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
-            FROM gap_ticks
-            WHERE symbol = $1
-        ),
-        ticks AS (
+                bucket,
+                (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
+                MAX(curr_price)                                     AS high,
+                MIN(curr_price)                                     AS low,
+                (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
+            FROM ticks
+            GROUP BY bucket
+            ORDER BY bucket ASC
+        """, symbol, date)
+    else:
+        rows = await conn.fetch("""
+            WITH bounds AS (
+                SELECT
+                    DATE_TRUNC('day',
+                        (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
+                    ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
+                FROM gap_ticks
+                WHERE symbol = $1
+            ),
+            ticks AS (
+                SELECT
+                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                    g.curr_price,
+                    g.timestamp
+                FROM gap_ticks g, bounds
+                WHERE g.symbol = $1
+                  AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
+                  AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+            )
             SELECT
-                FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                g.curr_price,
-                g.timestamp
-            FROM gap_ticks g, bounds
-            WHERE g.symbol = $1
-              AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
-              AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
-        )
-        SELECT
-            bucket,
-            (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
-            MAX(curr_price)                                     AS high,
-            MIN(curr_price)                                     AS low,
-            (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
-        FROM ticks
-        GROUP BY bucket
-        ORDER BY bucket ASC
-    """, symbol)
+                bucket,
+                (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
+                MAX(curr_price)                                     AS high,
+                MIN(curr_price)                                     AS low,
+                (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
+            FROM ticks
+            GROUP BY bucket
+            ORDER BY bucket ASC
+        """, symbol)
 
     # Compact array format [time, open, high, low, close] — 54% smaller than dict format
     return [
@@ -268,66 +297,70 @@ async def _query_history(conn, symbol: str):
 
 
 @router.get("/history/{symbol}")
-async def get_history(symbol: str, request: Request, nocache: bool = False):
+async def get_history(symbol: str, request: Request, nocache: bool = False, date: str = None):
     pool = request.app.state.pool
+    cache_key = f"HIST:{symbol}:{date}" if date else symbol
 
     if not nocache:
-        cached = _history_cache.get(symbol)
+        cached = _history_cache.get(cache_key)
         if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
             return cached["data"]
 
     async with pool.acquire() as conn:
-        data = await _query_history(conn, symbol)
+        data = await _query_history(conn, symbol, date)
 
-    _history_cache[symbol] = {"data": data, "ts": time.monotonic(), "ttl": 300 + random.randint(0, 60)}
+    ttl = 3600 if date else 300 + random.randint(0, 60)  # historical data cached longer
+    _history_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl}
     return data
 
 
 _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 
 
-async def _query_gaps(conn, symbol: str):
+async def _query_gaps(conn, symbol: str, date: str = None):
     is_sensex = symbol.startswith("SENSEX")
+    if date:
+        bounds_cte = """
+            SELECT
+                $2::date AT TIME ZONE 'Asia/Kolkata' AS day_start,
+                ($2::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata' AS day_end"""
+        ts_filter  = "g.timestamp >= bounds.day_start AND g.timestamp < bounds.day_end"
+        query_arg  = (symbol, date)
+    else:
+        bounds_cte = """
+            SELECT
+                DATE_TRUNC('day', (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' AS day_start,
+                DATE_TRUNC('day', (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' + INTERVAL '1 day' AS day_end
+            FROM gap_ticks WHERE symbol = $1"""
+        ts_filter  = "g.timestamp >= bounds.day_start AND g.timestamp < bounds.day_end"
+        query_arg  = (symbol,)
+
     if is_sensex:
-        rows = await conn.fetch("""
-            WITH bounds AS (
-                SELECT
-                    DATE_TRUNC('day',
-                        (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
-                    ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
-                FROM gap_ticks WHERE symbol = $1
-            )
+        rows = await conn.fetch(f"""
+            WITH bounds AS ({bounds_cte})
             SELECT DISTINCT ON (bucket)
                 FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
                 g.direction, g.prev_price, g.curr_price, g.vol_change
             FROM gap_ticks g, bounds
             WHERE g.symbol    = $1
-              AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
-              AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+              AND {ts_filter}
               AND ABS(g.price_jump) >= 3.0
               AND g.time_diff  = 0.0
               AND g.spread_pct <= 0.75
             ORDER BY bucket, g.timestamp ASC
-        """, symbol)
+        """, *query_arg)
     else:
-        rows = await conn.fetch("""
-            WITH bounds AS (
-                SELECT
-                    DATE_TRUNC('day',
-                        (MAX(timestamp) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'
-                    ) AT TIME ZONE 'Asia/Kolkata' AS day_start_ist
-                FROM gap_ticks WHERE symbol = $1
-            )
+        rows = await conn.fetch(f"""
+            WITH bounds AS ({bounds_cte})
             SELECT DISTINCT ON (bucket)
                 FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
                 g.direction, g.prev_price, g.curr_price, g.vol_change
             FROM gap_ticks g, bounds
             WHERE g.symbol   = $1
               AND g.is_gap    = true
-              AND g.timestamp >= (bounds.day_start_ist AT TIME ZONE 'UTC')
-              AND g.timestamp <  ((bounds.day_start_ist + INTERVAL '1 day') AT TIME ZONE 'UTC')
+              AND {ts_filter}
             ORDER BY bucket, g.timestamp ASC
-        """, symbol)
+        """, *query_arg)
     return [
         {
             "time":       int(row["bucket"]),
@@ -341,19 +374,42 @@ async def _query_gaps(conn, symbol: str):
 
 
 @router.get("/gaps/{symbol}")
-async def get_gaps(symbol: str, request: Request, nocache: bool = False):
+async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: str = None):
     pool = request.app.state.pool
+    cache_key = f"HIST:{symbol}:{date}" if date else symbol
 
     if not nocache:
-        cached = _gaps_cache.get(symbol)
+        cached = _gaps_cache.get(cache_key)
         if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
             return cached["data"]
 
     async with pool.acquire() as conn:
-        data = await _query_gaps(conn, symbol)
+        data = await _query_gaps(conn, symbol, date)
 
-    _gaps_cache[symbol] = {"data": data, "ts": time.monotonic(), "ttl": 300 + random.randint(0, 60)}
+    ttl = 3600 if date else 300 + random.randint(0, 60)
+    _gaps_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl}
     return data
+
+
+@router.get("/hist-symbols")
+async def get_hist_symbols(date: str, request: Request):
+    """Returns all distinct symbols that have tick data for a given IST date (YYYY-MM-DD)."""
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT DISTINCT symbol, strike, option_type, expiry_date
+            FROM gap_ticks
+            WHERE timestamp >= $1::date AT TIME ZONE 'Asia/Kolkata'
+              AND timestamp <  ($1::date + INTERVAL '1 day') AT TIME ZONE 'Asia/Kolkata'
+            ORDER BY expiry_date, strike, option_type
+        """, date)
+    return [
+        {
+            "symbol": r["symbol"],
+            "display": f'{int(r["strike"])} {r["option_type"]}  ({r["expiry_date"].strftime("%d %b")})'
+        }
+        for r in rows
+    ]
 
 
 class BatchRequest(BaseModel):

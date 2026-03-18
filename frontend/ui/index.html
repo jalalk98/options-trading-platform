@@ -292,6 +292,42 @@
             width: 12px; height: 12px; accent-color: #38bdf8; cursor: pointer; margin: 0;
         }
 
+        /* ── Historical mode bar ── */
+        #histBar {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: #fef3c7;
+            border-bottom: 2px solid #fcd34d;
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+        #histBar.active { display: flex; }
+        #histBar .hist-label { color: #92400e; font-weight: 700; margin-right: 4px; }
+        #histDatePicker {
+            font-size: 11px; padding: 2px 5px;
+            border: 1px solid #d97706; border-radius: 4px; background: #fff; cursor: pointer;
+        }
+        #histSymbolPicker {
+            font-size: 11px; padding: 2px 5px;
+            border: 1px solid #d97706; border-radius: 4px; background: #fff;
+            min-width: 190px; cursor: pointer;
+        }
+        #histNoData { color: #b45309; font-size: 10px; }
+        #histClearBtn {
+            font-size: 11px; padding: 2px 9px;
+            background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-left: 4px;
+        }
+        #histClearBtn:hover { background: #b45309; }
+        #histBtn {
+            background: none; border: 1px solid #ccc; border-radius: 4px;
+            cursor: pointer; padding: 2px 5px; display: flex; align-items: center;
+            justify-content: center; color: #555; height: 22px; font-size: 13px;
+        }
+        #histBtn:hover { background: #e4e4e4; }
+        #histBtn.active { background: #fef3c7; border-color: #d97706; color: #d97706; }
+
         /* ── Layout picker ── */
         #layoutBtn {
             background: none;
@@ -604,7 +640,19 @@
         <button id="refreshAllBtn" title="Refresh all charts" onclick="refreshAllPanels()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
+        <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
     </div>
+</div>
+
+<!-- Historical analysis bar -->
+<div id="histBar">
+    <span class="hist-label">📅 Historical</span>
+    <input type="date" id="histDatePicker" onchange="onHistDateChange(this.value)">
+    <select id="histSymbolPicker" onchange="onHistSymbolSelect(this.value)">
+        <option value="">— select date first —</option>
+    </select>
+    <span id="histNoData" style="display:none">No data for this date</span>
+    <button id="histClearBtn" onclick="clearHistMode()">× Back to Live</button>
 </div>
 
 <!-- SL right-click context menu -->
@@ -1056,13 +1104,13 @@ function createPanel(id) {
     }
 
     // ── Load symbol ───────────────────────────────
-    async function panelLoadSymbol(sym, prefetched = null, nocache = false) {
+    async function panelLoadSymbol(sym, prefetched = null, nocache = false, histDate = null) {
         if (!sym) return;
         historyLoaded = false; symbol = sym;
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
         updateChartLabel(sym);
         if (panel === activePanel) {
-            document.getElementById('symbolSelect').value = display;
+            document.getElementById('symbolSelect').value = histDate ? sym : display;
             resetOrderBar(sym);
         }
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
@@ -1074,7 +1122,10 @@ function createPanel(id) {
             history  = prefetched.history;
             gapsRaw  = prefetched.gaps;
         } else {
-            const qs = nocache ? '?nocache=true' : '';
+            const params = new URLSearchParams();
+            if (nocache) params.set('nocache', 'true');
+            if (histDate) params.set('date', histDate);
+            const qs = params.toString() ? '?' + params.toString() : '';
             const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}${qs}`), fetch(`/api/gaps/${sym}${qs}`)]);
             history  = await histRes.json();
             gapsRaw  = await gapRes.json();
@@ -1101,9 +1152,12 @@ function createPanel(id) {
         if (candles.length > 0) { currentCandle = { ...candles[candles.length - 1] }; lastCandleTime = currentCandle.time; }
         historyLoaded = true;
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
-        loadSLStateLocal(sym);
-        startSLPoll(sym);
-        connectWebSocket(sym);
+        // Skip live features in historical mode
+        if (!histDate) {
+            loadSLStateLocal(sym);
+            startSLPoll(sym);
+            connectWebSocket(sym);
+        }
     }
 
     // ── Activate on click ─────────────────────────
@@ -1248,6 +1302,77 @@ document.addEventListener('click', (e) => {
 /* ======================
    STRIKE MAP & TOPBAR
 ====================== */
+// ── Historical analysis mode ──────────────────────────────────────────────
+let _histMode = false;
+let _histDate = null;
+
+function toggleHistMode() {
+    if (_histMode) { clearHistMode(); return; }
+    _histMode = true;
+    document.getElementById('histBar').classList.add('active');
+    document.getElementById('histBtn').classList.add('active');
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('histDatePicker').max = today;
+}
+
+async function onHistDateChange(date) {
+    _histDate = date;
+    const sel = document.getElementById('histSymbolPicker');
+    const noData = document.getElementById('histNoData');
+    sel.innerHTML = '<option value="">Loading...</option>';
+    noData.style.display = 'none';
+    try {
+        const res = await fetch(`/api/hist-symbols?date=${date}`);
+        const symbols = await res.json();
+        if (!symbols.length) {
+            sel.innerHTML = '<option value="">— no data for this date —</option>';
+            noData.style.display = 'inline';
+            return;
+        }
+        sel.innerHTML = '<option value="">— select symbol —</option>';
+        // Group by index
+        const groups = {};
+        symbols.forEach(s => {
+            const idx = s.symbol.startsWith('SENSEX') ? 'SENSEX'
+                      : s.symbol.startsWith('BANKNIFTY') ? 'BANKNIFTY'
+                      : s.symbol.startsWith('FINNIFTY') ? 'FINNIFTY'
+                      : s.symbol.startsWith('MIDCPNIFTY') ? 'MIDCPNIFTY'
+                      : 'NIFTY';
+            if (!groups[idx]) groups[idx] = [];
+            groups[idx].push(s);
+        });
+        Object.entries(groups).forEach(([idx, items]) => {
+            const grp = document.createElement('optgroup');
+            grp.label = idx;
+            items.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.symbol;
+                opt.textContent = s.display;
+                grp.appendChild(opt);
+            });
+            sel.appendChild(grp);
+        });
+    } catch (e) {
+        sel.innerHTML = '<option value="">Error loading symbols</option>';
+    }
+}
+
+function onHistSymbolSelect(symbol) {
+    if (!symbol || !_histDate) return;
+    if (activePanel) activePanel.loadSymbol(symbol, null, true, _histDate);
+}
+
+function clearHistMode() {
+    _histMode = false;
+    _histDate = null;
+    document.getElementById('histBar').classList.remove('active');
+    document.getElementById('histBtn').classList.remove('active');
+    document.getElementById('histDatePicker').value = '';
+    document.getElementById('histSymbolPicker').innerHTML = '<option value="">— select date first —</option>';
+    document.getElementById('histNoData').style.display = 'none';
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function loadStrikes() {
     const [strikesRes, atmRes] = await Promise.all([fetch("/api/strikes"), fetch("/api/atm-symbol")]);
     const strikes = await strikesRes.json();
