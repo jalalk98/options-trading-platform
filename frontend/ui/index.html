@@ -174,7 +174,7 @@
         /* ── Buy / Sell buttons ── */
         #orderBar {
             position: fixed;
-            top: 42px;
+            top: 42px; /* updated dynamically via updateLayout() */
             left: 12px;
             z-index: 200;
             display: flex;
@@ -1258,12 +1258,11 @@ function selectLayout(el) {
     panels = [];
     activePanel = null;
 
-    const cfg     = LAYOUT_CONFIGS[activeLayout];
-    const grid    = document.getElementById('chartGrid');
-    const topbarH = document.querySelector('.topbar').offsetHeight;
+    const cfg  = LAYOUT_CONFIGS[activeLayout];
+    const grid = document.getElementById('chartGrid');
     grid.style.gridTemplateColumns = `repeat(${cfg.cols}, 1fr)`;
     grid.style.gridTemplateRows    = `repeat(${cfg.rows}, 1fr)`;
-    grid.style.height = (window.innerHeight - topbarH) + 'px';
+    updateLayout();
 
     const n = cfg.cols * cfg.rows;
     for (let i = 0; i < n; i++) panels.push(createPanel(i));
@@ -1313,6 +1312,7 @@ function toggleHistMode() {
     document.getElementById('histBtn').classList.add('active');
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('histDatePicker').max = today;
+    requestAnimationFrame(updateLayout);
 }
 
 async function onHistDateChange(date) {
@@ -1370,6 +1370,7 @@ function clearHistMode() {
     document.getElementById('histDatePicker').value = '';
     document.getElementById('histSymbolPicker').innerHTML = '<option value="">— select date first —</option>';
     document.getElementById('histNoData').style.display = 'none';
+    requestAnimationFrame(updateLayout);
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1449,12 +1450,17 @@ document.getElementById("symbolSelect").addEventListener("change", async functio
 /* ======================
    RESPONSIVE
 ====================== */
-window.addEventListener('resize', () => {
-    const topbarH = document.querySelector('.topbar').offsetHeight;
-    const grid    = document.getElementById('chartGrid');
-    grid.style.height = (window.innerHeight - topbarH) + 'px';
+function updateLayout() {
+    const topbarH  = document.querySelector('.topbar').offsetHeight;
+    const histBarH = document.getElementById('histBar').offsetHeight;
+    const headerH  = topbarH + histBarH;
+    const grid     = document.getElementById('chartGrid');
+    grid.style.height = (window.innerHeight - headerH) + 'px';
+    document.getElementById('orderBar').style.top = headerH + 'px';
     panels.forEach(p => p.resize());
-});
+}
+
+window.addEventListener('resize', updateLayout);
 
 /* ======================
    GO TO LATEST BUTTON
