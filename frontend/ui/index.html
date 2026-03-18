@@ -891,6 +891,7 @@ function createPanel(id) {
             panels.forEach(other => {
                 if (other.id !== id && other.symbol) {
                     other.chart.timeScale().setVisibleLogicalRange(range);
+                    other.chart.priceScale('right').applyOptions({ autoScale: true });
                 }
             });
         } finally {
