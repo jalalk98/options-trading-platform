@@ -891,7 +891,6 @@ function createPanel(id) {
             panels.forEach(other => {
                 if (other.id !== id && other.symbol) {
                     other.chart.timeScale().setVisibleLogicalRange(range);
-                    other.chart.priceScale('right').applyOptions({ autoScale: true });
                 }
             });
         } finally {
@@ -1351,7 +1350,6 @@ function toggleSyncCharts() {
                 panels.forEach(p => {
                     if (p.id !== activePanel.id && p.symbol) {
                         p.chart.timeScale().setVisibleLogicalRange(range);
-                        p.chart.priceScale('right').applyOptions({ autoScale: true });
                     }
                 });
             } finally {
