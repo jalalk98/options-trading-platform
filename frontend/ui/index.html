@@ -710,6 +710,10 @@
             <option value="nifty-sensex-pe">Nifty &amp; Sensex PE</option>
             <option value="nifty-ce-pe">Nifty CE &amp; PE</option>
             <option value="sensex-ce-pe">Sensex CE &amp; PE</option>
+            <option value="nifty-ce">Nifty CE</option>
+            <option value="nifty-pe">Nifty PE</option>
+            <option value="sensex-ce">Sensex CE</option>
+            <option value="sensex-pe">Sensex PE</option>
         </select>
         <button id="refreshAllBtn" title="Refresh all charts" onclick="refreshAllPanels()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -1876,7 +1880,7 @@ async function autoPopulatePanels(mode) {
     else if (mode === 'nifty-sensex-pe') { g1Index='NIFTY';  g1Type='PE'; g2Index='SENSEX'; g2Type='PE'; }
     else if (mode === 'nifty-ce-pe')     { g1Index='NIFTY';  g1Type='CE'; g2Index='NIFTY';  g2Type='PE'; }
     else if (mode === 'sensex-ce-pe')    { g1Index='SENSEX'; g1Type='CE'; g2Index='SENSEX'; g2Type='PE'; }
-    else return;
+    else if (!['nifty-ce','nifty-pe','sensex-ce','sensex-pe'].includes(mode)) return;
 
     const STEP = { NIFTY: 50, SENSEX: 100 };
 
@@ -1929,6 +1933,47 @@ async function autoPopulatePanels(mode) {
             }
         }
         return null;
+    }
+
+    // ── Single-index modes (Nifty CE / Nifty PE / Sensex CE / Sensex PE) ──
+    if (['nifty-ce','nifty-pe','sensex-ce','sensex-pe'].includes(mode)) {
+        const idxName = mode.startsWith('nifty') ? 'NIFTY' : 'SENSEX';
+        const type    = mode.endsWith('ce')      ? 'CE'    : 'PE';
+        const s       = STEP[idxName];
+        const atm     = atmMap[idxName];
+        if (!atm) { hideLoadingBar(); toast('ATM not available for ' + idxName, 'warn'); return; }
+
+        const itmCount = Math.floor(total / 2);
+        const otmCount = total - itmCount;
+
+        // CE: ascending strikes — ITM (low) on left, OTM (high) on right
+        // PE: descending strikes — ITM (high) on left, OTM (low) on right
+        let strikes;
+        if (type === 'CE') {
+            const itm = Array.from({ length: itmCount }, (_, i) => atm - (itmCount - 1 - i) * s);
+            const otm = Array.from({ length: otmCount }, (_, i) => atm + (i + 1) * s);
+            strikes = [...itm, ...otm];
+        } else {
+            const itm = Array.from({ length: itmCount }, (_, i) => atm + (itmCount - 1 - i) * s);
+            const otm = Array.from({ length: otmCount }, (_, i) => atm - (i + 1) * s);
+            strikes = [...itm, ...otm];
+        }
+
+        const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
+        const validSyms    = panelSymbols.filter(Boolean);
+        const batchData    = validSyms.length
+            ? await fetch('/api/batch', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: validSyms, nocache: true }),
+              }).then(r => r.json())
+            : {};
+        await Promise.all(panelSymbols.map((sym, i) => {
+            if (!sym) return Promise.resolve();
+            return panels[i].loadSymbol(sym, batchData[sym] || null);
+        }));
+        hideLoadingBar();
+        saveViewState();
+        return;
     }
 
     const g1Strikes = getStrikes(g1Index, g1Type, g1Size);
