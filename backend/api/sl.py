@@ -332,8 +332,11 @@ async def place_limit_order(req: LimitOrderRequest):
             "https://api.kite.trade/orders/regular",
             data=data, headers=headers, timeout=7
         )
-        r.raise_for_status()
         result = r.json()
+        if r.status_code != 200:
+            msg = result.get("message") or result.get("error") or f"HTTP {r.status_code}"
+            logger.error(f"place-limit-order broker error: {msg}")
+            return {"status": "error", "message": msg}
         order_id = (result.get("data") or {}).get("order_id")
         if kite_order_type == "SL":
             logger.info(f"SL {req.side} {req.qty} {req.symbol} trigger={trigger} limit={limit} → order_id={order_id}")

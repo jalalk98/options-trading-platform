@@ -3,8 +3,11 @@
 import time
 import random
 import asyncio
+import logging
 import orjson
 from fastapi import Response
+
+logger = logging.getLogger(__name__)
 from datetime import timezone, timedelta, date as PyDate
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -45,26 +48,31 @@ async def _query_strikes(pool):
 
 
 async def prewarm_strikes_cache(pool):
-    async with pool.acquire() as conn:
-        result = await _query_strikes(pool)
-        _strikes_cache["data"] = result
-        _strikes_cache["ts"] = time.monotonic()
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = '60000'")  # 60s for prewarm only
+            result = await _query_strikes(pool)
+            _strikes_cache["data"] = result
+            _strikes_cache["ts"] = time.monotonic()
 
-        # Prewarm ATM cache for NIFTY
-        atm_row = await _query_atm_symbol(conn, "NIFTY")
-        if atm_row:
-            atm_result = {"symbol": atm_row["symbol"], "strike": float(atm_row["strike"])}
-            _atm_cache["NIFTY"] = {"data": atm_result, "ts": time.monotonic()}
-            atm_symbol = atm_row["symbol"]
-        else:
-            atm_symbol = result[0]["symbol"] if result else None
+            # Prewarm ATM cache for NIFTY
+            atm_row = await _query_atm_symbol(conn, "NIFTY")
+            if atm_row:
+                atm_result = {"symbol": atm_row["symbol"], "strike": float(atm_row["strike"])}
+                _atm_cache["NIFTY"] = {"data": atm_result, "ts": time.monotonic()}
+                atm_symbol = atm_row["symbol"]
+            else:
+                atm_symbol = result[0]["symbol"] if result else None
 
-        # Prewarm history + gaps cache for the ATM symbol
-        if atm_symbol:
-            data = await _query_history(conn, atm_symbol)
-            _history_cache[atm_symbol] = {"data": data, "ts": time.monotonic()}
-            gaps_data = await _query_gaps(conn, atm_symbol)
-            _gaps_cache[atm_symbol] = {"data": gaps_data, "ts": time.monotonic()}
+            # Prewarm history + gaps cache for the ATM symbol
+            if atm_symbol:
+                data = await _query_history(conn, atm_symbol)
+                _history_cache[atm_symbol] = {"data": data, "ts": time.monotonic()}
+                gaps_data = await _query_gaps(conn, atm_symbol)
+                _gaps_cache[atm_symbol] = {"data": gaps_data, "ts": time.monotonic()}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"prewarm_strikes_cache failed (non-fatal): {e}")
 
 
 @router.get("/strikes")
@@ -114,6 +122,7 @@ async def _query_atm_symbol(conn, index: str = "NIFTY"):
         SELECT DISTINCT ON (symbol) symbol, curr_price
         FROM gap_ticks
         WHERE symbol = ANY($1)
+          AND timestamp >= NOW() - INTERVAL '7 days'
         ORDER BY symbol, timestamp DESC
     """, symbol_list)
     prices = {
@@ -490,47 +499,50 @@ class SLOrder(BaseModel):
 @router.post("/place-sl-order")
 async def place_sl_order(order: SLOrder):
 
+    def round_to_tick(price, tick_size=0.05):
+        return round(round(price / tick_size) * tick_size, 2)
+
+    trigger_buffer = 0.10
+    price = round_to_tick(order.price)
+
+    if order.side == "BUY":
+        trigger = round_to_tick(price - trigger_buffer)
+        tx = "BUY"
+    else:
+        trigger = round_to_tick(price + trigger_buffer)
+        tx = "SELL"
+
+    headers = {
+        "X-Kite-Version": "3",
+        "User-Agent": "Kiteconnect-python/5.0.1",
+        "Authorization": f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    data = {
+        "variety":          "regular",
+        "exchange":         "NFO",
+        "tradingsymbol":    order.symbol,
+        "transaction_type": tx,
+        "quantity":         "65",
+        "product":          "NRML",
+        "order_type":       "SL",
+        "validity":         "DAY",
+        "trigger_price":    str(trigger),
+        "price":            str(price),
+    }
+
     try:
-        print(f"Order request received: {order.symbol} {order.side} {order.price}")
-        def round_to_tick(price, tick_size=0.05):
-            return round(round(price / tick_size) * tick_size, 2)
-
-        trigger_buffer = 0.10
-        price = round_to_tick(order.price)
-
-        if order.side == "BUY":
-
-            trigger = round_to_tick(price - trigger_buffer)
-
-            await kite1.hard_code_regular_buy_order(
-                exchange="NFO",
-                trade_symbol=order.symbol,
-                qty=65,
-                price=price,
-                trig_price=trigger,
-                api_key=KITE_API_KEY,
-                access_token=KITE_ACCESS_TOKEN
-            )
-
-        elif order.side == "SELL":
-
-            trigger = round_to_tick(price + trigger_buffer)
-
-            await kite1.hard_code_regular_sell_order(
-                exchange="NFO",
-                trade_symbol=order.symbol,
-                qty=65,
-                stop_loss_price=price,
-                trig_price=trigger,
-                api_key=KITE_API_KEY,
-                access_token=KITE_ACCESS_TOKEN
-            )
-
-        return {
-            "status": "success",
-            "price": price,
-            "trigger": trigger
-        }
-
+        r = await kite1.reqsession.post(
+            "https://api.kite.trade/orders/regular",
+            data=data, headers=headers, timeout=7
+        )
+        result = r.json()
+        if r.status_code != 200:
+            msg = result.get("message") or result.get("error") or f"HTTP {r.status_code}"
+            logger.error(f"place-sl-order broker error ({tx}): {msg}")
+            return {"status": "error", "message": msg}
+        order_id = (result.get("data") or {}).get("order_id")
+        logger.info(f"SL {tx} {order.symbol} price={price} trigger={trigger} → order_id={order_id}")
+        return {"status": "success", "price": price, "trigger": trigger, "order_id": order_id}
     except Exception as e:
+        logger.error(f"place-sl-order error: {e}")
         return {"status": "error", "message": str(e)}

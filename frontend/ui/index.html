@@ -500,7 +500,8 @@
             pointer-events: none;
         }
         .toast {
-            padding: 10px 16px;
+            position: relative;
+            padding: 10px 32px 10px 16px;
             border-radius: 6px;
             font-size: 13px;
             font-weight: bold;
@@ -510,7 +511,21 @@
             transition: opacity 0.4s ease;
             max-width: 320px;
             white-space: pre-wrap;
+            pointer-events: all;
         }
+        .toast-close {
+            position: absolute;
+            top: 6px;
+            right: 8px;
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.7);
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 2px;
+        }
+        .toast-close:hover { color: #fff; }
         .toast.success { background: #15803d; border-left: 4px solid #4ade80; }
         .toast.error   { background: #b91c1c; border-left: 4px solid #f87171; }
         .toast.info    { background: #1d4ed8; border-left: 4px solid #93c5fd; }
@@ -1383,6 +1398,19 @@ function createPanel(id) {
         panelEl.remove();
     }
 
+    function scrollToEnd() {
+        if (!allCandles.length) return;
+        const w          = chartAreaEl.offsetWidth || 400;
+        const barPx      = 6;
+        const visibleBars = Math.max(20, Math.floor(w / barPx));
+        const rightOff   = Math.max(6, Math.floor(w / 12));
+        chart.priceScale('right').applyOptions({ autoScale: true });
+        chart.timeScale().setVisibleLogicalRange({
+            from: allCandles.length - visibleBars + rightOff,
+            to:   allCandles.length - 1 + rightOff,
+        });
+    }
+
     const panel = {
         id, el: panelEl,
         get symbol()         { return symbol; },
@@ -1396,6 +1424,7 @@ function createPanel(id) {
         updateGoToLiveBtn,
         loadSymbol: panelLoadSymbol,
         updateSLLine: updateSLLineLocal,
+        scrollToEnd,
         resize, destroy,
     };
     return panel;
@@ -1693,29 +1722,15 @@ document.getElementById('goToLive').addEventListener('click', () => {
     if (!activePanel) return;
     document.getElementById('goToLive').style.display = 'none';
     if (!syncCharts) {
-        activePanel.chart.timeScale().scrollToRealTime();
+        activePanel.scrollToEnd();
         return;
     }
-    // Disable sync while active panel animates to avoid cross-panel interference
-    const wasSynced = syncCharts;
+    // Use setVisibleLogicalRange (instant, not animated) so there are no
+    // in-flight range-change callbacks that could cascade through the sync
+    // handler after we re-enable syncCharts.
     syncCharts = false;
-    activePanel.chart.timeScale().scrollToRealTime();
-    // After animation (~300ms), copy resulting range to all other panels
-    setTimeout(() => {
-        syncCharts = wasSynced;
-        const range = activePanel.chart.timeScale().getVisibleLogicalRange();
-        if (!range) return;
-        _syncLock = true;
-        try {
-            panels.forEach(p => {
-                if (p.symbol && p.id !== activePanel.id) {
-                    p.chart.timeScale().setVisibleLogicalRange(range);
-                }
-            });
-        } finally {
-            _syncLock = false;
-        }
-    }, 350);
+    panels.forEach(p => { if (p.symbol) p.scrollToEnd(); });
+    syncCharts = true;
 });
 
 /* ======================
@@ -2086,21 +2101,29 @@ document.addEventListener('DOMContentLoaded', () => {
 /* ======================
    TOAST
 ====================== */
-function toast(msg, type = 'info', duration = 4000) {
+function toast(msg, type = 'info', duration = 7000) {
     const container = document.getElementById('toastContainer');
     const el = document.createElement('div');
-    el.className = `toast ${type}`; el.textContent = msg;
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    const btn = document.createElement('button');
+    btn.className = 'toast-close';
+    btn.textContent = '×';
+    const dismiss = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 420); };
+    btn.addEventListener('click', dismiss);
+    el.appendChild(btn);
     container.appendChild(el);
-    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 420); }, duration);
+    const timer = setTimeout(dismiss, duration);
+    btn.addEventListener('click', () => clearTimeout(timer), { once: true });
 }
 function toastOrder(data, actionLabel) {
     if (!data) { toast(`${actionLabel}: no response`, 'error'); return; }
     if (data.status === 'success' || data.status === 'ok') {
         toast(`✅ ${actionLabel}${data.price ? ` @ ${data.price}` : ''}`, 'success');
     } else if (data.status === 'error') {
-        toast(`❌ ${actionLabel} FAILED\n${data.message || ''}`, 'error', 6000);
+        toast(`❌ ${actionLabel} FAILED\n${data.message || ''}`, 'error', 10000);
     } else {
-        toast(`⚠️ ${actionLabel}: ${JSON.stringify(data)}`, 'warn', 5000);
+        toast(`⚠️ ${actionLabel}: ${JSON.stringify(data)}`, 'warn', 7000);
     }
 }
 
@@ -2118,15 +2141,19 @@ window.addEventListener("keydown", async e => {
         if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
         const price = Number(cp.toFixed(2));
         toast(`⏳ Placing SL BUY @ ${price}…`, 'info', 2000);
-        const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "BUY" }) });
-        toastOrder(await res.json(), `SL BUY ${sym} @ ${price}`);
+        try {
+            const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "BUY" }) });
+            toastOrder(await res.json(), `SL BUY ${sym} @ ${price}`);
+        } catch (err) { toast(`❌ SL BUY failed: ${err.message}`, 'error', 10000); }
     }
     if (key === "w") {
         if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
         const price = Number(cp.toFixed(2));
         toast(`⏳ Placing SL SELL @ ${price}…`, 'info', 2000);
-        const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "SELL" }) });
-        toastOrder(await res.json(), `SL SELL ${sym} @ ${price}`);
+        try {
+            const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "SELL" }) });
+            toastOrder(await res.json(), `SL SELL ${sym} @ ${price}`);
+        } catch (err) { toast(`❌ SL SELL failed: ${err.message}`, 'error', 10000); }
     }
     if (key === "l" || key === "L") {
         if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
@@ -2156,8 +2183,11 @@ window.addEventListener("keydown", async e => {
 /* ======================
    INDEX TICKER
 ====================== */
-const _idxPrev = {};
-const idxSelection = { 1: 'NIFTY', 2: 'SENSEX' };
+const idxSelection  = { 1: 'NIFTY', 2: 'SENSEX' };
+const _idxPrevClose = {};   // sym → prev-close price (from initial API call)
+const _idxLatestLtp = {};   // sym → latest ltp (updated by WS ticks)
+const _idxWs        = {};   // sym → WebSocket instance
+const IDX_SYMBOLS   = ['NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'];
 
 function toggleIdxMenu(group, e) {
     e.stopPropagation();
@@ -2173,7 +2203,8 @@ function selectIdx(group, key, el) {
     document.getElementById('idxMenu' + group).querySelectorAll('.idx-menu-item').forEach(i => i.classList.remove('active'));
     el.classList.add('active');
     document.getElementById('idxMenu' + group).classList.remove('open');
-    updateIndexTicker();
+    // Re-render from stored latest ltp for the newly selected symbol
+    if (_idxLatestLtp[key] != null) _renderIdxGroup(group, key, _idxLatestLtp[key]);
 }
 
 document.addEventListener('click', () => {
@@ -2181,38 +2212,68 @@ document.addEventListener('click', () => {
     document.getElementById('idxMenu2').classList.remove('open');
 });
 
-async function updateIndexTicker() {
+function _renderIdxGroup(group, sym, ltp) {
+    const priceEl  = document.getElementById('idxPrice'  + group);
+    const changeEl = document.getElementById('idxChange' + group);
+    if (!priceEl) return;
+    const prevClose  = _idxPrevClose[sym];
+    const change     = prevClose != null ? ltp - prevClose : null;
+    const changePct  = prevClose != null && prevClose !== 0 ? (change / prevClose) * 100 : null;
+    const dir        = change > 0 ? ' up' : change < 0 ? ' down' : '';
+    priceEl.textContent = ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    priceEl.className   = 'idx-price' + dir;
+    if (changeEl && change != null) {
+        const sign = change >= 0 ? '+' : '';
+        changeEl.textContent = `${sign}${change.toFixed(2)} (${changePct.toFixed(2)}%)`;
+        changeEl.className   = 'idx-change' + dir;
+    }
+}
+
+function _onIdxTick(sym, ltp) {
+    _idxLatestLtp[sym] = ltp;
+    for (const [group, key] of Object.entries(idxSelection)) {
+        if (key === sym) _renderIdxGroup(group, sym, ltp);
+    }
+}
+
+function _connectIdxSocket(sym) {
+    if (_idxWs[sym] && _idxWs[sym].readyState < 2) return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/${sym}`);
+    _idxWs[sym] = ws;
+    ws.onmessage = e => {
+        try {
+            const tick = JSON.parse(e.data);
+            if (tick.type === 'ping') return;
+            const ltp = tick.value ?? tick.curr_price;
+            if (ltp != null) _onIdxTick(sym, ltp);
+        } catch (_) {}
+    };
+    ws.onclose = () => { setTimeout(() => _connectIdxSocket(sym), 3000); };
+    ws.onerror = () => ws.close();
+}
+
+async function initIndexTicker() {
     try {
         const data = await fetch('/api/index-ltp').then(r => r.json());
-        for (const [group, key] of Object.entries(idxSelection)) {
-            const priceEl  = document.getElementById('idxPrice'  + group);
-            const changeEl = document.getElementById('idxChange' + group);
-            if (!priceEl) continue;
-            const entry = data[key];
-            const ltp = entry && entry.ltp;
-            if (ltp == null) {
-                priceEl.textContent  = '—';
-                priceEl.className    = 'idx-price';
-                if (changeEl) { changeEl.textContent = ''; changeEl.className = 'idx-change'; }
-                continue;
-            }
-            const formatted = ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            const dir = entry.change > 0 ? ' up' : entry.change < 0 ? ' down' : '';
-            priceEl.textContent = formatted;
-            priceEl.className   = 'idx-price' + dir;
-            _idxPrev[key] = ltp;
-
-            if (changeEl && entry.change != null && entry.change_pct != null) {
-                const sign = entry.change >= 0 ? '+' : '';
-                const chgDir = entry.change > 0 ? ' up' : entry.change < 0 ? ' down' : '';
-                changeEl.textContent = `${sign}${entry.change.toFixed(2)} (${entry.change_pct.toFixed(2)}%)`;
-                changeEl.className   = 'idx-change' + chgDir;
+        for (const sym of IDX_SYMBOLS) {
+            const entry = data[sym];
+            if (entry && entry.ltp != null && entry.change != null) {
+                _idxPrevClose[sym] = entry.ltp - entry.change;
+                _idxLatestLtp[sym] = entry.ltp;
             }
         }
+        // Initial render for both groups
+        for (const [group, sym] of Object.entries(idxSelection)) {
+            const ltp = _idxLatestLtp[sym];
+            if (ltp != null) _renderIdxGroup(group, sym, ltp);
+        }
     } catch (e) {}
+    // Switch to live WebSocket updates for all index symbols
+    IDX_SYMBOLS.forEach(_connectIdxSocket);
 }
-updateIndexTicker();
-setInterval(updateIndexTicker, 2000);
+
+initIndexTicker();
 
 /* ======================
    SAVE / RESTORE STATE
