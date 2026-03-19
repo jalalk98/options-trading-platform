@@ -2017,7 +2017,9 @@ async function placeOrder(side) {
     if (!activePanel || !activePanel.symbol) { toast('No symbol selected', 'warn'); return; }
     const sym = activePanel.symbol;
     if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
-    const price = parseFloat(currentLTP.toFixed(2));
+    const LIMIT_BUFFER = 0.20;
+    let price = parseFloat(currentLTP.toFixed(2));
+    if (orderType === 'L') price = parseFloat((price + (side === 'BUY' ? LIMIT_BUFFER : -LIMIT_BUFFER)).toFixed(2));
     const qty   = orderLots * orderLotSize;
     const label = `${side} ${qty} ${sym} @ ${price} [${orderType}]`;
     toast(`⏳ Placing ${label}…`, 'info', 2000);
