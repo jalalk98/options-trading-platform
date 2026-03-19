@@ -172,7 +172,7 @@ def _idx_entry(d):
     return {"ltp": ltp, "change": change, "change_pct": change_pct}
 
 @router.get("/index-ltp")
-async def get_index_ltp():
+async def get_index_ltp(request: Request):
     """Returns live LTP + change from prev close for all tracked indices."""
     now = time.monotonic()
     if _ltp_cache["data"] and (now - _ltp_cache["ts"]) < LTP_CACHE_TTL:
@@ -185,6 +185,33 @@ async def get_index_ltp():
             "BANKNIFTY":  _idx_entry(data.get("NSE:NIFTY BANK",         {})),
             "FINNIFTY":   _idx_entry(data.get("NSE:NIFTY FIN SERVICE",  {})),
             "MIDCPNIFTY": _idx_entry(data.get("NSE:NIFTY MID SELECT",   {})),
+        }
+        if any(v["ltp"] is not None for v in result.values()):
+            _ltp_cache["data"] = result
+            _ltp_cache["ts"] = now
+            return result
+    except Exception:
+        pass
+
+    # Fallback: read latest prices from gap_ticks DB
+    try:
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT ON (symbol) symbol, curr_price
+                FROM gap_ticks
+                WHERE symbol IN ('NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY')
+                  AND timestamp >= NOW() - INTERVAL '10 minutes'
+                ORDER BY symbol, timestamp DESC
+            """)
+        db_prices = {r["symbol"]: r["curr_price"] for r in rows}
+        empty = {"ltp": None, "change": None, "change_pct": None}
+        result = {
+            "NIFTY":      {"ltp": db_prices.get("NIFTY"),      "change": None, "change_pct": None},
+            "SENSEX":     {"ltp": db_prices.get("SENSEX"),     "change": None, "change_pct": None},
+            "BANKNIFTY":  {"ltp": db_prices.get("BANKNIFTY"),  "change": None, "change_pct": None},
+            "FINNIFTY":   {"ltp": db_prices.get("FINNIFTY"),   "change": None, "change_pct": None},
+            "MIDCPNIFTY": {"ltp": db_prices.get("MIDCPNIFTY"), "change": None, "change_pct": None},
         }
         _ltp_cache["data"] = result
         _ltp_cache["ts"] = now
@@ -266,21 +293,15 @@ async def _query_history(conn, symbol: str, date: str = None):
         """, symbol, date_obj)
     else:
         rows = await conn.fetch("""
-            WITH bounds AS (
-                SELECT
-                    DATE_TRUNC('day', MAX(timestamp)) AS day_start
-                FROM gap_ticks
-                WHERE symbol = $1
-            ),
-            ticks AS (
+            WITH ticks AS (
                 SELECT
                     FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
                     g.curr_price,
                     g.timestamp
-                FROM gap_ticks g, bounds
+                FROM gap_ticks g
                 WHERE g.symbol = $1
-                  AND g.timestamp >= bounds.day_start + INTERVAL '9 hours 15 minutes'
-                  AND g.timestamp <  bounds.day_start + INTERVAL '1 day'
+                  AND g.timestamp >= CURRENT_DATE + TIME '09:15:00'
+                  AND g.timestamp <= CURRENT_DATE + TIME '16:00:00'
             )
             SELECT
                 bucket,
@@ -328,16 +349,12 @@ async def _query_gaps(conn, symbol: str, date: str = None):
         ts_filter  = "g.timestamp >= $2::date + TIME '09:15:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
         query_arg  = (symbol, PyDate.fromisoformat(date))
     else:
-        bounds_cte = """
-            SELECT
-                DATE_TRUNC('day', MAX(timestamp)) AS day_start,
-                DATE_TRUNC('day', MAX(timestamp)) + INTERVAL '1 day' AS day_end
-            FROM gap_ticks WHERE symbol = $1"""
-        ts_filter  = "g.timestamp >= bounds.day_start + INTERVAL '9 hours 15 minutes' AND g.timestamp < bounds.day_end"
+        bounds_cte = None
+        ts_filter  = "g.timestamp >= CURRENT_DATE + TIME '09:15:00' AND g.timestamp <= CURRENT_DATE + TIME '16:00:00'"
         query_arg  = (symbol,)
 
-    cte_clause = f"WITH bounds AS ({bounds_cte})" if bounds_cte else ""
-    from_extra = ", bounds" if bounds_cte else ""
+    cte_clause = ""
+    from_extra = ""
 
     if is_sensex:
         rows = await conn.fetch(f"""

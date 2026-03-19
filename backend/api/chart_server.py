@@ -39,7 +39,8 @@ async def create_pool():
         password=DB_PASSWORD,
         database=DB_NAME,
         min_size=2,
-        max_size=40,
+        max_size=10,
+        server_settings={"statement_timeout": "15000"},  # 15 second query timeout
     )
 
 
