@@ -441,6 +441,28 @@
         #refreshAllBtn:hover { background: #e4e4e4; }
         #refreshAllBtn.spinning svg { animation: spin 0.6s linear; }
 
+        /* Loading bar */
+        #loadingBar {
+            width: 64px; height: 4px;
+            background: #1e293b;
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+        #loadingBar.active { display: block; }
+        #loadingBar::after {
+            content: '';
+            display: block;
+            width: 40%; height: 100%;
+            background: #38bdf8;
+            border-radius: 2px;
+            animation: loadSlide 1s ease-in-out infinite;
+        }
+        @keyframes loadSlide {
+            0%   { transform: translateX(-150%); }
+            100% { transform: translateX(400%);  }
+        }
+
         #layoutPopup {
             display: none;
             position: fixed;
@@ -672,6 +694,7 @@
     </div>
     <!-- Right-side controls -->
     <div id="topbarRight">
+        <div id="loadingBar"></div>
         <!-- Layout picker button -->
         <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
             <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1796,14 +1819,19 @@ function toggleMaximize() {
 /* ======================
    REFRESH ALL / AUTO POPULATE
 ====================== */
+function showLoadingBar() { document.getElementById('loadingBar').classList.add('active'); }
+function hideLoadingBar() { document.getElementById('loadingBar').classList.remove('active'); }
+
 async function refreshAllPanels() {
     const btn = document.getElementById('refreshAllBtn');
     btn.classList.add('spinning');
+    showLoadingBar();
     const wasSynced = syncCharts;
     syncCharts = false;
     await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
     syncCharts = wasSynced;
     btn.classList.remove('spinning');
+    hideLoadingBar();
     if (syncCharts && activePanel && activePanel.symbol) {
         const range = activePanel.chart.timeScale().getVisibleLogicalRange();
         if (range) {
@@ -1828,6 +1856,7 @@ document.getElementById('autoPopulateSelect').addEventListener('change', async f
     try {
         await autoPopulatePanels(value);
     } catch (e) {
+        hideLoadingBar();
         toast('Auto populate failed: ' + e.message, 'warn');
     }
 });
@@ -1835,6 +1864,7 @@ document.getElementById('autoPopulateSelect').addEventListener('change', async f
 async function autoPopulatePanels(mode) {
     const total = panels.length;
     if (!total) return;
+    showLoadingBar();
 
     // Split panels: top half = group1, bottom half = group2
     const g1Size = Math.ceil(total / 2);
@@ -1937,6 +1967,7 @@ async function autoPopulatePanels(mode) {
         if (!sym) return Promise.resolve();
         return panels[i].loadSymbol(sym, batchData[sym] || null);
     }));
+    hideLoadingBar();
     saveViewState();
 }
 
