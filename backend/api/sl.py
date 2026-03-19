@@ -4,7 +4,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
-from backend.state import sl_state
+from backend.state import sl_state, app_config
 from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 import logging
@@ -346,3 +346,132 @@ async def place_limit_order(req: LimitOrderRequest):
     except Exception as e:
         logger.error(f"place-limit-order error: {e}")
         return {"status": "error", "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# POST /api/cancel-order
+# Cancels an order by order_id. Returns
+# {status: "cancelled"} or {status: "filled"}.
+# ─────────────────────────────────────────────
+class CancelOrderReq(BaseModel):
+    order_id: str
+
+@router.post("/cancel-order")
+async def cancel_order(req: CancelOrderReq):
+    try:
+        result = await kite1.hard_code_regular_cancel_order(
+            order_id=req.order_id,
+            access_token=KITE_ACCESS_TOKEN,
+            api_key=KITE_API_KEY,
+        )
+        if result and result.get("status") == "success":
+            logger.info(f"cancel-order {req.order_id}: cancelled")
+            return {"status": "cancelled"}
+        msg = (result or {}).get("message", "unknown")
+        logger.info(f"cancel-order {req.order_id}: assumed filled — {msg}")
+        return {"status": "filled", "message": msg}
+    except Exception as e:
+        logger.error(f"cancel-order error: {e}")
+        return {"status": "filled", "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# POST /api/place-sl-exact
+# Places an SL order with caller-supplied
+# trigger_price and limit price (no server-side
+# distance/buffer calculation).
+# ─────────────────────────────────────────────
+class PlaceSlExactReq(BaseModel):
+    symbol:   str
+    side:     str    # BUY or SELL
+    qty:      int
+    trigger:  float
+    limit:    float
+    exchange: str = "NFO"
+
+@router.post("/place-sl-exact")
+async def place_sl_exact(req: PlaceSlExactReq):
+    trigger = _round(req.trigger)
+    limit   = _round(req.limit)
+    headers = {
+        "X-Kite-Version": "3",
+        "User-Agent":      "Kiteconnect-python/5.0.1",
+        "Authorization":   f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    data = {
+        "variety":          "regular",
+        "exchange":         req.exchange,
+        "tradingsymbol":    req.symbol,
+        "transaction_type": req.side.upper(),
+        "quantity":         str(req.qty),
+        "product":          "NRML",
+        "order_type":       "SL",
+        "validity":         "DAY",
+        "trigger_price":    str(trigger),
+        "price":            str(limit),
+    }
+    try:
+        r = await kite1.reqsession.post(
+            "https://api.kite.trade/orders/regular",
+            data=data, headers=headers, timeout=7
+        )
+        result = r.json()
+        if r.status_code != 200:
+            msg = result.get("message") or result.get("error") or f"HTTP {r.status_code}"
+            logger.error(f"place-sl-exact broker error: {msg}")
+            return {"status": "error", "message": msg}
+        order_id = (result.get("data") or {}).get("order_id")
+        logger.info(f"place-sl-exact {req.side} {req.qty} {req.symbol} trigger={trigger} limit={limit} → {order_id}")
+        return {"status": "success", "order_id": order_id}
+    except Exception as e:
+        logger.error(f"place-sl-exact error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# POST /api/modify-sl-order
+# Modifies trigger and limit price of an open
+# SL order. Used by the Auto SL Increment loop.
+# ─────────────────────────────────────────────
+class ModifySlReq(BaseModel):
+    order_id: str
+    trigger:  float
+    limit:    float
+
+@router.post("/modify-sl-order")
+async def modify_sl_order(req: ModifySlReq):
+    trigger = _round(req.trigger)
+    limit   = _round(req.limit)
+    try:
+        result = await kite1.hard_code_regular_modify_order(
+            order_id=req.order_id,
+            price=limit,
+            trig_price=trigger,
+            access_token=KITE_ACCESS_TOKEN,
+            api_key=KITE_API_KEY,
+        )
+        if result and result.get("status") == "success":
+            logger.info(f"modify-sl-order {req.order_id} trigger={trigger} limit={limit}")
+            return {"status": "success"}
+        msg = (result or {}).get("message", "modify failed")
+        return {"status": "error", "message": msg}
+    except Exception as e:
+        logger.error(f"modify-sl-order error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# POST /api/set-default-sl
+# Updates the in-memory default SL distance used
+# by handle_order_update for L/M order fills.
+# ─────────────────────────────────────────────
+class DefaultSlReq(BaseModel):
+    distance: float
+
+@router.post("/set-default-sl")
+async def set_default_sl(req: DefaultSlReq):
+    if req.distance <= 0:
+        return {"status": "error", "message": "distance must be > 0"}
+    app_config["default_sl_dist"] = req.distance
+    logger.info(f"default_sl_dist updated to {req.distance}")
+    return {"status": "ok", "default_sl_dist": req.distance}

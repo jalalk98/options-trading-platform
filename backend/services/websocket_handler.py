@@ -10,7 +10,7 @@ from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 from config.logging_config import logger
 from backend.core.redis_client import redis_client
 from backend.services.gap_processor import process_tick
-from backend.state import sl_state
+from backend.state import sl_state, app_config
 
 
 def _send_telegram(text: str) -> None:
@@ -184,7 +184,7 @@ def setup_websocket_events():
                     # Use dragged SL line — must be below entry for a long
                     stop_loss_price = round_to_tick(stored_sl)
                 else:
-                    stop_loss_price = round_to_tick(last_price - 10)
+                    stop_loss_price = round_to_tick(last_price - app_config["default_sl_dist"])
 
                 trigger_price = round_to_tick(stop_loss_price + trigger_buffer)
 
@@ -229,7 +229,7 @@ def setup_websocket_events():
                     # Use dragged SL line — must be above entry for a short
                     stop_loss_price = round_to_tick(stored_sl)
                 else:
-                    stop_loss_price = round_to_tick(last_price + 10)
+                    stop_loss_price = round_to_tick(last_price + app_config["default_sl_dist"])
 
                 trigger_price = round_to_tick(stop_loss_price - trigger_buffer)
 

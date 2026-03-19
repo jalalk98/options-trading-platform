@@ -13,3 +13,8 @@
 # }
 
 sl_state: dict = {}
+
+# Mutable app-wide config (updated via API endpoints, persisted in memory only)
+app_config: dict = {
+    "default_sl_dist": 10.0,   # fallback SL distance for L/M orders when no SL line is drawn
+}

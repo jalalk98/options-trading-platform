@@ -816,16 +816,44 @@
         <label>Distance from LTP</label>
         <input id="slDistInput" class="slcfg-input" type="number" min="0.5" step="0.5" value="5">
     </div>
+    <div class="slcfg-row">
+        <label>Default SL</label>
+        <input id="slDefaultDistInput" class="slcfg-input" type="number" min="0.5" step="0.5" value="5">
+    </div>
     <hr class="slcfg-divider">
+    <div class="slcfg-row">
+        <label class="slcfg-check" style="margin-bottom:0">
+            <input type="checkbox" id="slCfgAutoCancel">
+            Auto Cancel in Secs
+        </label>
+        <input id="slAutoCancelCount" class="slcfg-input" type="number" min="1" step="1" value="1" style="width:40px">
+    </div>
+    <div class="slcfg-row">
+        <label class="slcfg-check" style="margin-bottom:0">
+            <input type="checkbox" id="slCfgAutoSlInc">
+            Auto SL Increment
+        </label>
+        <input id="slAutoSlIncCount" class="slcfg-input" type="number" min="1" step="1" value="1" style="width:40px">
+    </div>
     <label class="slcfg-check">
-        <input type="checkbox" id="slCfgAutoCancel">
-        Auto cancel
-    </label>
-    <label class="slcfg-check">
-        <input type="checkbox" id="slCfgAutoSlInc">
-        Auto SL INC
+        <input type="checkbox" id="slCfgSlAtCost">
+        SL at Cost
     </label>
     <button id="slConfigClose" onclick="closeSlConfig()">Done</button>
+</div>
+
+<!-- Limit / Market order config popup -->
+<div id="limitConfigPopup" style="display:none;position:fixed;z-index:300;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:10px 12px;box-shadow:0 4px 16px rgba(0,0,0,.5);font-family:Arial,sans-serif;min-width:160px;">
+    <h4 id="limitConfigTitle" style="margin:0 0 8px;font-size:10px;color:#94a3b8;font-weight:normal;letter-spacing:.4px;">Limit Order Settings</h4>
+    <div class="slcfg-row" id="limitBufRow">
+        <label>Price Buffer</label>
+        <input id="limitBufInput" class="slcfg-input" type="number" min="0.05" step="0.05" value="0.20">
+    </div>
+    <div class="slcfg-row">
+        <label>Default SL</label>
+        <input id="limitDefaultSlInput" class="slcfg-input" type="number" min="0.5" step="0.5" value="10">
+    </div>
+    <button id="limitConfigClose" onclick="closeLimitConfig()" style="margin-top:8px;width:100%;background:#0f172a;border:1px solid #334155;color:#94a3b8;border-radius:4px;padding:3px 0;cursor:pointer;font-size:10px;">Done</button>
 </div>
 
 <!-- Quantity calculator popup -->
@@ -899,9 +927,15 @@ const ICON_RESTORE = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none
 let currentLTP   = null;
 let orderLots    = 1;
 let orderLotSize = 65;
-let orderType    = 'L';
-let slBuffer     = 0.20;
-let slDistance   = 5;
+let orderType      = 'L';
+let limitBuffer    = 0.20;
+let limitDefaultSL = 10;
+let slBuffer          = 0.20;
+let slDistance        = 5;
+let slDefaultDist     = 5;
+let slAutoCancelCount = 1;
+let slAutoSlIncCount  = 1;
+let slAtCost          = false;
 
 /* ======================
    PANEL FACTORY
@@ -1997,8 +2031,12 @@ function resetOrderBar(symbol) {
 }
 function openSlConfig(anchorEl) {
     const popup = document.getElementById('slConfigPopup');
-    document.getElementById('slBufInput').value  = slBuffer;
-    document.getElementById('slDistInput').value = slDistance;
+    document.getElementById('slBufInput').value          = slBuffer;
+    document.getElementById('slDistInput').value         = slDistance;
+    document.getElementById('slDefaultDistInput').value  = slDefaultDist;
+    document.getElementById('slAutoCancelCount').value   = slAutoCancelCount;
+    document.getElementById('slAutoSlIncCount').value  = slAutoSlIncCount;
+    document.getElementById('slCfgSlAtCost').checked   = slAtCost;
     const rect = anchorEl.closest('.ob-type-group').getBoundingClientRect();
     popup.style.left = rect.left + 'px';
     popup.style.top  = (rect.bottom + 6) + 'px';
@@ -2007,19 +2045,53 @@ function openSlConfig(anchorEl) {
     document.getElementById('slBufInput').select();
 }
 function closeSlConfig() {
-    const buf  = parseFloat(document.getElementById('slBufInput').value);
-    const dist = parseFloat(document.getElementById('slDistInput').value);
-    if (!isNaN(buf)  && buf  > 0) slBuffer   = buf;
-    if (!isNaN(dist) && dist > 0) slDistance = dist;
+    const buf    = parseFloat(document.getElementById('slBufInput').value);
+    const dist   = parseFloat(document.getElementById('slDistInput').value);
+    const cancel = parseInt(document.getElementById('slAutoCancelCount').value);
+    const inc    = parseInt(document.getElementById('slAutoSlIncCount').value);
+    const defDist = parseFloat(document.getElementById('slDefaultDistInput').value);
+    if (!isNaN(buf)     && buf     > 0) slBuffer          = buf;
+    if (!isNaN(dist)    && dist    > 0) slDistance        = dist;
+    if (!isNaN(defDist) && defDist > 0) slDefaultDist     = defDist;
+    if (!isNaN(cancel)  && cancel >= 1) slAutoCancelCount = cancel;
+    if (!isNaN(inc)    && inc    >= 1) slAutoSlIncCount  = inc;
+    slAtCost = document.getElementById('slCfgSlAtCost').checked;
     document.getElementById('slConfigPopup').style.display = 'none';
+}
+function openLimitConfig(anchorEl, type) {
+    const isMarket = (type === 'M');
+    document.getElementById('limitConfigTitle').textContent = isMarket ? 'Market Order Settings' : 'Limit Order Settings';
+    document.getElementById('limitBufRow').style.display    = isMarket ? 'none' : '';
+    const popup = document.getElementById('limitConfigPopup');
+    document.getElementById('limitBufInput').value        = limitBuffer;
+    document.getElementById('limitDefaultSlInput').value  = limitDefaultSL;
+    const rect = anchorEl.closest('.ob-type-group').getBoundingClientRect();
+    popup.style.left = rect.left + 'px';
+    popup.style.top  = (rect.bottom + 6) + 'px';
+    popup.style.display = 'block';
+    const focusEl = isMarket ? document.getElementById('limitDefaultSlInput') : document.getElementById('limitBufInput');
+    focusEl.focus(); focusEl.select();
+}
+async function closeLimitConfig() {
+    const buf   = parseFloat(document.getElementById('limitBufInput').value);
+    const defSl = parseFloat(document.getElementById('limitDefaultSlInput').value);
+    if (!isNaN(buf)   && buf   >= 0) limitBuffer    = buf;
+    if (!isNaN(defSl) && defSl >  0) {
+        limitDefaultSL = defSl;
+        // Sync to backend so handle_order_update uses the new value
+        fetch('/api/set-default-sl', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ distance: limitDefaultSL }),
+        }).catch(() => {});
+    }
+    document.getElementById('limitConfigPopup').style.display = 'none';
 }
 async function placeOrder(side) {
     if (!activePanel || !activePanel.symbol) { toast('No symbol selected', 'warn'); return; }
     const sym = activePanel.symbol;
     if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
-    const LIMIT_BUFFER = 0.20;
     let price = parseFloat(currentLTP.toFixed(2));
-    if (orderType === 'L') price = parseFloat((price + (side === 'BUY' ? LIMIT_BUFFER : -LIMIT_BUFFER)).toFixed(2));
+    if (orderType === 'L') price = parseFloat((price + (side === 'BUY' ? limitBuffer : -limitBuffer)).toFixed(2));
     const qty   = orderLots * orderLotSize;
     const label = `${side} ${qty} ${sym} @ ${price} [${orderType}]`;
     toast(`⏳ Placing ${label}…`, 'info', 2000);
@@ -2027,7 +2099,133 @@ async function placeOrder(side) {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ symbol: sym, price, side, qty, exchange: 'NFO', order_type: orderType, sl_buffer: slBuffer, sl_distance: slDistance }),
     });
-    toastOrder(await res.json(), label);
+    const data = await res.json();
+    toastOrder(data, label);
+    // Trigger post-fill automation for SL orders
+    if (orderType === 'SL' && data.status === 'success' && data.order_id) {
+        handleSlOrderFlow(data.order_id, side, sym, qty, data.price).catch(err => {
+            toast(`⚠️ SL flow error: ${err.message}`, 'warn', 7000);
+        });
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   POST-FILL SL AUTOMATION
+   Triggered after a successful SL order from the order bar.
+   Steps:
+     1. Auto Cancel: wait N secs, try to cancel; if filled → proceed
+     2. Place SL (at cost or default distance)
+     3. Auto SL Increment: ratchet SL toward cost price in a loop
+───────────────────────────────────────────────────────────── */
+function roundTick(v, tick = 0.05) {
+    return Math.round(Math.round(v / tick) * tick * 100) / 100;
+}
+
+async function handleSlOrderFlow(orderId, side, symbol, qty, fillPrice) {
+    // Step 1: Auto Cancel check
+    if (!document.getElementById('slCfgAutoCancel').checked) return;
+
+    await new Promise(r => setTimeout(r, slAutoCancelCount * 1000));
+
+    let cancelData;
+    try {
+        const cr = await fetch('/api/cancel-order', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ order_id: orderId }),
+        });
+        cancelData = await cr.json();
+    } catch (e) {
+        cancelData = { status: 'filled' };
+    }
+
+    if (cancelData.status === 'cancelled') {
+        toast(`Order ${orderId} cancelled (not filled in ${slAutoCancelCount}s)`, 'warn', 6000);
+        return;
+    }
+    // Assumed filled
+    toast(`✅ Order filled @ ${fillPrice} — placing SL…`, 'info', 4000);
+
+    // Step 2: Place SL (opposite side)
+    const slSide = side === 'BUY' ? 'SELL' : 'BUY';
+    let slOrderId  = null;
+    let usedCostSl = false;
+
+    if (slAtCost) {
+        // SL at Cost: trigger just above/below fill price
+        const trigger = roundTick(side === 'BUY' ? fillPrice + slBuffer : fillPrice - slBuffer);
+        const limit   = roundTick(fillPrice);
+        try {
+            const r = await fetch('/api/place-sl-exact', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ symbol, side: slSide, qty, trigger, limit }),
+            });
+            const d = await r.json();
+            if (d.status === 'success') {
+                slOrderId  = d.order_id;
+                usedCostSl = true;
+                toast(`✅ SL at Cost placed @ trigger ${trigger} for ${symbol}`, 'success', 7000);
+            } else {
+                toast(`⚠️ SL at Cost failed (${d.message}) — using default SL`, 'warn', 5000);
+            }
+        } catch (e) {
+            toast(`⚠️ SL at Cost error — using default SL`, 'warn', 5000);
+        }
+    }
+
+    // Default SL (fallback or primary when SL at Cost not checked / failed)
+    let defaultTrigger;
+    if (!slOrderId) {
+        defaultTrigger = roundTick(side === 'BUY'
+            ? fillPrice - slDefaultDist
+            : fillPrice + slDefaultDist);
+        const defaultLimit = roundTick(side === 'BUY'
+            ? defaultTrigger - slBuffer
+            : defaultTrigger + slBuffer);
+        try {
+            const r = await fetch('/api/place-sl-exact', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ symbol, side: slSide, qty, trigger: defaultTrigger, limit: defaultLimit }),
+            });
+            const d = await r.json();
+            if (d.status === 'success') {
+                slOrderId = d.order_id;
+                toast(`✅ Default SL placed @ trigger ${defaultTrigger} for ${symbol}`, 'success', 7000);
+            } else {
+                toast(`❌ SL placement failed: ${d.message}`, 'error', 10000);
+                return;
+            }
+        } catch (e) {
+            toast(`❌ SL placement error: ${e.message}`, 'error', 10000);
+            return;
+        }
+    }
+
+    // Step 3: Auto SL Increment (only when NOT using cost SL, since cost SL is already at/near cost)
+    if (!usedCostSl && document.getElementById('slCfgAutoSlInc').checked && slOrderId) {
+        const inc       = slAutoSlIncCount;
+        let curTrigger  = defaultTrigger;
+
+        const pastCost = (t) => side === 'BUY' ? t > fillPrice : t < fillPrice;
+
+        while (!pastCost(curTrigger)) {
+            curTrigger = roundTick(side === 'BUY' ? curTrigger + inc : curTrigger - inc);
+            const newLimit = roundTick(side === 'BUY' ? curTrigger - slBuffer : curTrigger + slBuffer);
+            try {
+                const r = await fetch('/api/modify-sl-order', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ order_id: slOrderId, trigger: curTrigger, limit: newLimit }),
+                });
+                const d = await r.json();
+                if (d.status !== 'success') {
+                    toast(`🔔 SL triggered for ${symbol}`, 'info', 10000);
+                    break;
+                }
+            } catch (e) {
+                toast(`🔔 SL triggered for ${symbol}`, 'info', 10000);
+                break;
+            }
+        }
+    }
 }
 
 /* ======================
@@ -2090,13 +2288,27 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.ob-type-btn[data-type="SL"]').forEach(btn => {
         btn.addEventListener('dblclick', e => { e.stopPropagation(); openSlConfig(btn); });
     });
-    ['slBufInput', 'slDistInput'].forEach(id => {
+    document.querySelectorAll('.ob-type-btn[data-type="L"]').forEach(btn => {
+        btn.addEventListener('dblclick', e => { e.stopPropagation(); openLimitConfig(btn, 'L'); });
+    });
+    document.querySelectorAll('.ob-type-btn[data-type="M"]').forEach(btn => {
+        btn.addEventListener('dblclick', e => { e.stopPropagation(); openLimitConfig(btn, 'M'); });
+    });
+    ['slBufInput', 'slDistInput', 'slDefaultDistInput', 'slAutoCancelCount', 'slAutoSlIncCount'].forEach(id => {
         document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') closeSlConfig(); });
     });
+    ['limitBufInput', 'limitDefaultSlInput'].forEach(id => {
+        document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') closeLimitConfig(); });
+    });
     document.addEventListener('click', e => {
-        const popup = document.getElementById('slConfigPopup');
-        if (popup.style.display === 'block' && !popup.contains(e.target) && !e.target.closest('.ob-type-btn[data-type="SL"]'))
+        const slPopup  = document.getElementById('slConfigPopup');
+        const limPopup = document.getElementById('limitConfigPopup');
+        if (slPopup.style.display === 'block' && !slPopup.contains(e.target) && !e.target.closest('.ob-type-btn[data-type="SL"]'))
             closeSlConfig();
+        if (limPopup.style.display === 'block' && !limPopup.contains(e.target)
+            && !e.target.closest('.ob-type-btn[data-type="L"]')
+            && !e.target.closest('.ob-type-btn[data-type="M"]'))
+            closeLimitConfig();
     });
 });
 
