@@ -1650,6 +1650,7 @@ function selectLayout(el) {
     document.querySelectorAll('.lp-option').forEach(o => o.classList.remove('active'));
     el.classList.add('active');
     activeLayout = el.dataset.layout;
+    if (syncCharts) toggleSyncCharts();
     document.getElementById('layoutPopup').style.display = 'none';
 
     // Sync the topbar button icon to the selected layout's SVG

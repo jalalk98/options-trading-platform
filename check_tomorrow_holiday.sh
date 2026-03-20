@@ -9,6 +9,13 @@ PAUSE_FLAG="$HOME/.trading_paused"
 trap '"$SCRIPT_DIR/notify.sh" "❌ check_tomorrow_holiday.sh failed unexpectedly on $(date +%Y-%m-%d). Please check the script."' ERR
 
 TOMORROW=$(date -d "tomorrow" +%Y-%m-%d)
+TOMORROW_DOW=$(date -d "tomorrow" +%u)  # 6=Saturday, 7=Sunday
+
+# Weekend — no flag needed, scripts handle weekends natively
+if [ "$TOMORROW_DOW" -ge 6 ]; then
+    "$SCRIPT_DIR/notify.sh" "🗓 Tomorrow is Saturday — market closed for the weekend. See you Monday!"
+    exit 0
+fi
 
 HOLIDAY_NAME=$(grep "^$TOMORROW " "$HOLIDAYS_FILE" 2>/dev/null | cut -d' ' -f2-)
 

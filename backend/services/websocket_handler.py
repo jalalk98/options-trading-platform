@@ -185,6 +185,11 @@ def setup_websocket_events():
             # otherwise fall back to default distance from entry price.
             stored_sl = stored_sl_state.get("price")
 
+            logger.info(
+                f"SL state for {trade_symbol}: price={stored_sl} "
+                f"state={stored_sl_state.get('state')} entry={last_price} side={transaction_type}"
+            )
+
             # ============================
             # BUY ENTRY → SELL SL
             # ============================
@@ -193,15 +198,23 @@ def setup_websocket_events():
                 if stored_sl and stored_sl < last_price:
                     # Use dragged SL line — must be below entry for a long
                     stop_loss_price = round_to_tick(stored_sl)
+                    sl_source = "line"
                 else:
+                    if stored_sl and stored_sl >= last_price:
+                        logger.warning(
+                            f"SL line ignored for {trade_symbol} BUY entry: "
+                            f"SL line ({stored_sl}) is ABOVE entry ({last_price}). "
+                            f"For a long, SL must be below entry. Using default SL."
+                        )
                     stop_loss_price = round_to_tick(last_price - app_config["default_sl_dist"])
+                    sl_source = "default"
 
                 trigger_price = round_to_tick(stop_loss_price + trigger_buffer)
 
                 logger.info(
                     f"Placing SL SELL for {trade_symbol} | Entry: {last_price} | "
                     f"SL: {stop_loss_price} | Trigger: {trigger_price} | "
-                    f"Source: {'line' if stored_sl else 'default'}"
+                    f"Source: {sl_source}"
                 )
 
                 result = await kite1.hard_code_regular_sell_order(
@@ -243,15 +256,23 @@ def setup_websocket_events():
                 if stored_sl and stored_sl > last_price:
                     # Use dragged SL line — must be above entry for a short
                     stop_loss_price = round_to_tick(stored_sl)
+                    sl_source = "line"
                 else:
+                    if stored_sl and stored_sl <= last_price:
+                        logger.warning(
+                            f"SL line ignored for {trade_symbol} SELL entry: "
+                            f"SL line ({stored_sl}) is BELOW entry ({last_price}). "
+                            f"For a short, SL must be above entry. Using default SL."
+                        )
                     stop_loss_price = round_to_tick(last_price + app_config["default_sl_dist"])
+                    sl_source = "default"
 
                 trigger_price = round_to_tick(stop_loss_price - trigger_buffer)
 
                 logger.info(
                     f"Placing SL BUY for {trade_symbol} | Entry: {last_price} | "
                     f"SL: {stop_loss_price} | Trigger: {trigger_price} | "
-                    f"Source: {'line' if stored_sl else 'default'}"
+                    f"Source: {sl_source}"
                 )
 
                 result = await kite1.hard_code_regular_buy_order(

@@ -462,28 +462,28 @@ class KiteConnect_custom(object):
                     logger.error("Maximum retry attempts exceeded for hard_code_regular_buy_order")
                     return {"status": "error", "message": "Maximum retry attempts exceeded"}
 
-            # Validate the content type.
-            if "json" in r.headers["content-type"]:
-                try:
-                    data = r.json()
-                except ValueError:
-                    raise ex.DataException("Couldn't parse the JSON response received from the server: {content}".format(
-                        content=r.content))
+        # Validate the content type.
+        if "json" in r.headers["content-type"]:
+            try:
+                data = r.json()
+            except ValueError:
+                raise ex.DataException("Couldn't parse the JSON response received from the server: {content}".format(
+                    content=r.content))
 
-                # api error
-                if data.get("status") == "error" or data.get("error_type"):
-                    # Call session hook if its registered and TokenException is raised
-                    if self.session_expiry_hook and r.status_code == 403 and data["error_type"] == "TokenException":
-                        self.session_expiry_hook()
+            # api error
+            if data.get("status") == "error" or data.get("error_type"):
+                # Call session hook if its registered and TokenException is raised
+                if self.session_expiry_hook and r.status_code == 403 and data["error_type"] == "TokenException":
+                    self.session_expiry_hook()
 
-                    # native Kite errors
-                    exp = getattr(ex, data.get("error_type"), ex.GeneralException)
-                    raise exp(data["message"], code=r.status_code)
+                # native Kite errors
+                exp = getattr(ex, data.get("error_type"), ex.GeneralException)
+                raise exp(data["message"], code=r.status_code)
 
-                logger.info(f"Normal Buy Order Status : {data}")
-                return data
+            logger.info(f"Normal Buy Order Status : {data}")
+            return data
 
-            return {"status": "error"}   
+        return {"status": "error"}
 
     async def hardcode_orders(self,api_key, access_token):
         headers = {
