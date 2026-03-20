@@ -661,7 +661,7 @@
             display: none;
             position: fixed; inset: 0;
             background: rgba(0,0,0,0.55);
-            z-index: 600;
+            z-index: 10000;
             align-items: center;
             justify-content: center;
         }
@@ -670,13 +670,16 @@
             background: #1e2330;
             border: 1px solid #334155;
             border-radius: 8px;
-            width: 420px;
-            max-height: 80vh;
+            width: 380px;
+            height: 520px;
+            max-height: 85vh;
             display: flex;
             flex-direction: column;
             box-shadow: 0 8px 32px rgba(0,0,0,0.7);
             font-family: Arial, sans-serif;
             color: #e2e8f0;
+            position: relative;
+            z-index: 10001;
         }
         #layoutsModal .lm-header {
             display: flex; align-items: center; justify-content: space-between;
@@ -2700,11 +2703,9 @@ function _setSavedLayouts(list) {
     localStorage.setItem(LAYOUTS_KEY, JSON.stringify(list));
 }
 function _captureState() {
-    // Always save the actual panel symbols. Save autoPopulate only as a label
-    // (for display in the list) — loading always uses symbols, not auto-populate.
     return {
         layout:       activeLayout,
-        autoPopulate: document.getElementById('autoPopulateSelect').value,
+        autoPopulate: '',
         symbols:      panels.map(p => p.symbol || null),
     };
 }
@@ -2779,8 +2780,8 @@ async function loadNamedLayout(id) {
     // Wait for selectLayout's rAF to fire and finish before loading symbols.
     await new Promise(r => requestAnimationFrame(r));
 
-    // Restore dropdown label (display only — does not trigger change handler)
-    sel.value = layout.autoPopulate || '';
+    // Set tab title to layout name
+    document.title = layout.name;
 
     // Load exact saved symbols
     const syms = layout.symbols || [];
@@ -2834,6 +2835,10 @@ async function saveCurrentLayout(forceNew) {
         toast(`Layout "${name}" saved`, 'success');
     }
 
+    // Reset dropdown to "Auto populate panels" to match what was saved
+    document.getElementById('autoPopulateSelect').value = '';
+    document.title = name;
+
     saveViewState();
     if (document.getElementById('layoutsOverlay').classList.contains('open')) {
         _updateSaveBtn();
@@ -2867,6 +2872,18 @@ document.addEventListener('keydown', e => {
         saveCurrentLayout(false);
     }
 });
+
+// Autosave — every 30 seconds, only when a named layout is active
+setInterval(() => {
+    if (!_activeLayoutId) return;
+    const layouts = _getSavedLayouts();
+    const existing = layouts.find(l => l.id === _activeLayoutId);
+    if (!existing) return;
+    const state = _captureState();
+    Object.assign(existing, state);
+    existing.savedAt = new Date().toISOString();
+    _setSavedLayouts(layouts);
+}, 30000);
 
 /* ======================
    SAVE / RESTORE STATE
