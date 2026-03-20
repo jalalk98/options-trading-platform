@@ -28,3 +28,6 @@ if [ $? -eq 0 ]; then
 else
     "$SCRIPT_DIR/notify.sh" "⚠️ Trading session stop — tmux session was not running." "$LOG_FILE"
 fi
+
+# Clean up PID file
+rm -f "$HOME/.tick_collector.pid"
