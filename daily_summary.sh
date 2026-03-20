@@ -26,7 +26,7 @@ _pg() { PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdat
 TABLE_SIZE=$(_pg "SELECT pg_size_pretty(pg_total_relation_size('gap_ticks'));")
 TOTAL_ROWS=$(_pg "SELECT COUNT(*) FROM gap_ticks;")
 DEAD_TUPLES=$(_pg "SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='gap_ticks';")
-LAST_ANALYZE_DATE=$(_pg "SELECT COALESCE(DATE(last_analyze)::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';")
+LAST_ANALYZE_DATE=$(_pg "SELECT COALESCE(DATE(GREATEST(last_analyze, last_autoanalyze))::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';")
 
 if [ "$LAST_ANALYZE_DATE" = "$TODAY" ]; then
     VACUUM_STATUS="today ✅"

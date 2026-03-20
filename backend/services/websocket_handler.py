@@ -168,11 +168,21 @@ def setup_websocket_events():
             def round_to_tick(price, tick_size=0.05):
                 return round(round(price / tick_size) * tick_size, 2)
 
-            stored_sl_state = sl_state.get(trade_symbol, {})
-            trigger_buffer  = stored_sl_state.get("trigger_buffer", 0.20)
+            # Read SL state from chart_server (single source of truth)
+            # tick_collector and chart_server are separate processes with separate memory,
+            # so we fetch the SL line price the user dragged via the REST API.
+            stored_sl_state = {}
+            try:
+                resp = requests.get(f"http://localhost:8000/api/sl/{trade_symbol}", timeout=2)
+                if resp.status_code == 200:
+                    stored_sl_state = resp.json()
+            except Exception as _e:
+                logger.warning(f"Could not fetch SL state from API for {trade_symbol}: {_e}")
+
+            trigger_buffer = stored_sl_state.get("trigger_buffer", 0.20)
 
             # Use SL price from dragged line if available for this symbol,
-            # otherwise fall back to ±10 points from entry price.
+            # otherwise fall back to default distance from entry price.
             stored_sl = stored_sl_state.get("price")
 
             # ============================
@@ -208,16 +218,21 @@ def setup_websocket_events():
                 if isinstance(result, dict):
                     order_id = (result.get("data") or {}).get("order_id")
 
-                sl_state[trade_symbol] = {
-                    "price":          stop_loss_price,
-                    "trigger_buffer": trigger_buffer,
-                    "order_id":       order_id,
-                    "side":           "SELL",
-                    "qty":            qty,
-                    "exchange":       exchange,
-                    "state":          "placed",
-                }
-                logger.info(f"SL state updated for {trade_symbol}: order_id={order_id}")
+                # Write order_id back to chart_server so drag-to-modify works
+                try:
+                    requests.post("http://localhost:8000/api/sl/set", json={
+                        "symbol":         trade_symbol,
+                        "price":          stop_loss_price,
+                        "trigger_buffer": trigger_buffer,
+                        "order_id":       order_id,
+                        "side":           "SELL",
+                        "qty":            qty,
+                        "exchange":       exchange,
+                        "state":          "placed",
+                    }, timeout=2)
+                except Exception as _e:
+                    logger.warning(f"Could not sync SL state to API for {trade_symbol}: {_e}")
+                logger.info(f"SL SELL placed for {trade_symbol}: order_id={order_id}")
                 return {"status": "success"}
 
             # ============================
@@ -253,16 +268,21 @@ def setup_websocket_events():
                 if isinstance(result, dict):
                     order_id = (result.get("data") or {}).get("order_id")
 
-                sl_state[trade_symbol] = {
-                    "price":          stop_loss_price,
-                    "trigger_buffer": trigger_buffer,
-                    "order_id":       order_id,
-                    "side":           "BUY",
-                    "qty":            qty,
-                    "exchange":       exchange,
-                    "state":          "placed",
-                }
-                logger.info(f"SL state updated for {trade_symbol}: order_id={order_id}")
+                # Write order_id back to chart_server so drag-to-modify works
+                try:
+                    requests.post("http://localhost:8000/api/sl/set", json={
+                        "symbol":         trade_symbol,
+                        "price":          stop_loss_price,
+                        "trigger_buffer": trigger_buffer,
+                        "order_id":       order_id,
+                        "side":           "BUY",
+                        "qty":            qty,
+                        "exchange":       exchange,
+                        "state":          "placed",
+                    }, timeout=2)
+                except Exception as _e:
+                    logger.warning(f"Could not sync SL state to API for {trade_symbol}: {_e}")
+                logger.info(f"SL BUY placed for {trade_symbol}: order_id={order_id}")
                 return {"status": "success"}
 
             return {"status": "ignored"}

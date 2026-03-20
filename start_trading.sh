@@ -38,18 +38,38 @@ tmux new-window -t $SESSION -n tick_collector
 
 tmux send-keys -t $SESSION:1 "cd ~/projects/options-trading-platform && ~/projects/options-trading-platform/venv/bin/python -m backend.processors.tick_collector" C-m
 
-# Wait for processes to settle then check health
+# Wait for processes to settle then check tmux windows
 sleep 5
 
 WINDOWS=$(tmux list-windows -t $SESSION 2>/dev/null | wc -l)
 
-if [ "$WINDOWS" -eq 2 ]; then
+if [ "$WINDOWS" -ne 2 ]; then
+    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — only $WINDOWS/2 tmux windows are running." "$LOG_FILE"
+    echo "Trading session start may have failed."
+    exit 1
+fi
+
+# Verify Kite token is valid by calling the profile endpoint
+ENV_FILE="$SCRIPT_DIR/.env"
+API_KEY=$(grep '^KITE_API_KEY'      "$ENV_FILE" | cut -d'=' -f2- | tr -d "' ")
+TOKEN=$(grep   '^KITE_ACCESS_TOKEN' "$ENV_FILE" | cut -d'=' -f2- | tr -d "' ")
+
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "X-Kite-Version: 3" \
+    -H "Authorization: token ${API_KEY}:${TOKEN}" \
+    "https://api.kite.trade/user/profile")
+
+if [ "$HTTP_STATUS" = "200" ]; then
     "$SCRIPT_DIR/notify.sh" "✅ Trading session started successfully.
 - db_writer      running
 - tick_collector running
-- api_server     running via systemd (always on)" "$LOG_FILE"
-    echo "Trading session started."
+- api_server     running via systemd (always on)
+- Kite token     valid ✅" "$LOG_FILE"
+    echo "Trading session started. Kite token verified."
 else
-    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — only $WINDOWS/2 tmux windows are running." "$LOG_FILE"
-    echo "Trading session start may have failed."
+    "$SCRIPT_DIR/notify.sh" "⚠️ Trading session started but Kite token is INVALID (HTTP $HTTP_STATUS).
+- db_writer      running
+- tick_collector running (but token expired ❌)
+- Run refresh_token.py then restart the session." "$LOG_FILE"
+    echo "WARNING: Kite token invalid (HTTP $HTTP_STATUS). Re-run refresh_token.py."
 fi

@@ -138,14 +138,26 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
         log.info("Typed TOTP digits — waiting for auto-submit redirect …")
 
         # ── Wait for redirect with request_token ──────────────────────────
-        deadline = time.time() + 20
+        # Poll both the captured request event AND the live page URL
+        # (Kite sometimes redirects via navigation which bypasses on("request"))
+        deadline = time.time() + 30
         while not captured_token and time.time() < deadline:
             time.sleep(0.2)
+            if not captured_token:
+                current_url = page.url
+                if "request_token=" in current_url:
+                    qs = parse_qs(urlparse(current_url).query)
+                    tokens = qs.get("request_token", [])
+                    if tokens:
+                        captured_token = tokens[0]
+
+        if not captured_token:
+            page.screenshot(path=str(Path.home() / "kite_login_debug.png"))
 
         browser.close()
 
     if not captured_token:
-        raise RuntimeError("request_token not captured — login may have failed")
+        raise RuntimeError("request_token not captured — login may have failed (screenshot saved to ~/kite_login_debug.png)")
 
     log.info(f"Captured request_token: {captured_token[:8]}…")
     return captured_token
@@ -180,12 +192,12 @@ def send_telegram(bot_token: str, chat_id: str, text: str, attach_log: bool = Fa
     """Send a Telegram message, optionally attaching the log file."""
     base = f"https://api.telegram.org/bot{bot_token}"
     try:
-        if attach_log and LOG_FILE.exists():
+        if LOG_FILE.exists():
             with open(LOG_FILE, "rb") as f:
                 requests.post(
                     f"{base}/sendDocument",
                     data={"chat_id": chat_id, "caption": text},
-                    files={"document": ("token_refresh.log", f)},
+                    files={"document": ("token_refresh.txt", f)},
                     timeout=15,
                 )
         else:
@@ -196,6 +208,22 @@ def send_telegram(bot_token: str, chat_id: str, text: str, attach_log: bool = Fa
             )
     except Exception as e:
         log.warning(f"Telegram notification failed: {e}")
+
+
+def send_telegram_photo(bot_token: str, chat_id: str, photo_path: Path, caption: str):
+    """Send a screenshot via Telegram."""
+    base = f"https://api.telegram.org/bot{bot_token}"
+    try:
+        if photo_path.exists():
+            with open(photo_path, "rb") as f:
+                requests.post(
+                    f"{base}/sendPhoto",
+                    data={"chat_id": chat_id, "caption": caption},
+                    files={"photo": ("screenshot.png", f)},
+                    timeout=15,
+                )
+    except Exception as e:
+        log.warning(f"Telegram photo send failed: {e}")
 
 
 PAUSE_FLAG     = Path.home() / ".trading_paused"
@@ -239,43 +267,67 @@ def main():
         return
 
     secrets = {}
+    MAX_ATTEMPTS = 2
+    last_error   = None
+
     try:
         secrets = load_secrets()
         env     = load_env_credentials()
-
-        request_token = get_request_token(
-            api_key     = env["api_key"],
-            user_id     = secrets["KITE_USER_ID"],
-            password    = secrets["KITE_PASSWORD"],
-            totp_secret = secrets["KITE_TOTP_SECRET"],
-        )
-
-        access_token = exchange_for_access_token(
-            api_key       = env["api_key"],
-            api_secret    = env["api_secret"],
-            request_token = request_token,
-        )
-
-        update_env_token(access_token)
-        log.info("=== Token refresh SUCCESSFUL ===")
-
-        send_telegram(
-            secrets["TELEGRAM_BOT_TOKEN"],
-            secrets["TELEGRAM_CHAT_ID"],
-            "✅ Kite token refreshed successfully. Trading session is ready.",
-            attach_log=False,
-        )
-
     except Exception as e:
-        log.error(f"=== Token refresh FAILED: {e} ===")
-        if secrets.get("TELEGRAM_BOT_TOKEN"):
+        log.error(f"=== Token refresh FAILED (config error): {e} ===")
+        sys.exit(1)
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            if attempt > 1:
+                log.info(f"Retrying in 60 seconds (attempt {attempt}/{MAX_ATTEMPTS}) …")
+                time.sleep(60)
+
+            request_token = get_request_token(
+                api_key     = env["api_key"],
+                user_id     = secrets["KITE_USER_ID"],
+                password    = secrets["KITE_PASSWORD"],
+                totp_secret = secrets["KITE_TOTP_SECRET"],
+            )
+
+            access_token = exchange_for_access_token(
+                api_key       = env["api_key"],
+                api_secret    = env["api_secret"],
+                request_token = request_token,
+            )
+
+            update_env_token(access_token)
+            log.info("=== Token refresh SUCCESSFUL ===")
+
+            attempt_note = f" (succeeded on attempt {attempt})" if attempt > 1 else ""
             send_telegram(
                 secrets["TELEGRAM_BOT_TOKEN"],
                 secrets["TELEGRAM_CHAT_ID"],
-                f"❌ Kite token refresh FAILED: {e}\n\nLog file attached.",
-                attach_log=True,
+                f"✅ Kite token refreshed successfully. Trading session is ready.{attempt_note}",
             )
-        sys.exit(1)
+            return  # success — exit
+
+        except Exception as e:
+            last_error = e
+            log.error(f"Attempt {attempt} FAILED: {e}")
+
+    # All attempts exhausted
+    log.error(f"=== Token refresh FAILED after {MAX_ATTEMPTS} attempts: {last_error} ===")
+    screenshot = Path.home() / "kite_login_debug.png"
+    if screenshot.exists():
+        send_telegram_photo(
+            secrets["TELEGRAM_BOT_TOKEN"],
+            secrets["TELEGRAM_CHAT_ID"],
+            screenshot,
+            caption=f"❌ Kite token refresh FAILED after {MAX_ATTEMPTS} attempts: {last_error}",
+        )
+    send_telegram(
+        secrets["TELEGRAM_BOT_TOKEN"],
+        secrets["TELEGRAM_CHAT_ID"],
+        f"❌ Kite token refresh FAILED after {MAX_ATTEMPTS} attempts.\nError: {last_error}\n\nLog file attached.",
+        attach_log=True,
+    )
+    sys.exit(1)
 
 
 if __name__ == "__main__":

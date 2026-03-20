@@ -481,14 +481,20 @@ async def get_batch(body: BatchRequest, request: Request):
                 return await _query_gaps(conn, symbol)
 
         async with sem:
-            history, gaps = await asyncio.gather(do_history(), do_gaps())
+            try:
+                history, gaps = await asyncio.gather(do_history(), do_gaps())
+            except Exception as e:
+                logger.warning(f"batch fetch_one failed for {symbol}: {e}")
+                return symbol, None, None
+        if history is None:
+            return symbol, None, None
         ttl = 300 + random.randint(0, 60)
         _history_cache[symbol] = {"data": history, "ts": time.monotonic(), "ttl": ttl}
         _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic(), "ttl": ttl}
         return symbol, history, gaps
 
     results = await asyncio.gather(*[fetch_one(s) for s in symbols])
-    payload = {sym: {"history": h, "gaps": g} for sym, h, g in results}
+    payload = {sym: {"history": h, "gaps": g} for sym, h, g in results if h is not None}
     return Response(content=orjson.dumps(payload), media_type="application/json")
 
 class SLOrder(BaseModel):

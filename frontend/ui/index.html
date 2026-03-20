@@ -1695,6 +1695,12 @@ async function loadStrikes() {
     const dataList = document.getElementById("symbolList");
     dataList.innerHTML = "";
     strikeMap = {};
+    // Add index symbols at the top of the datalist
+    IDX_SYMBOLS.forEach(idx => {
+        const opt = document.createElement("option");
+        opt.value = idx;
+        dataList.appendChild(opt);
+    });
     strikes.forEach(item => {
         const opt = document.createElement("option");
         opt.value = item.display;
@@ -1753,9 +1759,11 @@ async function prewarmAutoPopulate(atm) {
 
 document.getElementById("symbolSelect").addEventListener("focus", function() { this.select(); });
 document.getElementById("symbolSelect").addEventListener("change", async function() {
-    const displayValue = this.value;
-    if (strikeMap[displayValue]) { loadSymbol(strikeMap[displayValue]); return; }
-    const response = await fetch(`/api/resolve-symbol?display=${displayValue}`);
+    const displayValue = this.value.trim().toUpperCase();
+    // Direct index symbols (NIFTY, SENSEX, BANKNIFTY, etc.)
+    if (IDX_SYMBOLS.includes(displayValue)) { loadSymbol(displayValue); return; }
+    if (strikeMap[this.value]) { loadSymbol(strikeMap[this.value]); return; }
+    const response = await fetch(`/api/resolve-symbol?display=${this.value}`);
     const data     = await response.json();
     if (data.symbol) loadSymbol(data.symbol);
     else alert("Strike not found in DB");
@@ -1960,16 +1968,10 @@ async function autoPopulatePanels(mode) {
         }
 
         const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
-        const validSyms    = panelSymbols.filter(Boolean);
-        const batchData    = validSyms.length
-            ? await fetch('/api/batch', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: validSyms, nocache: true }),
-              }).then(r => r.json())
-            : {};
+        // Load each panel independently in parallel — renders progressively as data arrives
         await Promise.all(panelSymbols.map((sym, i) => {
             if (!sym) return Promise.resolve();
-            return panels[i].loadSymbol(sym, batchData[sym] || null);
+            return panels[i].loadSymbol(sym, null, true);
         }));
         hideLoadingBar();
         saveViewState();
@@ -1997,20 +1999,10 @@ async function autoPopulatePanels(mode) {
         panelSymbols = [...g1Symbols, ...g2Symbols];
     }
 
-    // Batch-fetch all symbols in one request so all data arrives together
-    const symbols = panelSymbols.filter(Boolean);
-    const batchData = symbols.length
-        ? await fetch('/api/batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbols, nocache: true }),
-          }).then(r => r.json())
-        : {};
-
-    // Now load all panels simultaneously using pre-fetched data — no staggered rendering
+    // Load each panel independently in parallel — renders progressively as data arrives
     await Promise.all(panelSymbols.map((sym, i) => {
         if (!sym) return Promise.resolve();
-        return panels[i].loadSymbol(sym, batchData[sym] || null);
+        return panels[i].loadSymbol(sym, null, true);
     }));
     hideLoadingBar();
     saveViewState();
@@ -2597,17 +2589,9 @@ function saveViewState() {
         try { await autoPopulatePanels(saved.autoPopulate); } catch (e) {}
     } else if (saved && saved.symbols && saved.symbols.some(Boolean)) {
         const syms = saved.symbols;
-        const validSyms = syms.filter(Boolean);
-        const batchData = validSyms.length
-            ? await fetch('/api/batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: validSyms, nocache: false }),
-              }).then(r => r.json()).catch(() => ({}))
-            : {};
         await Promise.all(syms.map((sym, i) => {
             if (!sym || !panels[i]) return Promise.resolve();
-            return panels[i].loadSymbol(sym, batchData[sym] || null);
+            return panels[i].loadSymbol(sym, null, false);
         }));
     }
 })();

@@ -37,6 +37,12 @@ class SetSLRequest(BaseModel):
     symbol:          str
     price:           float
     trigger_buffer:  Optional[float] = None   # if None, keep existing or default 0.20
+    # Fields set by tick_collector after placing SL on Kite
+    order_id:        Optional[str]   = None
+    side:            Optional[str]   = None
+    qty:             Optional[int]   = None
+    exchange:        Optional[str]   = None
+    state:           Optional[str]   = None
 
 @router.post("/sl/set")
 async def set_sl(req: SetSLRequest):
@@ -47,11 +53,11 @@ async def set_sl(req: SetSLRequest):
     sl_state[req.symbol] = {
         "price":          new_price,
         "trigger_buffer": new_buffer,
-        "order_id":       existing.get("order_id"),
-        "side":           existing.get("side"),
-        "qty":            existing.get("qty"),
-        "exchange":       existing.get("exchange"),
-        "state":          existing.get("state", "pending"),
+        "order_id":       req.order_id   if req.order_id  is not None else existing.get("order_id"),
+        "side":           req.side       if req.side       is not None else existing.get("side"),
+        "qty":            req.qty        if req.qty        is not None else existing.get("qty"),
+        "exchange":       req.exchange   if req.exchange   is not None else existing.get("exchange"),
+        "state":          req.state      if req.state      is not None else existing.get("state", "pending"),
     }
 
     # If an order is already placed, modify it on Kite too
@@ -327,22 +333,33 @@ async def place_limit_order(req: LimitOrderRequest):
     if kite_order_type == "SL":
         data["trigger_price"] = str(trigger)
 
+    freeze    = _freeze_qty(req.symbol)
+    remaining = req.qty
+    order_ids = []
+
     try:
-        r = await kite1.reqsession.post(
-            "https://api.kite.trade/orders/regular",
-            data=data, headers=headers, timeout=7
-        )
-        result = r.json()
-        if r.status_code != 200:
-            msg = result.get("message") or result.get("error") or f"HTTP {r.status_code}"
-            logger.error(f"place-limit-order broker error: {msg}")
-            return {"status": "error", "message": msg}
-        order_id = (result.get("data") or {}).get("order_id")
+        while remaining > 0:
+            chunk = min(remaining, freeze)
+            data["quantity"] = str(chunk)
+            r = await kite1.reqsession.post(
+                "https://api.kite.trade/orders/regular",
+                data=data, headers=headers, timeout=7
+            )
+            result = r.json()
+            if r.status_code != 200:
+                msg = result.get("message") or result.get("error") or f"HTTP {r.status_code}"
+                logger.error(f"place-limit-order broker error: {msg}")
+                return {"status": "error", "message": msg}
+            order_id = (result.get("data") or {}).get("order_id")
+            order_ids.append(order_id)
+            remaining -= chunk
+
+        sliced = len(order_ids) > 1
         if kite_order_type == "SL":
-            logger.info(f"SL {req.side} {req.qty} {req.symbol} trigger={trigger} limit={limit} → order_id={order_id}")
+            logger.info(f"SL {req.side} {req.qty} {req.symbol} trigger={trigger} limit={limit} → {order_ids}")
         else:
-            logger.info(f"{kite_order_type} {req.side} {req.qty} {req.symbol} @ {limit} → order_id={order_id}")
-        return {"status": "success", "order_id": order_id, "price": limit, "qty": req.qty, "side": req.side, "order_type": kite_order_type}
+            logger.info(f"{kite_order_type} {req.side} {req.qty} {req.symbol} @ {limit} → {order_ids}" + (" [sliced]" if sliced else ""))
+        return {"status": "success", "order_id": order_ids[0], "order_ids": order_ids, "price": limit, "qty": req.qty, "side": req.side, "order_type": kite_order_type, "sliced": sliced}
     except Exception as e:
         logger.error(f"place-limit-order error: {e}")
         return {"status": "error", "message": str(e)}
