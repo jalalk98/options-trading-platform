@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <title>Live Option Chart</title>
 
-    <script src="/lightweight-charts.standalone.production.js"></script>
-
     <style>
 
         #tooltip {
@@ -1018,6 +1016,7 @@
     <button id="qtyClose" onclick="toggleQtyPopup()">Done</button>
 </div>
 
+<script src="/lightweight-charts.standalone.production.js"></script>
 <script>
 /* ======================
    CHART OPTIONS FACTORY
@@ -1823,13 +1822,12 @@ function clearHistMode() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function loadStrikes() {
-    const [strikesRes, atmRes] = await Promise.all([fetch("/api/strikes"), fetch("/api/atm-symbol")]);
-    const strikes = await strikesRes.json();
-    const atm     = await atmRes.json();
-    const dataList = document.getElementById("symbolList");
+    // Load strikes immediately (fast — cached after first server start)
+    const strikesRes = await fetch("/api/strikes");
+    const strikes    = await strikesRes.json();
+    const dataList   = document.getElementById("symbolList");
     dataList.innerHTML = "";
     strikeMap = {};
-    // Add index symbols at the top of the datalist
     IDX_SYMBOLS.forEach(idx => {
         const opt = document.createElement("option");
         opt.value = idx;
@@ -1841,14 +1839,26 @@ async function loadStrikes() {
         dataList.appendChild(opt);
         strikeMap[item.display] = item.symbol;
     });
+
+    // Load ATM asynchronously — don't block the rest of init
     if (strikes.length > 0) {
-        const atmEntry     = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
-        const defaultEntry = atmEntry || strikes[0];
-        document.getElementById("symbolSelect").value = defaultEntry.display;
-        if (activePanel) activePanel.loadSymbol(defaultEntry.symbol, null, true);
+        // Set first strike as placeholder immediately so panel loads without waiting for ATM
+        const firstEntry = strikes[0];
+        document.getElementById("symbolSelect").value = firstEntry.display;
+        if (activePanel) activePanel.loadSymbol(firstEntry.symbol, null, true);
+
+        // Fetch ATM in background and update if different
+        fetch("/api/atm-symbol").then(r => r.json()).then(atm => {
+            const atmEntry = atm.symbol ? strikes.find(s => s.symbol === atm.symbol) : null;
+            if (atmEntry && atmEntry.symbol !== firstEntry.symbol) {
+                document.getElementById("symbolSelect").value = atmEntry.display;
+                if (activePanel && activePanel.symbol === firstEntry.symbol) {
+                    activePanel.loadSymbol(atmEntry.symbol, null, true);
+                }
+            }
+            prewarmAutoPopulate(atm);
+        }).catch(() => prewarmAutoPopulate({}));
     }
-    // Background pre-warm: fetch likely auto-populate symbols so first click is instant
-    prewarmAutoPopulate(atm);
 }
 
 async function prewarmAutoPopulate(atm) {

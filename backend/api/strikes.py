@@ -118,13 +118,22 @@ async def _query_atm_symbol(conn, index: str = "NIFTY"):
     # Step 2: get latest price for all symbols in one batch query
     symbol_list = [s["symbol"] for s in symbols]
     symbol_meta = {s["symbol"]: {"strike": s["strike"], "option_type": s["option_type"]} for s in symbols}
+    # Try today first; fall back to last 7 days if no data (e.g. weekend/holiday)
     price_rows = await conn.fetch("""
         SELECT DISTINCT ON (symbol) symbol, curr_price
         FROM gap_ticks
         WHERE symbol = ANY($1)
-          AND timestamp >= NOW() - INTERVAL '7 days'
+          AND timestamp >= CURRENT_DATE
         ORDER BY symbol, timestamp DESC
     """, symbol_list)
+    if not price_rows:
+        price_rows = await conn.fetch("""
+            SELECT DISTINCT ON (symbol) symbol, curr_price
+            FROM gap_ticks
+            WHERE symbol = ANY($1)
+              AND timestamp >= NOW() - INTERVAL '7 days'
+            ORDER BY symbol, timestamp DESC
+        """, symbol_list)
     prices = {
         r["symbol"]: {**symbol_meta[r["symbol"]], "price": r["curr_price"]}
         for r in price_rows if r["symbol"] in symbol_meta
