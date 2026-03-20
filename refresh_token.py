@@ -128,8 +128,14 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
             page.screenshot(path=str(Path.home() / "kite_login_debug.png"))
             raise RuntimeError("TOTP input did not appear — check credentials or screenshot ~/kite_login_debug.png")
 
-        totp_code = pyotp.TOTP(totp_secret).now()
-        log.info(f"Generated TOTP: {totp_code}")
+        # Wait for a fresh TOTP code if current one is close to expiry (< 5s remaining)
+        totp_obj  = pyotp.TOTP(totp_secret)
+        remaining = 30 - (int(time.time()) % 30)
+        if remaining < 5:
+            log.info(f"TOTP expires in {remaining}s — waiting {remaining + 1}s for a fresh code …")
+            time.sleep(remaining + 1)
+        totp_code = totp_obj.now()
+        log.info(f"Generated TOTP: {totp_code} ({30 - (int(time.time()) % 30)}s remaining)")
 
         # Type digit-by-digit — Kite auto-submits after the 6th digit
         totp_input = page.locator('input[type="number"]')
