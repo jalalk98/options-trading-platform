@@ -320,12 +320,12 @@
             background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-left: 4px;
         }
         #histClearBtn:hover { background: #b45309; }
-        #histBtn, #syncBtn {
+        #histBtn, #syncBtn, #savedLayoutsBtn {
             background: none; border: 1px solid #ccc; border-radius: 4px;
             cursor: pointer; padding: 2px 5px; display: flex; align-items: center;
             justify-content: center; color: #555; height: 22px; font-size: 13px;
         }
-        #histBtn:hover, #syncBtn:hover { background: #e4e4e4; }
+        #histBtn:hover, #syncBtn:hover, #savedLayoutsBtn:hover { background: #e4e4e4; }
         #histBtn.active { background: #fef3c7; border-color: #d97706; color: #d97706; }
         #syncBtn.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; }
 
@@ -655,6 +655,105 @@
             line-height: 1;
         }
         .panel-scroll-btn:hover { opacity: 1; }
+
+        /* ── Saved Layouts modal ── */
+        #layoutsOverlay {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 600;
+            align-items: center;
+            justify-content: center;
+        }
+        #layoutsOverlay.open { display: flex; }
+        #layoutsModal {
+            background: #1e2330;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            width: 420px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+            font-family: Arial, sans-serif;
+            color: #e2e8f0;
+        }
+        #layoutsModal .lm-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid #334155;
+        }
+        #layoutsModal .lm-header h3 {
+            margin: 0; font-size: 14px; font-weight: 600; color: #f1f5f9;
+        }
+        #layoutsModal .lm-close {
+            background: none; border: none; color: #64748b; font-size: 18px;
+            cursor: pointer; line-height: 1; padding: 2px 4px; border-radius: 3px;
+        }
+        #layoutsModal .lm-close:hover { color: #e2e8f0; background: #334155; }
+        #layoutsModal .lm-search {
+            padding: 10px 16px 8px;
+            border-bottom: 1px solid #1e293b;
+        }
+        #layoutsModal .lm-search input {
+            width: 100%; box-sizing: border-box;
+            background: #0f172a; border: 1px solid #475569;
+            border-radius: 4px; color: #e2e8f0; font-size: 12px;
+            padding: 6px 10px; outline: none;
+        }
+        #layoutsModal .lm-search input::placeholder { color: #64748b; }
+        #layoutsModal .lm-search input:focus { border-color: #3b82f6; }
+        #layoutsModal .lm-list {
+            overflow-y: auto; flex: 1; padding: 6px 0;
+        }
+        .lm-item {
+            display: flex; align-items: center;
+            padding: 9px 16px; cursor: pointer; gap: 10px;
+            border-left: 3px solid transparent;
+            transition: background 0.1s;
+        }
+        .lm-item:hover { background: #243047; }
+        .lm-item.active { background: #1e3a5f; border-left-color: #3b82f6; }
+        .lm-item-info { flex: 1; min-width: 0; }
+        .lm-item-name {
+            font-size: 13px; font-weight: 500; color: #f1f5f9;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .lm-item-meta {
+            font-size: 10px; color: #64748b; margin-top: 2px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .lm-item-del {
+            background: none; border: none; color: #475569; font-size: 15px;
+            cursor: pointer; padding: 2px 5px; border-radius: 3px; opacity: 0;
+            transition: opacity 0.1s;
+        }
+        .lm-item:hover .lm-item-del { opacity: 1; }
+        .lm-item-del:hover { color: #ef4444; background: #2d1a1a; }
+        #layoutsModal .lm-empty {
+            text-align: center; color: #475569; font-size: 12px;
+            padding: 32px 16px;
+        }
+        #layoutsModal .lm-footer {
+            padding: 10px 16px;
+            border-top: 1px solid #334155;
+            display: flex; gap: 8px;
+        }
+        #layoutsModal .lm-footer button {
+            flex: 1; padding: 7px 12px; border-radius: 4px; border: none;
+            font-size: 12px; font-weight: 500; cursor: pointer;
+        }
+        #btnSaveLayout { background: #3b82f6; color: #fff; }
+        #btnSaveLayout:hover { background: #2563eb; }
+        #btnSaveAsLayout { background: #334155; color: #e2e8f0; }
+        #btnSaveAsLayout:hover { background: #475569; }
+
+        /* inline rename input */
+        .lm-item-name input.lm-rename {
+            background: #0f172a; border: 1px solid #3b82f6; border-radius: 3px;
+            color: #f1f5f9; font-size: 13px; font-weight: 500;
+            width: 100%; padding: 1px 4px; box-sizing: border-box;
+        }
     </style>
 </head>
 <body>
@@ -722,6 +821,9 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         </button>
         <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
+        <button id="savedLayoutsBtn" title="Saved layouts (Ctrl+S)" onclick="openLayoutsModal()">
+            <svg width="14" height="13" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        </button>
     </div>
 </div>
 
@@ -789,6 +891,24 @@
             <div class="lp-option" data-layout="8b" title="8 - 4 rows × 2 cols" onclick="selectLayout(this)">
                 <svg viewBox="0 0 30 20" width="30" height="20"><rect x="0" y="0" width="14" height="3" rx="1"/><rect x="16" y="0" width="14" height="3" rx="1"/><rect x="0" y="5" width="14" height="3" rx="1"/><rect x="16" y="5" width="14" height="3" rx="1"/><rect x="0" y="10" width="14" height="3" rx="1"/><rect x="16" y="10" width="14" height="3" rx="1"/><rect x="0" y="15" width="14" height="5" rx="1"/><rect x="16" y="15" width="14" height="5" rx="1"/></svg>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Saved Layouts modal -->
+<div id="layoutsOverlay" onclick="e => { if(e.target===this) closeLayoutsModal(); }">
+    <div id="layoutsModal">
+        <div class="lm-header">
+            <h3>Layouts</h3>
+            <button class="lm-close" onclick="closeLayoutsModal()">✕</button>
+        </div>
+        <div class="lm-search">
+            <input id="layoutSearchInput" type="text" placeholder="Search layouts…" oninput="renderLayoutsList(this.value)">
+        </div>
+        <div class="lm-list" id="layoutsList"></div>
+        <div class="lm-footer">
+            <button id="btnSaveLayout" onclick="saveCurrentLayout(false)" title="Overwrite the currently loaded layout">Save</button>
+            <button id="btnSaveAsLayout" onclick="saveCurrentLayout(true)" title="Save as a new named layout">Save as new…</button>
         </div>
     </div>
 </div>
@@ -1061,6 +1181,7 @@ function createPanel(id) {
     let slDragging       = false;
     let slPollTimer      = null;
     let slTriggerBuffer  = 0.20;
+    let panelLots        = 1;   // per-panel lot count, preserved across focus switches
     // ── Lazy history load state ───────────────────
     let allCandles       = [];
     let earliestDate     = null;
@@ -1360,6 +1481,7 @@ function createPanel(id) {
         if (panel === activePanel) {
             document.getElementById('symbolSelect').value = histDate ? sym : display;
             resetOrderBar(sym);
+            panelLots = 1;  // new symbol → reset this panel's saved lot count
         }
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
@@ -1481,6 +1603,8 @@ function createPanel(id) {
         get slOrderId()         { return slOrderId; },
         get slTriggerBuffer()   { return slTriggerBuffer; },
         set slTriggerBuffer(v)  { slTriggerBuffer = v; },
+        get panelLots()         { return panelLots; },
+        set panelLots(v)        { panelLots = v; },
         get chart()             { return chart; },
         updateGoToLiveBtn,
         loadSymbol: panelLoadSymbol,
@@ -1503,7 +1627,13 @@ function activatePanel(p) {
     if (sym) {
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
         document.getElementById('symbolSelect').value = display;
-        resetOrderBar(sym);
+        // Restore this panel's lot count — don't reset to 1 on focus switch
+        orderLotSize = getLotSize(sym);
+        orderLots    = p.panelLots;
+        currentLTP   = null;
+        document.getElementById('qtyPopupTitle').textContent =
+            `Quantity (${getIndexName(sym)} · ${orderLotSize}/lot)`;
+        updateOrderBar(null);
     }
     updateSLBadge();
     if (p.updateGoToLiveBtn) p.updateGoToLiveBtn();
@@ -1810,6 +1940,7 @@ function toggleMaximize() {
     const grid = document.getElementById('chartGrid');
     const btn  = document.getElementById('maximizeBtn');
     if (!isMaximized) {
+        if (syncCharts) toggleSyncCharts();
         isMaximized = true;
         panels.forEach(p => { if (p !== activePanel) p.el.style.display = 'none'; });
         grid.style.gridTemplateColumns = '1fr';
@@ -1824,6 +1955,7 @@ function toggleMaximize() {
         grid.style.gridTemplateRows    = `repeat(${cfg.rows}, 1fr)`;
         btn.innerHTML = ICON_EXPAND;
         btn.title = 'Maximize panel';
+        if (!syncCharts) toggleSyncCharts();
     }
     requestAnimationFrame(() => panels.forEach(p => p.resize()));
 }
@@ -1838,26 +1970,11 @@ async function refreshAllPanels() {
     const btn = document.getElementById('refreshAllBtn');
     btn.classList.add('spinning');
     showLoadingBar();
-    const wasSynced = syncCharts;
-    syncCharts = false;
+    // Turn sync off before refreshing (re-enables after if it was already off)
+    if (syncCharts) toggleSyncCharts();
     await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
-    syncCharts = wasSynced;
     btn.classList.remove('spinning');
     hideLoadingBar();
-    if (syncCharts && activePanel && activePanel.symbol) {
-        const range = activePanel.chart.timeScale().getVisibleLogicalRange();
-        if (range) {
-            _syncLock = true;
-            try {
-                panels.forEach(p => {
-                    if (p.id !== activePanel.id && p.symbol)
-                        p.chart.timeScale().setVisibleLogicalRange(range);
-                });
-            } finally {
-                _syncLock = false;
-            }
-        }
-    }
 }
 
 document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
@@ -2311,7 +2428,11 @@ function toggleQtyPopup(e) {
     const inp = document.getElementById('qtyDisplay');
     inp.focus(); inp.select();
 }
-function adjustLots(delta) { orderLots = Math.max(1, orderLots + delta); updateOrderBar(null); }
+function adjustLots(delta) {
+    orderLots = Math.max(1, orderLots + delta);
+    if (activePanel) activePanel.panelLots = orderLots;
+    updateOrderBar(null);
+}
 
 (function () {
     let holdTimer = null, holdInterval = null;
@@ -2332,13 +2453,21 @@ function adjustLots(delta) { orderLots = Math.max(1, orderLots + delta); updateO
 
 document.getElementById('qtyDisplay').addEventListener('change', e => {
     const typed = parseInt(e.target.value, 10);
-    if (!isNaN(typed) && typed >= 1) { orderLots = Math.max(1, Math.round(typed / orderLotSize)); updateOrderBar(null); }
+    if (!isNaN(typed) && typed >= 1) {
+        orderLots = Math.max(1, Math.round(typed / orderLotSize));
+        if (activePanel) activePanel.panelLots = orderLots;
+        updateOrderBar(null);
+    }
 });
 document.getElementById('qtyDisplay').addEventListener('keydown', e => {
     if (e.key === 'Enter') {
         e.preventDefault();
         const typed = parseInt(e.target.value, 10);
-        if (!isNaN(typed) && typed >= 1) { orderLots = Math.max(1, Math.round(typed / orderLotSize)); updateOrderBar(null); }
+        if (!isNaN(typed) && typed >= 1) {
+            orderLots = Math.max(1, Math.round(typed / orderLotSize));
+            if (activePanel) activePanel.panelLots = orderLots;
+            updateOrderBar(null);
+        }
         toggleQtyPopup();
     }
 });
@@ -2556,6 +2685,187 @@ async function initIndexTicker() {
 }
 
 initIndexTicker();
+
+/* ======================
+   NAMED LAYOUTS
+====================== */
+const LAYOUTS_KEY = 'otp_saved_layouts';
+let _activeLayoutId = null;  // id of the currently-loaded named layout
+
+function _getSavedLayouts() {
+    try { return JSON.parse(localStorage.getItem(LAYOUTS_KEY)) || []; } catch { return []; }
+}
+function _setSavedLayouts(list) {
+    localStorage.setItem(LAYOUTS_KEY, JSON.stringify(list));
+}
+function _captureState() {
+    // Always save the actual panel symbols. Save autoPopulate only as a label
+    // (for display in the list) — loading always uses symbols, not auto-populate.
+    return {
+        layout:       activeLayout,
+        autoPopulate: document.getElementById('autoPopulateSelect').value,
+        symbols:      panels.map(p => p.symbol || null),
+    };
+}
+
+function openLayoutsModal() {
+    document.getElementById('layoutsOverlay').classList.add('open');
+    document.getElementById('layoutSearchInput').value = '';
+    _updateSaveBtn();
+    renderLayoutsList('');
+    setTimeout(() => document.getElementById('layoutSearchInput').focus(), 50);
+}
+function closeLayoutsModal() {
+    document.getElementById('layoutsOverlay').classList.remove('open');
+}
+
+function _updateSaveBtn() {
+    const btn = document.getElementById('btnSaveLayout');
+    const layouts = _getSavedLayouts();
+    const active  = layouts.find(l => l.id === _activeLayoutId);
+    btn.textContent = active ? `Save "${active.name}"` : 'Save';
+    btn.disabled    = !active;
+    btn.style.opacity = active ? '1' : '0.4';
+}
+
+function renderLayoutsList(query = '') {
+    const list    = document.getElementById('layoutsList');
+    const layouts = _getSavedLayouts();
+    const q       = (query || '').toLowerCase().trim();
+    const filtered = q ? layouts.filter(l => l.name.toLowerCase().includes(q)) : layouts;
+
+    if (filtered.length === 0) {
+        list.innerHTML = `<div class="lm-empty">${q ? 'No layouts match your search.' : 'No saved layouts yet.\nClick "Save as new…" to create one.'}</div>`;
+        return;
+    }
+
+    list.innerHTML = filtered.map(l => {
+        const syms = (l.symbols || []).filter(Boolean);
+        const preview = syms.length ? syms.map(s => s.replace(/^(NIFTY|SENSEX|BANKNIFTY)(\d{2}[A-Z]{3}\d{2})?(\d+)(CE|PE)$/, '$3$4') || s).slice(0, 4).join(' · ') : '—';
+        const dt  = l.savedAt ? new Date(l.savedAt).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : '';
+        const isActive = l.id === _activeLayoutId;
+        return `<div class="lm-item${isActive ? ' active' : ''}" onclick="loadNamedLayout('${l.id}')">
+            <div class="lm-item-info">
+                <div class="lm-item-name">${_esc(l.name)}</div>
+                <div class="lm-item-meta">${_esc(preview)}${dt ? ' · ' + dt : ''}</div>
+            </div>
+            <button class="lm-item-del" onclick="deleteNamedLayout(event,'${l.id}')" title="Delete">✕</button>
+        </div>`;
+    }).join('');
+}
+
+function _esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function loadNamedLayout(id) {
+    const layouts = _getSavedLayouts();
+    const layout  = layouts.find(l => l.id === id);
+    if (!layout) return;
+
+    _activeLayoutId = id;
+    closeLayoutsModal();
+
+    // Clear auto-populate BEFORE selectLayout so that selectLayout's
+    // requestAnimationFrame reads '' and does NOT trigger autoPopulatePanels.
+    const sel = document.getElementById('autoPopulateSelect');
+    sel.value = '';
+
+    // Apply panel grid layout
+    const lpOption = document.querySelector(`.lp-option[data-layout="${layout.layout}"]`);
+    if (lpOption) selectLayout(lpOption);
+
+    // Wait for selectLayout's rAF to fire and finish before loading symbols.
+    await new Promise(r => requestAnimationFrame(r));
+
+    // Restore dropdown label (display only — does not trigger change handler)
+    sel.value = layout.autoPopulate || '';
+
+    // Load exact saved symbols
+    const syms = layout.symbols || [];
+    await Promise.all(syms.map((sym, i) => {
+        if (!sym || !panels[i]) return Promise.resolve();
+        return panels[i].loadSymbol(sym, null, false);
+    }));
+
+    // Move this layout to top of list (most-recently-used)
+    const idx = layouts.findIndex(l => l.id === id);
+    if (idx > 0) {
+        layouts.splice(idx, 1);
+        layouts.unshift(layout);
+        _setSavedLayouts(layouts);
+    }
+
+    saveViewState();
+    toast(`Layout "${layout.name}" loaded`, 'success');
+}
+
+async function saveCurrentLayout(forceNew) {
+    const layouts = _getSavedLayouts();
+    const existing = !forceNew && layouts.find(l => l.id === _activeLayoutId);
+
+    let name;
+    if (existing) {
+        name = existing.name;
+    } else {
+        // Suggest a name based on active panel symbol or auto-populate mode
+        const apSel = document.getElementById('autoPopulateSelect');
+        const suggestion = (apSel.options[apSel.selectedIndex]?.text !== 'Auto populate...' ? apSel.options[apSel.selectedIndex]?.text : '') ||
+                           panels.find(p => p.symbol)?.symbol || 'My Layout';
+        name = prompt('Name this layout:', suggestion);
+        if (!name || !name.trim()) return;
+        name = name.trim();
+    }
+
+    const state = _captureState();
+    state.savedAt = new Date().toISOString();
+    state.name    = name;
+
+    if (existing) {
+        Object.assign(existing, state);
+        _setSavedLayouts(layouts);
+        toast(`Layout "${name}" saved`, 'success');
+    } else {
+        state.id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+        _activeLayoutId = state.id;
+        layouts.unshift(state);
+        _setSavedLayouts(layouts);
+        toast(`Layout "${name}" saved`, 'success');
+    }
+
+    saveViewState();
+    if (document.getElementById('layoutsOverlay').classList.contains('open')) {
+        _updateSaveBtn();
+        renderLayoutsList(document.getElementById('layoutSearchInput').value);
+    }
+}
+
+function deleteNamedLayout(e, id) {
+    e.stopPropagation();
+    const layouts = _getSavedLayouts();
+    const layout  = layouts.find(l => l.id === id);
+    if (!layout) return;
+    if (!confirm(`Delete layout "${layout.name}"?`)) return;
+    const idx = layouts.findIndex(l => l.id === id);
+    layouts.splice(idx, 1);
+    _setSavedLayouts(layouts);
+    if (_activeLayoutId === id) _activeLayoutId = null;
+    _updateSaveBtn();
+    renderLayoutsList(document.getElementById('layoutSearchInput').value);
+}
+
+// Close modal on overlay click
+document.getElementById('layoutsOverlay').addEventListener('click', function(e) {
+    if (e.target === this) closeLayoutsModal();
+});
+
+// Ctrl+S — save current layout (overwrite if named, else prompt)
+document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        saveCurrentLayout(false);
+    }
+});
 
 /* ======================
    SAVE / RESTORE STATE
