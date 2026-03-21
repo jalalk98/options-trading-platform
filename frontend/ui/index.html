@@ -323,7 +323,7 @@
             cursor: pointer; padding: 2px 5px; display: flex; align-items: center;
             justify-content: center; color: #555; height: 22px; font-size: 13px;
         }
-        #histBtn:hover, #syncBtn:hover, #savedLayoutsBtn:hover { background: #e4e4e4; }
+        #histBtn:hover, #syncBtn:hover, #savedLayoutsBtn:hover, #drawHlineBtn:hover { background: #e4e4e4; }
         #savedLayoutsBtn { gap: 4px; padding: 2px 7px; max-width: 160px; }
         #savedLayoutsBtn.has-layout { border-color: #3b82f6; color: #2563eb; background: #eff6ff; }
         #savedLayoutsBtn.has-layout:hover { background: #dbeafe; }
@@ -331,6 +331,8 @@
         #layoutBtnArrow { font-size: 9px; opacity: 0.7; flex-shrink: 0; }
         #histBtn.active { background: #fef3c7; border-color: #d97706; color: #d97706; }
         #syncBtn.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; }
+        #drawHlineBtn { background: none; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; padding: 2px 5px; display: flex; align-items: center; justify-content: center; color: #555; height: 22px; font-size: 13px; }
+        #drawHlineBtn.active { background: #fef9c3; border-color: #ca8a04; color: #92400e; }
 
         /* ── Layout picker ── */
         #layoutBtn {
@@ -826,6 +828,9 @@
         <button id="syncBtn" title="Sync chart axes" onclick="toggleSyncCharts()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         </button>
+        <button id="drawHlineBtn" title="Draw horizontal line (H) — click chart to place, right-click line to delete" onclick="toggleDrawHline()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="6" x2="6" y2="6" stroke-width="1.2" opacity="0.4"/><line x1="2" y1="18" x2="6" y2="18" stroke-width="1.2" opacity="0.4"/></svg>
+        </button>
         <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
         <button id="savedLayoutsBtn" title="Saved layouts (Ctrl+S)" onclick="openLayoutsModal()">
             <svg width="13" height="12" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -1075,6 +1080,17 @@ let activeLayout = '1';
 let isMaximized  = false;
 let syncCharts   = false;
 let _syncLock    = false;
+let drawHlineMode = false;
+
+function toggleDrawHline() {
+    drawHlineMode = !drawHlineMode;
+    document.getElementById('drawHlineBtn').classList.toggle('active', drawHlineMode);
+    document.getElementById('chartGrid').style.cursor = drawHlineMode ? 'crosshair' : '';
+}
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && drawHlineMode) { drawHlineMode = false; document.getElementById('drawHlineBtn').classList.remove('active'); document.getElementById('chartGrid').style.cursor = ''; }
+    if (e.key === 'h' || e.key === 'H') { const tag = document.activeElement?.tagName; if (tag !== 'INPUT' && tag !== 'TEXTAREA') toggleDrawHline(); }
+});
 
 const ICON_EXPAND  = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6V1h5"/><path d="M10 1h5v5"/><path d="M15 10v5h-5"/><path d="M6 15H1v-5"/></svg>`;
 const ICON_RESTORE = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1v5H1"/><path d="M15 6h-5V1"/><path d="M10 15v-5h5"/><path d="M1 10h5v5"/></svg>`;
@@ -1249,6 +1265,75 @@ function createPanel(id) {
         }
         isLoadingHistory = false;
     }
+
+    // ── User horizontal lines ─────────────────────
+    let userLines = []; // [{id, price, priceLine}]
+
+    function addUserLine(price) {
+        const rounded = Math.round(price * 20) / 20; // round to nearest 0.05
+        const priceLine = candleSeries.createPriceLine({
+            price: rounded,
+            color: '#f59e0b',
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Solid,
+            axisLabelVisible: true,
+            title: '',
+            draggable: true,
+        });
+        const id = Date.now() + Math.random();
+        userLines.push({ id, price: rounded, priceLine });
+        // right-click anywhere on chart while near a line removes closest line
+        return id;
+    }
+
+    function removeUserLine(id) {
+        const idx = userLines.findIndex(l => l.id === id);
+        if (idx === -1) return;
+        candleSeries.removePriceLine(userLines[idx].priceLine);
+        userLines.splice(idx, 1);
+    }
+
+    function removeClosestUserLine(price) {
+        if (!userLines.length) return;
+        let closest = userLines[0], minDiff = Math.abs(userLines[0].price - price);
+        for (const l of userLines) {
+            const d = Math.abs(l.price - price);
+            if (d < minDiff) { minDiff = d; closest = l; }
+        }
+        // Only delete if within reasonable distance (10% of visible range)
+        const range = chart.priceScale('right').getVisibleRange?.() || null;
+        const threshold = range ? (range.maxValue - range.minValue) * 0.05 : Infinity;
+        if (minDiff < threshold || minDiff < 5) removeUserLine(closest.id);
+    }
+
+    function clearUserLines() {
+        userLines.forEach(l => candleSeries.removePriceLine(l.priceLine));
+        userLines = [];
+    }
+
+    function restoreUserLines(prices) {
+        clearUserLines();
+        (prices || []).forEach(p => addUserLine(p));
+    }
+
+    chart.subscribeClick(param => {
+        if (!param.point || panel !== activePanel) return;
+        if (drawHlineMode) {
+            const price = candleSeries.coordinateToPrice(param.point.y);
+            if (price != null) { addUserLine(price); saveViewState(); }
+            return;
+        }
+    });
+
+    // Right-click on chart: delete nearest user line
+    chartAreaEl.addEventListener('contextmenu', e => {
+        if (!userLines.length) return;
+        e.preventDefault();
+        const rect = chartAreaEl.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const price = candleSeries.coordinateToPrice(y);
+        if (price != null) { removeClosestUserLine(price); saveViewState(); }
+    });
 
     // ── Chart crosshair ───────────────────────────
     chart.subscribeCrosshairMove(param => {
@@ -1495,6 +1580,7 @@ function createPanel(id) {
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
+        clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null;
         stopSLPoll();
         let history, gapsRaw;
@@ -1620,6 +1706,9 @@ function createPanel(id) {
         updateSLLine: updateSLLineLocal,
         scrollToEnd,
         resize, destroy,
+        getUserLines: () => userLines.map(l => l.price),
+        restoreUserLines,
+        clearUserLines,
     };
     return panel;
 }
@@ -2726,6 +2815,7 @@ function _captureState() {
         layout:       activeLayout,
         autoPopulate: '',
         symbols:      panels.map(p => p.symbol || null),
+        userLines:    panels.map(p => p.getUserLines()),
     };
 }
 
@@ -2825,6 +2915,12 @@ async function loadNamedLayout(id) {
         if (!sym || !panels[i]) return Promise.resolve();
         return panels[i].loadSymbol(sym, null, false);
     }));
+
+    // Restore user-drawn horizontal lines per panel
+    const savedLines = layout.userLines || [];
+    savedLines.forEach((prices, i) => {
+        if (panels[i] && prices && prices.length) panels[i].restoreUserLines(prices);
+    });
 
     // Move this layout to top of list (most-recently-used)
     const idx = layouts.findIndex(l => l.id === id);
