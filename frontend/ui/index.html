@@ -1307,7 +1307,7 @@ function createPanel(id) {
         candleSeries.removePriceLine(l.priceLine);
         l.priceLine = candleSeries.createPriceLine({
             price: l.price, color: HLINE_COLORS[l.colorIdx],
-            lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,
+            lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
         hlinePopup.querySelector('#hlpColorCircle').setAttribute('fill', HLINE_COLORS[l.colorIdx]);
@@ -1326,7 +1326,7 @@ function createPanel(id) {
         const rounded = Math.round(price * 20) / 20;
         const priceLine = candleSeries.createPriceLine({
             price: rounded, color: HLINE_COLORS[colorIdx],
-            lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Solid,
+            lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
         const id = Date.now() + Math.random();
