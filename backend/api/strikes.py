@@ -219,7 +219,7 @@ async def get_index_ltp(request: Request):
                 SELECT DISTINCT ON (symbol) symbol, curr_price
                 FROM gap_ticks
                 WHERE symbol IN ('NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY')
-                  AND timestamp >= NOW() - INTERVAL '10 minutes'
+                  AND timestamp >= NOW() - INTERVAL '7 days'
                 ORDER BY symbol, timestamp DESC
             """)
         db_prices = {r["symbol"]: r["curr_price"] for r in rows}
@@ -310,7 +310,7 @@ async def _query_history(conn, symbol: str, date: str = None):
             ORDER BY bucket ASC
         """, symbol, date_obj)
     else:
-        rows = await conn.fetch("""
+        _HIST_Q = """
             WITH ticks AS (
                 SELECT
                     FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
@@ -318,8 +318,8 @@ async def _query_history(conn, symbol: str, date: str = None):
                     g.timestamp
                 FROM gap_ticks g
                 WHERE g.symbol = $1
-                  AND g.timestamp >= CURRENT_DATE + TIME '09:15:00'
-                  AND g.timestamp <= CURRENT_DATE + TIME '16:00:00'
+                  AND g.timestamp >= $2::date + TIME '09:15:00'
+                  AND g.timestamp <= $2::date + TIME '16:00:00'
             )
             SELECT
                 bucket,
@@ -330,7 +330,18 @@ async def _query_history(conn, symbol: str, date: str = None):
             FROM ticks
             GROUP BY bucket
             ORDER BY bucket ASC
-        """, symbol)
+        """
+        today = PyDate.today()
+        rows = await conn.fetch(_HIST_Q, symbol, today)
+        if not rows:
+            # Weekend/holiday — find the last date with data for this symbol
+            last_date = await conn.fetchval("""
+                SELECT DATE(timestamp) FROM gap_ticks
+                WHERE symbol = $1
+                ORDER BY timestamp DESC LIMIT 1
+            """, symbol)
+            if last_date:
+                rows = await conn.fetch(_HIST_Q, symbol, last_date)
 
     # Compact array format [time, open, high, low, close] — 54% smaller than dict format
     return [
@@ -362,44 +373,48 @@ _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 
 async def _query_gaps(conn, symbol: str, date: str = None):
     is_sensex = symbol.startswith("SENSEX")
+
+    async def _run_gaps_query(date_obj):
+        ts_filter = "g.timestamp >= $2::date + TIME '09:15:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
+        if is_sensex:
+            return await conn.fetch(f"""
+                SELECT DISTINCT ON (bucket)
+                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                    g.direction, g.prev_price, g.curr_price, g.vol_change
+                FROM gap_ticks g
+                WHERE g.symbol    = $1
+                  AND {ts_filter}
+                  AND ABS(g.price_jump) >= 3.0
+                  AND g.time_diff  = 0.0
+                  AND g.spread_pct <= 0.75
+                ORDER BY bucket, g.timestamp ASC
+            """, symbol, date_obj)
+        else:
+            return await conn.fetch(f"""
+                SELECT DISTINCT ON (bucket)
+                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+                    g.direction, g.prev_price, g.curr_price, g.vol_change
+                FROM gap_ticks g
+                WHERE g.symbol   = $1
+                  AND g.is_gap    = true
+                  AND {ts_filter}
+                ORDER BY bucket, g.timestamp ASC
+            """, symbol, date_obj)
+
     if date:
-        bounds_cte = None
-        ts_filter  = "g.timestamp >= $2::date + TIME '09:15:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
-        query_arg  = (symbol, PyDate.fromisoformat(date))
+        rows = await _run_gaps_query(PyDate.fromisoformat(date))
     else:
-        bounds_cte = None
-        ts_filter  = "g.timestamp >= CURRENT_DATE + TIME '09:15:00' AND g.timestamp <= CURRENT_DATE + TIME '16:00:00'"
-        query_arg  = (symbol,)
-
-    cte_clause = ""
-    from_extra = ""
-
-    if is_sensex:
-        rows = await conn.fetch(f"""
-            {cte_clause}
-            SELECT DISTINCT ON (bucket)
-                FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                g.direction, g.prev_price, g.curr_price, g.vol_change
-            FROM gap_ticks g{from_extra}
-            WHERE g.symbol    = $1
-              AND {ts_filter}
-              AND ABS(g.price_jump) >= 3.0
-              AND g.time_diff  = 0.0
-              AND g.spread_pct <= 0.75
-            ORDER BY bucket, g.timestamp ASC
-        """, *query_arg)
-    else:
-        rows = await conn.fetch(f"""
-            {cte_clause}
-            SELECT DISTINCT ON (bucket)
-                FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                g.direction, g.prev_price, g.curr_price, g.vol_change
-            FROM gap_ticks g{from_extra}
-            WHERE g.symbol   = $1
-              AND g.is_gap    = true
-              AND {ts_filter}
-            ORDER BY bucket, g.timestamp ASC
-        """, *query_arg)
+        today = PyDate.today()
+        rows = await _run_gaps_query(today)
+        if not rows:
+            # Weekend/holiday — fall back to last date with data
+            last_date = await conn.fetchval("""
+                SELECT DATE(timestamp) FROM gap_ticks
+                WHERE symbol = $1
+                ORDER BY timestamp DESC LIMIT 1
+            """, symbol)
+            if last_date:
+                rows = await _run_gaps_query(last_date)
     return [
         {
             "time":       int(row["bucket"]),
