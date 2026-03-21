@@ -2683,9 +2683,11 @@ async function initIndexTicker() {
         const data = await fetch('/api/index-ltp').then(r => r.json());
         for (const sym of IDX_SYMBOLS) {
             const entry = data[sym];
-            if (entry && entry.ltp != null && entry.change != null) {
-                _idxPrevClose[sym] = entry.ltp - entry.change;
+            if (entry && entry.ltp != null) {
                 _idxLatestLtp[sym] = entry.ltp;
+                if (entry.change != null) {
+                    _idxPrevClose[sym] = entry.ltp - entry.change;
+                }
             }
         }
         // Initial render for both groups
