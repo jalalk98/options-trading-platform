@@ -324,6 +324,11 @@
             justify-content: center; color: #555; height: 22px; font-size: 13px;
         }
         #histBtn:hover, #syncBtn:hover, #savedLayoutsBtn:hover { background: #e4e4e4; }
+        #savedLayoutsBtn { gap: 4px; padding: 2px 7px; max-width: 160px; }
+        #savedLayoutsBtn.has-layout { border-color: #3b82f6; color: #2563eb; background: #eff6ff; }
+        #savedLayoutsBtn.has-layout:hover { background: #dbeafe; }
+        #layoutBtnName { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
+        #layoutBtnArrow { font-size: 9px; opacity: 0.7; flex-shrink: 0; }
         #histBtn.active { background: #fef3c7; border-color: #d97706; color: #d97706; }
         #syncBtn.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; }
 
@@ -823,7 +828,9 @@
         </button>
         <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
         <button id="savedLayoutsBtn" title="Saved layouts (Ctrl+S)" onclick="openLayoutsModal()">
-            <svg width="14" height="13" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            <svg width="13" height="12" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            <span id="layoutBtnName"></span>
+            <span id="layoutBtnArrow">▾</span>
         </button>
     </div>
 </div>
@@ -2733,6 +2740,22 @@ function closeLayoutsModal() {
     document.getElementById('layoutsOverlay').classList.remove('open');
 }
 
+function _updateActiveLayoutLabel() {
+    const btn      = document.getElementById('savedLayoutsBtn');
+    const nameSpan = document.getElementById('layoutBtnName');
+    const layouts  = _getSavedLayouts();
+    const active   = layouts.find(l => l.id === _activeLayoutId);
+    if (active) {
+        nameSpan.textContent = active.name;
+        btn.classList.add('has-layout');
+        btn.title = `Layout: ${active.name} (Ctrl+S to save)`;
+    } else {
+        nameSpan.textContent = '';
+        btn.classList.remove('has-layout');
+        btn.title = 'Saved layouts (Ctrl+S)';
+    }
+}
+
 function _updateSaveBtn() {
     const btn = document.getElementById('btnSaveLayout');
     const layouts = _getSavedLayouts();
@@ -2778,6 +2801,7 @@ async function loadNamedLayout(id) {
     if (!layout) return;
 
     _activeLayoutId = id;
+    _updateActiveLayoutLabel();
     closeLayoutsModal();
 
     // Clear auto-populate BEFORE selectLayout so that selectLayout's
@@ -2850,6 +2874,7 @@ async function saveCurrentLayout(forceNew) {
     // Reset dropdown to "Auto populate panels" to match what was saved
     document.getElementById('autoPopulateSelect').value = '';
     document.title = name;
+    _updateActiveLayoutLabel();
 
     saveViewState();
     if (document.getElementById('layoutsOverlay').classList.contains('open')) {
@@ -2867,7 +2892,7 @@ function deleteNamedLayout(e, id) {
     const idx = layouts.findIndex(l => l.id === id);
     layouts.splice(idx, 1);
     _setSavedLayouts(layouts);
-    if (_activeLayoutId === id) _activeLayoutId = null;
+    if (_activeLayoutId === id) { _activeLayoutId = null; _updateActiveLayoutLabel(); }
     _updateSaveBtn();
     renderLayoutsList(document.getElementById('layoutSearchInput').value);
 }
