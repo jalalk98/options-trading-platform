@@ -334,22 +334,12 @@ async def _query_history(conn, symbol: str, date: str = None):
         today = PyDate.today()
         rows = await conn.fetch(_HIST_Q, symbol, today)
         if not rows:
-            # Weekend/holiday/late-start — fall back to last date with gap data
-            # so history and gap markers are always on the same date
-            is_sensex = symbol.startswith("SENSEX")
-            gap_col = "ABS(price_jump) >= 3.0 AND time_diff = 0.0 AND spread_pct <= 0.75" if is_sensex else "is_gap = true"
-            last_date = await conn.fetchval(f"""
+            # Weekend/holiday/late-start — fall back to last date with any tick data
+            last_date = await conn.fetchval("""
                 SELECT DATE(timestamp) FROM gap_ticks
-                WHERE symbol = $1 AND {gap_col}
+                WHERE symbol = $1
                 ORDER BY timestamp DESC LIMIT 1
             """, symbol)
-            if not last_date:
-                # Index symbols (NIFTY, SENSEX index) have no gaps — use last tick date
-                last_date = await conn.fetchval("""
-                    SELECT DATE(timestamp) FROM gap_ticks
-                    WHERE symbol = $1
-                    ORDER BY timestamp DESC LIMIT 1
-                """, symbol)
             if last_date:
                 rows = await conn.fetch(_HIST_Q, symbol, last_date)
 
@@ -382,7 +372,8 @@ _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 
 
 async def _query_gaps(conn, symbol: str, date: str = None):
-    is_sensex = symbol.startswith("SENSEX")
+    # Use SENSEX price-jump filter only for the index itself, not for SENSEX options
+    is_sensex = symbol == "SENSEX"
 
     async def _run_gaps_query(date_obj):
         ts_filter = "g.timestamp >= $2::date + TIME '09:15:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
@@ -417,11 +408,10 @@ async def _query_gaps(conn, symbol: str, date: str = None):
         today = PyDate.today()
         rows = await _run_gaps_query(today)
         if not rows:
-            # Weekend/holiday/late-start — fall back to last date with actual gap data
-            gap_col = "ABS(g.price_jump) >= 3.0 AND g.time_diff = 0.0 AND g.spread_pct <= 0.75" if is_sensex else "is_gap = true"
-            last_date = await conn.fetchval(f"""
+            # Weekend/holiday/late-start — fall back to last date with any tick data
+            last_date = await conn.fetchval("""
                 SELECT DATE(timestamp) FROM gap_ticks
-                WHERE symbol = $1 AND {gap_col}
+                WHERE symbol = $1
                 ORDER BY timestamp DESC LIMIT 1
             """, symbol)
             if last_date:

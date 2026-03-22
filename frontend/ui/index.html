@@ -2138,6 +2138,7 @@ async function refreshAllPanels() {
 document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
     const value = this.value;
     if (!value) return;
+    if (syncCharts) toggleSyncCharts();
     const label = this.options[this.selectedIndex].text;
     document.title = label;
     try {
