@@ -1432,7 +1432,13 @@ function createPanel(id) {
                 strike = rest.slice(5, -2);            // skip 5 expiry chars, remove type
             }
         }
-        if (!strike || !type) { labelEl.innerHTML = ''; labelEl.className = 'panel-label no-label'; return; }
+        if (!strike || !type) {
+            // Index symbol (NIFTY, SENSEX, BANKNIFTY etc.) — show the name itself
+            const idxName = ['BANKNIFTY','MIDCPNIFTY','FINNIFTY','SENSEX','NIFTY'].find(p => sym.startsWith(p)) || sym;
+            labelEl.className = 'panel-label no-label';
+            labelEl.innerHTML = idxName;
+            return;
+        }
         labelEl.className = `panel-label ${type === 'CE' ? 'ce-label' : 'pe-label'}`;
         labelEl.innerHTML = `${index} - ${strike} ${type}`;
     }
