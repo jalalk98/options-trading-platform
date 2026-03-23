@@ -1204,6 +1204,7 @@ function createPanel(id) {
     let slLineState      = 'none';
     let slOrderId        = null;
     let slDragging       = false;
+    let hlineDragging    = null;   // user line being dragged {id, price, colorIdx, priceLine}
     let slPollTimer      = null;
     let slTriggerBuffer  = 0.20;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
@@ -1511,6 +1512,17 @@ function createPanel(id) {
         } catch (_) {}
     }
 
+    // ── User line drag ────────────────────────────
+    function getNearUserLine(clientY) {
+        const rect = chartAreaEl.getBoundingClientRect();
+        const y = clientY - rect.top;
+        for (const l of userLines) {
+            const ly = candleSeries.priceToCoordinate(l.price);
+            if (ly !== null && Math.abs(y - ly) < 8) return l;
+        }
+        return null;
+    }
+
     // ── SL drag ───────────────────────────────────
     function isNearSL(clientY) {
         if (!slPrice) return false;
@@ -1522,9 +1534,18 @@ function createPanel(id) {
     function enableScroll()  { chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true,  horzTouchDrag: true,  vertTouchDrag: true  } }); }
 
     chartAreaEl.addEventListener('mousemove', e => {
-        if (!slPrice) return;
         const y = e.clientY - chartAreaEl.getBoundingClientRect().top;
+        if (hlineDragging) {
+            const p = candleSeries.coordinateToPrice(y);
+            if (p !== null) {
+                const rounded = Math.round(p * 20) / 20;
+                hlineDragging.price = rounded;
+                hlineDragging.priceLine.applyOptions({ price: rounded });
+            }
+            return;
+        }
         if (isNearSL(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
+        else if (userLines.length && getNearUserLine(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
         else if (!slDragging)    { chartAreaEl.style.cursor = 'default';   enableScroll();  }
         if (slDragging) {
             const p = candleSeries.coordinateToPrice(y);
@@ -1533,10 +1554,19 @@ function createPanel(id) {
     });
 
     chartAreaEl.addEventListener('mousedown', e => {
-        if (slPrice && isNearSL(e.clientY)) { slDragging = true; disableScroll(); e.stopPropagation(); }
+        if (slPrice && isNearSL(e.clientY)) { slDragging = true; disableScroll(); e.stopPropagation(); return; }
+        if (userLines.length && !drawHlineMode) {
+            const nearLine = getNearUserLine(e.clientY);
+            if (nearLine) { hlineDragging = nearLine; disableScroll(); e.stopPropagation(); }
+        }
     });
 
     chartAreaEl.addEventListener('mouseup', async () => {
+        if (hlineDragging) {
+            hlineDragging = null; chartAreaEl.style.cursor = 'default'; enableScroll();
+            saveViewState();
+            return;
+        }
         if (!slDragging) return;
         slDragging = false; chartAreaEl.style.cursor = 'default'; enableScroll();
         if (!slPrice || !symbol) return;
