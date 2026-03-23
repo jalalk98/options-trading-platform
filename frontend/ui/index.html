@@ -2799,8 +2799,22 @@ function _renderIdxGroup(group, sym, ltp) {
     }
 }
 
+const _idxPrevCloseFetching = {};
 function _onIdxTick(sym, ltp) {
     _idxLatestLtp[sym] = ltp;
+    // If prev close missing, fetch it once in the background
+    if (_idxPrevClose[sym] == null && !_idxPrevCloseFetching[sym]) {
+        _idxPrevCloseFetching[sym] = true;
+        fetch('/api/index-ltp').then(r => r.json()).then(data => {
+            const entry = data[sym];
+            if (entry && entry.change != null) {
+                _idxPrevClose[sym] = entry.ltp - entry.change;
+            }
+        }).catch(() => {}).finally(() => {
+            // Retry again after 30s if still null
+            setTimeout(() => { _idxPrevCloseFetching[sym] = false; }, 30000);
+        });
+    }
     for (const [group, key] of Object.entries(idxSelection)) {
         if (key === sym) _renderIdxGroup(group, sym, ltp);
     }
