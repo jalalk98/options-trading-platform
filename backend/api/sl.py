@@ -35,7 +35,7 @@ async def get_sl(symbol: str):
 # ─────────────────────────────────────────────
 class SetSLRequest(BaseModel):
     symbol:          str
-    price:           float
+    price:           Optional[float] = None   # if None, keep existing price (state-only update)
     trigger_buffer:  Optional[float] = None   # if None, keep existing or default 0.20
     # Fields set by tick_collector after placing SL on Kite
     order_id:        Optional[str]   = None
@@ -47,7 +47,7 @@ class SetSLRequest(BaseModel):
 @router.post("/sl/set")
 async def set_sl(req: SetSLRequest):
     existing       = sl_state.get(req.symbol, {})
-    new_price      = _round(req.price)
+    new_price      = _round(req.price) if req.price is not None else existing.get("price")
     new_buffer     = req.trigger_buffer if req.trigger_buffer is not None else existing.get("trigger_buffer", 0.20)
 
     sl_state[req.symbol] = {

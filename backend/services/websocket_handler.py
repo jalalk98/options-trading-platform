@@ -10,7 +10,7 @@ from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 from config.logging_config import logger
 from backend.core.redis_client import redis_client
 from backend.services.gap_processor import process_tick
-from backend.state import sl_state, app_config
+from backend.state import app_config
 
 
 def _send_telegram(text: str) -> None:
@@ -114,14 +114,22 @@ def setup_websocket_events():
             if data.get("order_type") == "SL":
                 if data.get("status") == "COMPLETE":
                     sym = data.get("tradingsymbol")
-                    if sym and sym in sl_state:
-                        sl_state[sym]["state"] = "hit"
-                        logger.info(f"SL hit for {sym} — state updated to 'hit'")
-                        async def _clear_sl(s=sym):
-                            await asyncio.sleep(3)
-                            if s in sl_state:
-                                sl_state[s]["state"] = "none"
-                        asyncio.create_task(_clear_sl())
+                    if sym:
+                        logger.info(f"SL hit for {sym} — posting 'hit' to chart_server")
+                        try:
+                            requests.post("http://localhost:8000/api/sl/set",
+                                          json={"symbol": sym, "state": "hit"}, timeout=2)
+                        except Exception as _e:
+                            logger.warning(f"Could not set SL state to hit for {sym}: {_e}")
+                        def _clear_hit(s=sym):
+                            import time
+                            time.sleep(3)
+                            try:
+                                requests.post("http://localhost:8000/api/sl/set",
+                                              json={"symbol": s, "state": "none"}, timeout=2)
+                            except Exception:
+                                pass
+                        threading.Thread(target=_clear_hit, daemon=True).start()
                 return {"status": "ignored"}
 
             trade_symbol = data.get("tradingsymbol")
@@ -147,8 +155,11 @@ def setup_websocket_events():
                 if position < 0:
                     # Closing short position
                     active_positions[trade_symbol] = 0
-                    if trade_symbol in sl_state:
-                        sl_state[trade_symbol]["state"] = "none"
+                    try:
+                        requests.post("http://localhost:8000/api/sl/set",
+                                      json={"symbol": trade_symbol, "state": "none"}, timeout=2)
+                    except Exception as _e:
+                        logger.warning(f"Could not clear SL state for {trade_symbol}: {_e}")
                     logger.info(f"Short position CLOSED for {trade_symbol}")
                     return {"status": "ignored"}
 
@@ -163,8 +174,11 @@ def setup_websocket_events():
                 if position > 0:
                     # Closing long position
                     active_positions[trade_symbol] = 0
-                    if trade_symbol in sl_state:
-                        sl_state[trade_symbol]["state"] = "none"
+                    try:
+                        requests.post("http://localhost:8000/api/sl/set",
+                                      json={"symbol": trade_symbol, "state": "none"}, timeout=2)
+                    except Exception as _e:
+                        logger.warning(f"Could not clear SL state for {trade_symbol}: {_e}")
                     logger.info(f"Long position CLOSED for {trade_symbol}")
                     return {"status": "ignored"}
 
