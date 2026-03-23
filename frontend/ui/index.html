@@ -1493,7 +1493,7 @@ function createPanel(id) {
                     slOrderId = data.order_id || null;
                 }
                 if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
-                if (data.state === 'hit') setTimeout(() => updateSLLineLocal(price, 'pending'), 2000);
+                if (data.state === 'hit') setTimeout(() => updateSLLineLocal(null, 'none'), 2000);
             }
         }, 2000);
     }

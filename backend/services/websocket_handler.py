@@ -110,13 +110,18 @@ def setup_websocket_events():
             if data.get("status") != "COMPLETE":
                 return {"status": "ignored"}
 
-            # Detect SL order completion → mark state as 'hit', then ignore to prevent loop
+            # Detect SL order completion → mark state as 'hit', then clear after 3s
             if data.get("order_type") == "SL":
                 if data.get("status") == "COMPLETE":
                     sym = data.get("tradingsymbol")
                     if sym and sym in sl_state:
                         sl_state[sym]["state"] = "hit"
                         logger.info(f"SL hit for {sym} — state updated to 'hit'")
+                        async def _clear_sl(s=sym):
+                            await asyncio.sleep(3)
+                            if s in sl_state:
+                                sl_state[s]["state"] = "none"
+                        asyncio.create_task(_clear_sl())
                 return {"status": "ignored"}
 
             trade_symbol = data.get("tradingsymbol")
@@ -142,6 +147,8 @@ def setup_websocket_events():
                 if position < 0:
                     # Closing short position
                     active_positions[trade_symbol] = 0
+                    if trade_symbol in sl_state:
+                        sl_state[trade_symbol]["state"] = "none"
                     logger.info(f"Short position CLOSED for {trade_symbol}")
                     return {"status": "ignored"}
 
@@ -156,6 +163,8 @@ def setup_websocket_events():
                 if position > 0:
                     # Closing long position
                     active_positions[trade_symbol] = 0
+                    if trade_symbol in sl_state:
+                        sl_state[trade_symbol]["state"] = "none"
                     logger.info(f"Long position CLOSED for {trade_symbol}")
                     return {"status": "ignored"}
 
