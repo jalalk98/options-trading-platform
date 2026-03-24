@@ -101,8 +101,8 @@ async def main():
     logger.info("Instrument file loaded successfully")
 
     subscriptions = [
-        {"index": "NIFTY",      "ltp_symbol": "NSE:NIFTY 50",          "gap": 50,  "count": 8},
-        {"index": "SENSEX",     "ltp_symbol": "BSE:SENSEX",             "gap": 100, "count": 8},
+        {"index": "NIFTY",      "ltp_symbol": "NSE:NIFTY 50",          "gap": 50,  "count": 10},
+        {"index": "SENSEX",     "ltp_symbol": "BSE:SENSEX",             "gap": 100, "count": 10},
         {"index": "BANKNIFTY",  "ltp_symbol": "NSE:NIFTY BANK",         "gap": 100, "count": 8},
         {"index": "FINNIFTY",   "ltp_symbol": "NSE:NIFTY FIN SERVICE",  "gap": 50,  "count": 6},
         {"index": "MIDCPNIFTY", "ltp_symbol": "NSE:NIFTY MID SELECT",   "gap": 25,  "count": 6},

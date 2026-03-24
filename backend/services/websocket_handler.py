@@ -56,6 +56,22 @@ kws = MainTicker(KITE_API_KEY, KITE_ACCESS_TOKEN, None, kite1, token_to_OrderId_
 
 active_positions = {}
 
+
+def _post_sl_state(symbol: str, state: str, retries: int = 3, timeout: int = 5) -> None:
+    """POST sl state to chart_server with retries. Runs in calling thread (use threading for non-blocking)."""
+    for attempt in range(1, retries + 1):
+        try:
+            requests.post(
+                "http://localhost:8000/api/sl/set",
+                json={"symbol": symbol, "state": state},
+                timeout=timeout,
+            )
+            return
+        except Exception as _e:
+            logger.warning(f"_post_sl_state attempt {attempt}/{retries} failed for {symbol}: {_e}")
+    logger.error(f"_post_sl_state gave up after {retries} attempts for {symbol} state={state}")
+
+
 def setup_websocket_events():
     """
     Attach event handlers to the WebSocket instance, dynamically passing required variables.
@@ -106,6 +122,13 @@ def setup_websocket_events():
 
         try:
 
+            # Check if UI requested a position cache reset
+            reset_flag = Path("/tmp/reset_positions")
+            if reset_flag.exists():
+                active_positions.clear()
+                reset_flag.unlink(missing_ok=True)
+                logger.info("active_positions cache cleared via UI reset button")
+
             # Only process completed orders
             if data.get("status") != "COMPLETE":
                 return {"status": "ignored"}
@@ -116,20 +139,12 @@ def setup_websocket_events():
                     sym = data.get("tradingsymbol")
                     if sym:
                         logger.info(f"SL hit for {sym} — posting 'hit' to chart_server")
-                        try:
-                            requests.post("http://localhost:8000/api/sl/set",
-                                          json={"symbol": sym, "state": "hit"}, timeout=2)
-                        except Exception as _e:
-                            logger.warning(f"Could not set SL state to hit for {sym}: {_e}")
-                        def _clear_hit(s=sym):
+                        def _hit_then_clear(s=sym):
                             import time
+                            _post_sl_state(s, "hit")
                             time.sleep(3)
-                            try:
-                                requests.post("http://localhost:8000/api/sl/set",
-                                              json={"symbol": s, "state": "none"}, timeout=2)
-                            except Exception:
-                                pass
-                        threading.Thread(target=_clear_hit, daemon=True).start()
+                            _post_sl_state(s, "none")
+                        threading.Thread(target=_hit_then_clear, daemon=True).start()
                 return {"status": "ignored"}
 
             trade_symbol = data.get("tradingsymbol")
@@ -145,45 +160,45 @@ def setup_websocket_events():
             # -----------------------------
             # Current position tracking
             # -----------------------------
-            position = active_positions.get(trade_symbol, 0)
+            current = active_positions.get(trade_symbol, 0)
 
             # ============================
             # BUY ORDER
             # ============================
             if transaction_type == "BUY":
 
-                if position < 0:
-                    # Closing short position
-                    active_positions[trade_symbol] = 0
-                    try:
-                        requests.post("http://localhost:8000/api/sl/set",
-                                      json={"symbol": trade_symbol, "state": "none"}, timeout=2)
-                    except Exception as _e:
-                        logger.warning(f"Could not clear SL state for {trade_symbol}: {_e}")
-                    logger.info(f"Short position CLOSED for {trade_symbol}")
+                if current < 0:
+                    # Was short — this BUY is closing it (partial or full)
+                    new_pos = current + qty
+                    active_positions[trade_symbol] = new_pos
+                    if new_pos >= 0:
+                        threading.Thread(target=_post_sl_state, args=(trade_symbol, "none"), daemon=True).start()
+                        logger.info(f"Short position CLOSED for {trade_symbol}")
+                    else:
+                        logger.info(f"Short position partial close for {trade_symbol}: {current} → {new_pos}")
                     return {"status": "ignored"}
 
-                # New BUY entry
-                active_positions[trade_symbol] = qty
+                # Was flat or long — new/additional BUY entry (chunk)
+                active_positions[trade_symbol] = current + qty
 
             # ============================
             # SELL ORDER
             # ============================
             elif transaction_type == "SELL":
 
-                if position > 0:
-                    # Closing long position
-                    active_positions[trade_symbol] = 0
-                    try:
-                        requests.post("http://localhost:8000/api/sl/set",
-                                      json={"symbol": trade_symbol, "state": "none"}, timeout=2)
-                    except Exception as _e:
-                        logger.warning(f"Could not clear SL state for {trade_symbol}: {_e}")
-                    logger.info(f"Long position CLOSED for {trade_symbol}")
+                if current > 0:
+                    # Was long — this SELL is closing it (partial or full)
+                    new_pos = current - qty
+                    active_positions[trade_symbol] = new_pos
+                    if new_pos <= 0:
+                        threading.Thread(target=_post_sl_state, args=(trade_symbol, "none"), daemon=True).start()
+                        logger.info(f"Long position CLOSED for {trade_symbol}")
+                    else:
+                        logger.info(f"Long position partial close for {trade_symbol}: {current} → {new_pos}")
                     return {"status": "ignored"}
 
-                # New SELL entry
-                active_positions[trade_symbol] = -qty
+                # Was flat or short — new/additional SELL entry (chunk)
+                active_positions[trade_symbol] = current - qty
 
             # -----------------------------
             # Helper

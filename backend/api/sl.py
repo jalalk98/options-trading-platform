@@ -3,7 +3,7 @@
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from backend.state import sl_state, app_config
 from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
@@ -35,47 +35,77 @@ async def get_sl(symbol: str):
 # ─────────────────────────────────────────────
 class SetSLRequest(BaseModel):
     symbol:          str
-    price:           Optional[float] = None   # if None, keep existing price (state-only update)
-    trigger_buffer:  Optional[float] = None   # if None, keep existing or default 0.20
+    price:           Optional[float]     = None   # if None, keep existing price (state-only update)
+    trigger_buffer:  Optional[float]     = None   # if None, keep existing or default 0.20
     # Fields set by tick_collector after placing SL on Kite
-    order_id:        Optional[str]   = None
-    side:            Optional[str]   = None
-    qty:             Optional[int]   = None
-    exchange:        Optional[str]   = None
-    state:           Optional[str]   = None
+    order_id:        Optional[str]       = None   # single order ID to append to list
+    side:            Optional[str]       = None
+    qty:             Optional[int]       = None
+    exchange:        Optional[str]       = None
+    state:           Optional[str]       = None
 
 @router.post("/sl/set")
 async def set_sl(req: SetSLRequest):
-    existing       = sl_state.get(req.symbol, {})
-    new_price      = _round(req.price) if req.price is not None else existing.get("price")
-    new_buffer     = req.trigger_buffer if req.trigger_buffer is not None else existing.get("trigger_buffer", 0.20)
+    existing   = sl_state.get(req.symbol, {})
+    new_buffer = req.trigger_buffer if req.trigger_buffer is not None else existing.get("trigger_buffer", 0.20)
+
+    # Clearing state — reset everything
+    if req.state == "none":
+        sl_state[req.symbol] = {
+            "price":          None,
+            "trigger_buffer": new_buffer,
+            "order_id":       None,
+            "order_ids":      [],
+            "side":           None,
+            "qty":            None,
+            "exchange":       None,
+            "state":          "none",
+        }
+        return {"status": "ok", "symbol": req.symbol, "price": None}
+
+    new_price = _round(req.price) if req.price is not None else existing.get("price")
+
+    # Build accumulated order_ids list
+    existing_ids = existing.get("order_ids") or ([existing["order_id"]] if existing.get("order_id") else [])
+    if req.order_id and req.order_id not in existing_ids:
+        new_ids = existing_ids + [req.order_id]
+    else:
+        new_ids = existing_ids
+
+    # Accumulate qty across sliced chunks
+    if req.order_id and req.qty is not None:
+        new_qty = (existing.get("qty") or 0) + req.qty
+    else:
+        new_qty = req.qty if req.qty is not None else existing.get("qty")
 
     sl_state[req.symbol] = {
         "price":          new_price,
         "trigger_buffer": new_buffer,
-        "order_id":       req.order_id   if req.order_id  is not None else existing.get("order_id"),
-        "side":           req.side       if req.side       is not None else existing.get("side"),
-        "qty":            req.qty        if req.qty        is not None else existing.get("qty"),
-        "exchange":       req.exchange   if req.exchange   is not None else existing.get("exchange"),
-        "state":          req.state      if req.state      is not None else existing.get("state", "pending"),
+        "order_id":       new_ids[0] if new_ids else None,   # backward compat
+        "order_ids":      new_ids,
+        "side":           req.side     if req.side     is not None else existing.get("side"),
+        "qty":            new_qty,
+        "exchange":       req.exchange if req.exchange is not None else existing.get("exchange"),
+        "state":          req.state    if req.state    is not None else existing.get("state", "pending"),
     }
 
-    # If an order is already placed, modify it on Kite too
-    order_id = existing.get("order_id")
-    if order_id and existing.get("state") == "placed":
-        try:
-            trigger = _round(new_price + new_buffer) if existing.get("side") == "SELL" else _round(new_price - new_buffer)
-            result = await kite1.hard_code_regular_modify_order(
-                order_id=order_id,
-                price=new_price,
-                trig_price=trigger,
-                access_token=KITE_ACCESS_TOKEN,
-                api_key=KITE_API_KEY
-            )
-            logger.info(f"SL order {order_id} modified to {new_price} for {req.symbol}: {result}")
-            sl_state[req.symbol]["state"] = "placed"
-        except Exception as e:
-            logger.error(f"Failed to modify SL order {order_id}: {e}")
+    # If dragging (state already "placed" and price changed), modify ALL orders on Kite
+    if existing.get("state") == "placed" and new_ids and req.price is not None and not req.order_id:
+        side = existing.get("side")
+        for oid in new_ids:
+            try:
+                trigger = _round(new_price + new_buffer) if side == "SELL" else _round(new_price - new_buffer)
+                result = await kite1.hard_code_regular_modify_order(
+                    order_id=oid,
+                    price=new_price,
+                    trig_price=trigger,
+                    access_token=KITE_ACCESS_TOKEN,
+                    api_key=KITE_API_KEY
+                )
+                logger.info(f"SL order {oid} modified to {new_price} for {req.symbol}: {result}")
+            except Exception as e:
+                logger.error(f"Failed to modify SL order {oid}: {e}")
+        sl_state[req.symbol]["state"] = "placed"
 
     return {"status": "ok", "symbol": req.symbol, "price": new_price}
 
@@ -92,26 +122,32 @@ class ConvertRequest(BaseModel):
 @router.post("/sl/convert-to-limit")
 async def convert_to_limit(req: ConvertRequest):
     state = sl_state.get(req.symbol)
-    if not state or not state.get("order_id"):
+    if not state:
+        return {"status": "error", "message": "No active SL order for this symbol"}
+    order_ids = state.get("order_ids") or ([state["order_id"]] if state.get("order_id") else [])
+    if not order_ids:
         return {"status": "error", "message": "No active SL order for this symbol"}
 
-    price = _round(req.price)
-    try:
-        result = await kite1.hard_code_modify_limit_type(
-            order_id=state["order_id"],
-            price=price,
-            trig_price=price,
-            access_token=KITE_ACCESS_TOKEN,
-            api_key=KITE_API_KEY,
-            type="LIMIT"
-        )
-        logger.info(f"SL→LIMIT for {req.symbol} @ {price}: {result}")
-        sl_state[req.symbol]["price"] = price
-        sl_state[req.symbol]["state"] = "placed"
-        return {"status": "ok", "price": price, "result": result}
-    except Exception as e:
-        logger.error(f"convert-to-limit error: {e}")
-        return {"status": "error", "message": str(e)}
+    price   = _round(req.price)
+    results = []
+    for oid in order_ids:
+        try:
+            result = await kite1.hard_code_modify_limit_type(
+                order_id=oid,
+                price=price,
+                trig_price=price,
+                access_token=KITE_ACCESS_TOKEN,
+                api_key=KITE_API_KEY,
+                type="LIMIT"
+            )
+            logger.info(f"SL→LIMIT for {req.symbol} order {oid} @ {price}: {result}")
+            results.append(result)
+        except Exception as e:
+            logger.error(f"convert-to-limit error for {oid}: {e}")
+            results.append({"error": str(e)})
+    sl_state[req.symbol]["price"] = price
+    sl_state[req.symbol]["state"] = "placed"
+    return {"status": "ok", "price": price, "results": results}
 
 
 # ─────────────────────────────────────────────
@@ -124,23 +160,29 @@ class SymbolRequest(BaseModel):
 @router.post("/sl/convert-to-market")
 async def convert_to_market(req: SymbolRequest):
     state = sl_state.get(req.symbol)
-    if not state or not state.get("order_id"):
+    if not state:
+        return {"status": "error", "message": "No active SL order for this symbol"}
+    order_ids = state.get("order_ids") or ([state["order_id"]] if state.get("order_id") else [])
+    if not order_ids:
         return {"status": "error", "message": "No active SL order for this symbol"}
 
-    try:
-        result = await kite1.hard_code_modify_limit_type(
-            order_id=state["order_id"],
-            price=0,
-            trig_price=0,
-            access_token=KITE_ACCESS_TOKEN,
-            api_key=KITE_API_KEY,
-            type="MARKET"
-        )
-        logger.info(f"SL→MARKET for {req.symbol}: {result}")
-        return {"status": "ok", "result": result}
-    except Exception as e:
-        logger.error(f"convert-to-market error: {e}")
-        return {"status": "error", "message": str(e)}
+    results = []
+    for oid in order_ids:
+        try:
+            result = await kite1.hard_code_modify_limit_type(
+                order_id=oid,
+                price=0,
+                trig_price=0,
+                access_token=KITE_ACCESS_TOKEN,
+                api_key=KITE_API_KEY,
+                type="MARKET"
+            )
+            logger.info(f"SL→MARKET for {req.symbol} order {oid}: {result}")
+            results.append(result)
+        except Exception as e:
+            logger.error(f"convert-to-market error for {oid}: {e}")
+            results.append({"error": str(e)})
+    return {"status": "ok", "results": results}
 
 
 # Freeze qty limits per exchange/index
@@ -492,3 +534,12 @@ async def set_default_sl(req: DefaultSlReq):
     app_config["default_sl_dist"] = req.distance
     logger.info(f"default_sl_dist updated to {req.distance}")
     return {"status": "ok", "default_sl_dist": req.distance}
+
+
+@router.post("/positions/reset")
+async def reset_positions():
+    """Signal tick_collector to clear its active_positions cache."""
+    import pathlib
+    pathlib.Path("/tmp/reset_positions").touch()
+    logger.info("reset_positions flag set — tick_collector will clear active_positions on next order update")
+    return {"status": "ok"}
