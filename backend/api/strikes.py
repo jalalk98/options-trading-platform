@@ -446,6 +446,57 @@ async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: s
     return data
 
 
+def _compute_gap_fills(history, gaps):
+    """Mark each gap is_filled=True if any later candle's high/low crosses the prev_price level.
+    Runs server-side in Python so the browser's main thread is never blocked by this O(N*G) work."""
+    for g in gaps:
+        g["is_filled"] = False
+    for candle in history:
+        bucket, _o, high, low, _c = candle
+        for g in gaps:
+            if g["is_filled"]:
+                continue
+            if bucket <= g["time"]:
+                continue
+            if g["direction"] == "UP" and low <= g["prev_price"]:
+                g["is_filled"] = True
+            elif g["direction"] != "UP" and high >= g["prev_price"]:
+                g["is_filled"] = True
+    return gaps
+
+
+_chart_cache = {}   # symbol → {"data": {...}, "ts": float, "ttl": int}
+
+
+@router.get("/chart/{symbol}")
+async def get_chart(symbol: str, request: Request, nocache: bool = False, date: str = None):
+    """Combined history + gaps endpoint with server-side gap-fill computation.
+    Replaces two separate /history and /gaps fetches on every panel load."""
+    pool = request.app.state.pool
+    cache_key = f"CHART:{symbol}:{date}" if date else f"CHART:{symbol}"
+
+    if not nocache:
+        cached = _chart_cache.get(cache_key)
+        if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
+            return Response(content=orjson.dumps(cached["data"]), media_type="application/json")
+
+    async def _fetch_history():
+        async with pool.acquire() as conn:
+            return await _query_history(conn, symbol, date)
+
+    async def _fetch_gaps():
+        async with pool.acquire() as conn:
+            return await _query_gaps(conn, symbol, date)
+
+    history, gaps = await asyncio.gather(_fetch_history(), _fetch_gaps())
+    _compute_gap_fills(history, gaps)
+
+    data = {"history": history, "gaps": gaps}
+    ttl = 3600 if date else 300 + random.randint(0, 60)
+    _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl}
+    return Response(content=orjson.dumps(data), media_type="application/json")
+
+
 _hist_symbols_cache: dict = {}  # date_str → list of {symbol, display}
 
 @router.get("/hist-symbols")
@@ -513,6 +564,7 @@ async def get_batch(body: BatchRequest, request: Request):
                 return symbol, None, None
         if history is None:
             return symbol, None, None
+        _compute_gap_fills(history, gaps)
         ttl = 300 + random.randint(0, 60)
         _history_cache[symbol] = {"data": history, "ts": time.monotonic(), "ttl": ttl}
         _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic(), "ttl": ttl}

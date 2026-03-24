@@ -1687,9 +1687,10 @@ function createPanel(id) {
             if (nocache) params.set('nocache', 'true');
             if (histDate) params.set('date', histDate);
             const qs = params.toString() ? '?' + params.toString() : '';
-            const [histRes, gapRes] = await Promise.all([fetch(`/api/history/${sym}${qs}`), fetch(`/api/gaps/${sym}${qs}`)]);
-            history  = await histRes.json();
-            gapsRaw  = await gapRes.json();
+            const res = await fetch(`/api/chart/${sym}${qs}`);
+            const payload = await res.json();
+            history  = payload.history;
+            gapsRaw  = payload.gaps;
         }
         const candles = history.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
         lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
@@ -1700,20 +1701,16 @@ function createPanel(id) {
         earliestDate     = candles.length
             ? new Date((candles[0].time + 19800) * 1000).toISOString().split('T')[0]
             : new Date().toISOString().split('T')[0];
+        // is_filled is pre-computed server-side — no O(N²) loop needed here
         gapsRaw.forEach(g => {
             const dir = g.direction === 'UP' ? 'D' : 'U';
             gapDetails.set(g.time - 19800, {
                 dir, from: g.prev_price, to: g.curr_price,
                 jump: Math.abs(g.curr_price - g.prev_price).toFixed(2),
                 rangeLow: Math.min(g.prev_price, g.curr_price), rangeHigh: Math.max(g.prev_price, g.curr_price),
-                volume: g.vol_change || 0, isFilled: false
+                volume: g.vol_change || 0, isFilled: g.is_filled || false
             });
         });
-        candles.forEach(candle => gapDetails.forEach((gap, gapTime) => {
-            if (!gap.isFilled && candle.time > gapTime &&
-                ((gap.dir === 'D' && candle.low <= gap.from) || (gap.dir === 'U' && candle.high >= gap.from)))
-                gap.isFilled = true;
-        }));
         candleSeries.setData(candles);
         refreshMarkers();
         if (candles.length > 0) {
