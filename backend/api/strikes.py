@@ -448,20 +448,28 @@ async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: s
 
 def _compute_gap_fills(history, gaps):
     """Mark each gap is_filled=True if any later candle's high/low crosses the prev_price level.
-    Runs server-side in Python so the browser's main thread is never blocked by this O(N*G) work."""
+    Runs server-side in Python so the browser's main thread is never blocked by this work.
+    Filled gaps are removed from the working set so they are never re-checked — O(N × unfilled_G)
+    instead of O(N × G), which matters a lot by mid-day when most gaps are already filled."""
     for g in gaps:
         g["is_filled"] = False
+    unfilled = list(gaps)
     for candle in history:
+        if not unfilled:
+            break  # all gaps filled — no point scanning remaining candles
         bucket, _o, high, low, _c = candle
-        for g in gaps:
-            if g["is_filled"]:
-                continue
+        still_unfilled = []
+        for g in unfilled:
             if bucket <= g["time"]:
+                still_unfilled.append(g)
                 continue
             if g["direction"] == "UP" and low <= g["prev_price"]:
                 g["is_filled"] = True
             elif g["direction"] != "UP" and high >= g["prev_price"]:
                 g["is_filled"] = True
+            else:
+                still_unfilled.append(g)
+        unfilled = still_unfilled
     return gaps
 
 

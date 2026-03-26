@@ -18,6 +18,13 @@ if [ -n "$HOLIDAY_NAME" ]; then
     exit 0
 fi
 
+# Skip if current time is at or past market close (15:30)
+CURRENT_TIME=$(date +%H%M)
+if [ "$CURRENT_TIME" -ge "1530" ]; then
+    echo "$(date): Past market close (15:30) — not restarting tick_collector."
+    exit 0
+fi
+
 # Check if tick-collector service is active
 if systemctl is-active --quiet "$SERVICE"; then
     exit 0

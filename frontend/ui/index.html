@@ -2146,18 +2146,7 @@ function updateLayout() {
 
 window.addEventListener('resize', updateLayout);
 
-// Auto-refresh stale panels when tab becomes visible again
-document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
-    const nowSec = Math.floor(Date.now() / 1000) - 19800;  // IST epoch
-    panels.forEach(p => {
-        if (!p.symbol) return;
-        const last = p.lastCandleTime;
-        if (last && (nowSec - last) > 10) {
-            p.loadSymbol(p.symbol, null, true);
-        }
-    });
-});
+// Tab visibility — no chart reload on switch; WebSocket reconnects and catches up automatically.
 
 /* ======================
    GO TO LATEST BUTTON
@@ -2358,10 +2347,10 @@ async function autoPopulatePanels(mode) {
         }
 
         const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
-        // Load each panel independently in parallel — renders progressively as data arrives
+        // Stagger panel loads 30ms apart — prevents thundering herd on DB pool
         await Promise.all(panelSymbols.map((sym, i) => {
             if (!sym) return Promise.resolve();
-            return panels[i].loadSymbol(sym, null, true);
+            return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, true));
         }));
         hideLoadingBar();
         saveViewState();
@@ -2389,10 +2378,10 @@ async function autoPopulatePanels(mode) {
         panelSymbols = [...g1Symbols, ...g2Symbols];
     }
 
-    // Load each panel independently in parallel — renders progressively as data arrives
+    // Stagger panel loads 30ms apart — prevents thundering herd on DB pool
     await Promise.all(panelSymbols.map((sym, i) => {
         if (!sym) return Promise.resolve();
-        return panels[i].loadSymbol(sym, null, true);
+        return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, true));
     }));
     hideLoadingBar();
     saveViewState();

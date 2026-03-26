@@ -13,6 +13,27 @@ from backend.services.gap_processor import process_tick
 from backend.state import app_config
 
 
+def _is_market_hours() -> bool:
+    """Return True if current IST time is within trading hours (Mon–Fri, 09:15–15:30) and not a holiday."""
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST)
+    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    hhmm = now.hour * 100 + now.minute
+    if hhmm < 915 or hhmm >= 1530:
+        return False
+    today = now.strftime("%Y-%m-%d")
+    holidays_path = Path.home() / ".trading_holidays"
+    try:
+        for line in holidays_path.read_text().splitlines():
+            if line.startswith(today):
+                return False
+    except Exception:
+        pass
+    return True
+
+
 def _send_telegram(text: str) -> None:
     """Send a Telegram message using credentials from ~/.kite_secrets."""
     secrets_path = Path.home() / ".kite_secrets"
@@ -372,7 +393,8 @@ def setup_websocket_events():
             logging.info(f"Reconnection successful after {attempts} attempt(s){down_for}.")
             _feed_dropped["sent"] = False
             _feed_dropped["at"] = None
-            _send_telegram(f"🟢 WebSocket feed restored after {attempts} attempt(s){down_for}. Feed is live.")
+            if _is_market_hours():
+                _send_telegram(f"🟢 WebSocket feed restored after {attempts} attempt(s){down_for}. Feed is live.")
     
     async def on_close(ws, code, reason):
         global websocket_running
@@ -381,7 +403,7 @@ def setup_websocket_events():
         """
         logger.warning(f"WebSocket closed: {code} - {reason}")
         websocket_running["running"] = False
-        if not _feed_dropped["sent"]:
+        if not _feed_dropped["sent"] and _is_market_hours():
             import time
             _feed_dropped["sent"] = True
             _feed_dropped["at"] = time.time()
@@ -407,7 +429,8 @@ def setup_websocket_events():
 
     def on_noreconnect(ws):
         logger.error("WebSocket reconnect FAILED — all retry attempts exhausted. Feed is dead.")
-        _send_telegram("🔴 WebSocket feed DEAD — all reconnect attempts exhausted. Restart trading session manually.")
+        if _is_market_hours():
+            _send_telegram("🔴 WebSocket feed DEAD — all reconnect attempts exhausted. Restart trading session manually.")
 
         
     # Attach handlers to the WebSocket instance
