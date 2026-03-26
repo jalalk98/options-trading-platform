@@ -21,13 +21,10 @@ fi
 
 echo "Stopping trading session..."
 
-tmux kill-session -t trading
+sudo systemctl stop tick-collector.service db-writer.service
 
-if [ $? -eq 0 ]; then
-    "$SCRIPT_DIR/notify.sh" "🛑 Trading session stopped successfully at $(date '+%H:%M IST')." "$LOG_FILE"
+if systemctl is-active --quiet tick-collector.service || systemctl is-active --quiet db-writer.service; then
+    "$SCRIPT_DIR/notify.sh" "⚠️ Trading session stop — one or more services still running." "$LOG_FILE"
 else
-    "$SCRIPT_DIR/notify.sh" "⚠️ Trading session stop — tmux session was not running." "$LOG_FILE"
+    "$SCRIPT_DIR/notify.sh" "🛑 Trading session stopped successfully at $(date '+%H:%M IST')." "$LOG_FILE"
 fi
-
-# Clean up PID file
-rm -f "$HOME/.tick_collector.pid"

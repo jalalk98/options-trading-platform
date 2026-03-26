@@ -252,6 +252,19 @@
         #lotsDisplay { font-size: 10px; color: #64748b; margin-bottom: 3px; }
         #qtyClose { margin-top: 5px; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 12px; cursor: pointer; font-size: 10px; }
         #qtyClose:hover { background: #1e293b; }
+        .dq-divider { border: none; border-top: 1px solid #334155; margin: 7px 0; }
+        .dq-section { font-size: 10px; color: #94a3b8; text-align: left; margin-bottom: 4px; }
+        .dq-row { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+        .dq-label { font-size: 10px; width: 36px; text-align: left; font-weight: bold; }
+        .dq-label.buy  { color: #22c55e; }
+        .dq-label.sell { color: #ef4444; }
+        .dq-input { width: 70px; background: #0f172a; border: 1px solid #475569; color: #f1f5f9; border-radius: 4px; padding: 3px 4px; font-size: 12px; font-weight: bold; text-align: center; appearance: textfield; -moz-appearance: textfield; }
+        .dq-input::-webkit-inner-spin-button, .dq-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+        .dq-input:focus { outline: none; border-color: #06b6d4; }
+        .dq-input.active { border-color: #fbbf24; color: #fbbf24; }
+        .dq-clear { background: #374151; color: #9ca3af; border: none; border-radius: 3px; padding: 2px 6px; font-size: 10px; cursor: pointer; }
+        .dq-clear:hover { background: #475569; }
+        .ob-qty.dq-active { color: #fbbf24 !important; font-weight: bold; }
 
         /* ── SL config popup ── */
         #slConfigPopup {
@@ -1027,6 +1040,18 @@
         <input id="qtyDisplay" type="number" min="1" value="65">
         <button class="qty-btn" id="btnPlus">+</button>
     </div>
+    <hr class="dq-divider">
+    <div class="dq-section">Default Qty Override</div>
+    <div class="dq-row">
+        <span class="dq-label buy">BUY</span>
+        <input id="dqBuyInput" class="dq-input" type="number" min="1" step="1" placeholder="e.g. 30000">
+        <button class="dq-clear" id="dqBuyClear">✕</button>
+    </div>
+    <div class="dq-row">
+        <span class="dq-label sell">SELL</span>
+        <input id="dqSellInput" class="dq-input" type="number" min="1" step="1" placeholder="e.g. 30000">
+        <button class="dq-clear" id="dqSellClear">✕</button>
+    </div>
     <button id="qtyClose" onclick="toggleQtyPopup()">Done</button>
 </div>
 
@@ -1101,6 +1126,8 @@ const ICON_RESTORE = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none
 let currentLTP   = null;
 let orderLots    = 1;
 let orderLotSize = 65;
+let defaultBuyQty  = null;   // null = use orderLots * lotSize; number = fixed qty for BUY
+let defaultSellQty = null;   // null = use orderLots * lotSize; number = fixed qty for SELL
 let orderType      = 'L';
 let limitBuffer    = 0.20;
 let limitDefaultSL = 10;
@@ -2427,6 +2454,29 @@ function updateSLBadge() {
                 body: JSON.stringify({ symbol: panelSym, trigger_buffer: buffer }),
             }).catch(() => {});
         }
+        // If the current panel has an active placed SL order, modify it on the exchange
+        try {
+            const slRes = await fetch(`/api/sl/${sym}`).then(r => r.json());
+            const orderIds = slRes.order_ids || (slRes.order_id ? [slRes.order_id] : []);
+            if (slRes.state === 'placed' && orderIds.length > 0 && slRes.price != null) {
+                const slPrice = slRes.price;
+                const side    = slRes.side;  // BUY (short position) or SELL (long position)
+                // BUY SL (short position): trigger above sl_price; SELL SL (long): trigger below
+                const newTrigger = side === 'BUY'
+                    ? Math.round((slPrice + buffer) * 20) / 20
+                    : Math.round((slPrice - buffer) * 20) / 20;
+                const newLimit = side === 'BUY'
+                    ? Math.round((newTrigger + 0.20) * 20) / 20
+                    : Math.round((newTrigger - 0.20) * 20) / 20;
+                for (const oid of orderIds) {
+                    fetch('/api/modify-sl-order', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ order_id: oid, trigger: newTrigger, limit: newLimit }),
+                    }).catch(() => {});
+                }
+            }
+        } catch (_) {}
     });
 
     document.getElementById('slCmBuffer').addEventListener('keydown', e => {
@@ -2463,12 +2513,18 @@ function setOrderType(type) {
 }
 function updateOrderBar(ltp) {
     if (ltp != null) currentLTP = ltp;
-    const p   = currentLTP != null ? currentLTP.toFixed(2) : '—';
-    const qty = orderLots * orderLotSize;
+    const p      = currentLTP != null ? currentLTP.toFixed(2) : '—';
+    const qty    = orderLots * orderLotSize;
+    const buyQty  = defaultBuyQty  != null ? defaultBuyQty  : qty;
+    const sellQty = defaultSellQty != null ? defaultSellQty : qty;
     document.getElementById('buyPrice').textContent  = p;
     document.getElementById('sellPrice').textContent = p;
-    document.getElementById('buyQty').textContent    = `${qty} qty`;
-    document.getElementById('sellQty').textContent   = `${qty} qty`;
+    const buyQtyEl  = document.getElementById('buyQty');
+    const sellQtyEl = document.getElementById('sellQty');
+    buyQtyEl.textContent  = `${buyQty} qty`;
+    sellQtyEl.textContent = `${sellQty} qty`;
+    buyQtyEl.classList.toggle('dq-active',  defaultBuyQty  != null);
+    sellQtyEl.classList.toggle('dq-active', defaultSellQty != null);
     document.getElementById('calcQtyDisplay').textContent  = qty;
     document.getElementById('calcLotsDisplay').textContent = `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
     const inp = document.getElementById('qtyDisplay');
@@ -2543,7 +2599,9 @@ async function placeOrder(side) {
     if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
     let price = parseFloat(currentLTP.toFixed(2));
     if (orderType === 'L') price = parseFloat((price + (side === 'BUY' ? limitBuffer : -limitBuffer)).toFixed(2));
-    const qty   = orderLots * orderLotSize;
+    const qty = side === 'BUY'
+        ? (defaultBuyQty  != null ? defaultBuyQty  : orderLots * orderLotSize)
+        : (defaultSellQty != null ? defaultSellQty : orderLots * orderLotSize);
     const label = `${side} ${qty} ${sym} @ ${price} [${orderType}]`;
     toast(`⏳ Placing ${label}…`, 'info', 2000);
     const res = await fetch('/api/place-limit-order', {
@@ -2691,9 +2749,42 @@ function toggleQtyPopup(e) {
     p.style.left = rect.left + 'px';
     p.style.top  = (rect.bottom + 6) + 'px';
     p.style.display = 'block';
+    // Sync default qty inputs with current values
+    const buyInp  = document.getElementById('dqBuyInput');
+    const sellInp = document.getElementById('dqSellInput');
+    buyInp.value  = defaultBuyQty  != null ? defaultBuyQty  : '';
+    sellInp.value = defaultSellQty != null ? defaultSellQty : '';
+    buyInp.classList.toggle('active',  defaultBuyQty  != null);
+    sellInp.classList.toggle('active', defaultSellQty != null);
     const inp = document.getElementById('qtyDisplay');
     inp.focus(); inp.select();
 }
+
+// Default qty inputs — save on change, clear on ✕
+document.getElementById('dqBuyInput').addEventListener('change', function() {
+    const v = parseInt(this.value, 10);
+    defaultBuyQty = (!isNaN(v) && v > 0) ? v : null;
+    this.classList.toggle('active', defaultBuyQty != null);
+    updateOrderBar(null);
+});
+document.getElementById('dqSellInput').addEventListener('change', function() {
+    const v = parseInt(this.value, 10);
+    defaultSellQty = (!isNaN(v) && v > 0) ? v : null;
+    this.classList.toggle('active', defaultSellQty != null);
+    updateOrderBar(null);
+});
+document.getElementById('dqBuyClear').addEventListener('click', function() {
+    defaultBuyQty = null;
+    document.getElementById('dqBuyInput').value = '';
+    document.getElementById('dqBuyInput').classList.remove('active');
+    updateOrderBar(null);
+});
+document.getElementById('dqSellClear').addEventListener('click', function() {
+    defaultSellQty = null;
+    document.getElementById('dqSellInput').value = '';
+    document.getElementById('dqSellInput').classList.remove('active');
+    updateOrderBar(null);
+});
 function adjustLots(delta) {
     orderLots = Math.max(1, orderLots + delta);
     if (activePanel) activePanel.panelLots = orderLots;
@@ -3226,6 +3317,7 @@ function saveViewState() {
         }));
     }
 })();
+
 </script>
 
 </body>

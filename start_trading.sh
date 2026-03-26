@@ -1,9 +1,7 @@
 #!/bin/bash
 
-SESSION="trading"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$HOME/trading_start.txt"
-PID_FILE="$HOME/.tick_collector.pid"
 LOCK_FILE="$HOME/.start_trading.lock"
 
 # Holiday check — manual flag
@@ -22,35 +20,12 @@ if [ -n "$HOLIDAY_NAME" ]; then
     exit 0
 fi
 
-# Prevent two simultaneous runs of this script (race condition guard)
+# Prevent two simultaneous runs of this script
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     echo "start_trading.sh already running — exiting."
     exit 0
 fi
-
-# Check if tick_collector is already running via PID file
-if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if kill -0 "$OLD_PID" 2>/dev/null && ps -p "$OLD_PID" -o comm= 2>/dev/null | grep -q "python"; then
-        "$SCRIPT_DIR/notify.sh" "⚠️ tick_collector already running (PID $OLD_PID) — start skipped to prevent duplicate subscriptions."
-        echo "tick_collector already running (PID $OLD_PID) — aborting."
-        exit 0
-    else
-        echo "Stale PID file found (PID $OLD_PID not running) — cleaning up."
-        rm -f "$PID_FILE"
-    fi
-fi
-
-# Also catch orphan processes not tracked by PID file
-ORPHAN_PID=$(pgrep -f "tick_collector" | head -1)
-if [ -n "$ORPHAN_PID" ]; then
-    echo "Orphan tick_collector found (PID $ORPHAN_PID) — killing before restart."
-    kill "$ORPHAN_PID" 2>/dev/null
-    sleep 2
-fi
-
-tmux kill-session -t $SESSION 2>/dev/null
 
 echo "Clearing old Redis ticks..."
 redis-cli DEL ticks_stream
@@ -58,35 +33,24 @@ redis-cli DEL ticks_stream
 echo "Current Redis stream size:"
 redis-cli XLEN ticks_stream
 
-tmux new-session -d -s $SESSION -n db_writer
-
-tmux send-keys -t $SESSION:0 "cd ~/projects/options-trading-platform && ~/projects/options-trading-platform/venv/bin/python -m backend.processors.db_writer_runner" C-m
-
+# Restart both services cleanly
+sudo systemctl restart db-writer.service
 sleep 2
-
-tmux new-window -t $SESSION -n tick_collector
-
-tmux send-keys -t $SESSION:1 "cd ~/projects/options-trading-platform && ~/projects/options-trading-platform/venv/bin/python -m backend.processors.tick_collector" C-m
-
-# Wait for processes to settle then check tmux windows
+sudo systemctl restart tick-collector.service
 sleep 5
 
-WINDOWS=$(tmux list-windows -t $SESSION 2>/dev/null | wc -l)
+# Verify both services are running
+DB_OK=$(systemctl is-active --quiet db-writer.service && echo "yes" || echo "no")
+TC_OK=$(systemctl is-active --quiet tick-collector.service && echo "yes" || echo "no")
+TC_PID=$(systemctl show -p MainPID --value tick-collector.service 2>/dev/null)
 
-if [ "$WINDOWS" -ne 2 ]; then
-    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — only $WINDOWS/2 tmux windows are running." "$LOG_FILE"
-    echo "Trading session start may have failed."
+if [ "$DB_OK" != "yes" ] || [ "$TC_OK" != "yes" ]; then
+    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — db_writer: $DB_OK, tick_collector: $TC_OK." "$LOG_FILE"
+    echo "Trading session start failed."
     exit 1
 fi
 
-# Write tick_collector PID to file for watchdog and duplicate-run detection
-TC_PID=$(pgrep -f "tick_collector" | head -1)
-if [ -n "$TC_PID" ]; then
-    echo "$TC_PID" > "$PID_FILE"
-    echo "tick_collector started with PID $TC_PID"
-fi
-
-# Verify Kite token is valid by calling the profile endpoint
+# Verify Kite token is valid
 ENV_FILE="$SCRIPT_DIR/.env"
 API_KEY=$(grep '^KITE_API_KEY'      "$ENV_FILE" | cut -d'=' -f2- | tr -d "' ")
 TOKEN=$(grep   '^KITE_ACCESS_TOKEN' "$ENV_FILE" | cut -d'=' -f2- | tr -d "' ")
