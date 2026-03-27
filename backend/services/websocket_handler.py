@@ -351,8 +351,8 @@ def setup_websocket_events():
                     exchange=exchange,
                     trade_symbol=trade_symbol,
                     qty=qty,
-                    price=round_to_tick(stop_loss_price + 5),
-                    trig_price=round_to_tick(trigger_price + 5),
+                    price=stop_loss_price,  # limit: at SL line price
+                    trig_price=trigger_price,  # trigger: SL line - buffer
                     api_key=KITE_API_KEY,
                     access_token=KITE_ACCESS_TOKEN
                 )
