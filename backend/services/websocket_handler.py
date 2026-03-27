@@ -154,10 +154,23 @@ def setup_websocket_events():
             if data.get("status") != "COMPLETE":
                 return {"status": "ignored"}
 
-            # Detect SL order completion → mark state as 'hit', then clear after 3s
+            # Detect SL order completion → update position tracker + mark state as 'hit'
             if data.get("order_type") == "SL":
                 if data.get("status") == "COMPLETE":
                     sym = data.get("tradingsymbol")
+                    tx  = data.get("transaction_type")
+                    qty = int(data.get("quantity", 0))
+                    # Update active_positions so subsequent manual orders see the correct
+                    # position. Without this, a manual BUY placed at the same time as an
+                    # SL BUY would see stale active_positions and be mis-classified as
+                    # "closing a short" instead of opening a new long.
+                    if sym and tx and qty:
+                        current = active_positions.get(sym, 0)
+                        if tx == "BUY":
+                            active_positions[sym] = current + qty
+                        elif tx == "SELL":
+                            active_positions[sym] = current - qty
+                        logger.info(f"SL order filled for {sym} ({tx} {qty}) — active_positions updated: {current} → {active_positions[sym]}")
                     if sym:
                         logger.info(f"SL hit for {sym} — posting 'hit' to chart_server")
                         def _hit_then_clear(s=sym):
