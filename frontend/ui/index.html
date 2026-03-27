@@ -1102,6 +1102,7 @@ const LAYOUT_CONFIGS = {
 
 let strikeMap    = {};
 let panels       = [];
+const symbolLinesStore = {}; // symbol → [{price, colorIdx}] — global, persists across refresh via localStorage
 let activePanel  = null;
 let activeLayout = '1';
 let isMaximized  = false;
@@ -1291,7 +1292,7 @@ function createPanel(id) {
     // ── User horizontal lines ─────────────────────
     const HLINE_COLORS = ['#22c55e', '#ef4444']; // green, red
     let userLines = []; // [{id, price, colorIdx, priceLine}]
-    const symbolLinesStore = {}; // symbol → [{price, colorIdx}] persists across symbol switches
+    // symbolLinesStore is global — declared outside createPanel
     let _hlinePopupTarget = null;
 
     // Floating action popup (color toggle + delete)
@@ -3267,10 +3268,13 @@ setInterval(() => {
 ====================== */
 function saveViewState() {
     try {
+        // Flush any unsaved lines from active panels into symbolLinesStore before saving
+        panels.forEach(p => { if (p.symbol) symbolLinesStore[p.symbol] = p.getUserLines(); });
         localStorage.setItem('otpViewState', JSON.stringify({
             layout: activeLayout,
             autoPopulate: document.getElementById('autoPopulateSelect').value,
-            symbols: panels.map(p => p.symbol || null)
+            symbols: panels.map(p => p.symbol || null),
+            lines: symbolLinesStore,
         }));
     } catch (e) {}
 }
@@ -3281,6 +3285,9 @@ function saveViewState() {
 (async function init() {
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem('otpViewState')); } catch (e) {}
+
+    // Restore horizontal lines before panels load so loadSymbol finds them immediately
+    if (saved && saved.lines) Object.assign(symbolLinesStore, saved.lines);
 
     const layoutKey = saved && saved.layout ? saved.layout : '1';
     selectLayout(document.querySelector(`.lp-option[data-layout="${layoutKey}"]`));
