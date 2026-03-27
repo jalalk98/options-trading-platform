@@ -1808,6 +1808,7 @@ function createPanel(id) {
     const panel = {
         id, el: panelEl,
         get symbol()          { return symbol; },
+        get historyLoaded()   { return historyLoaded; },
         get lastCandleTime()  { return lastCandleTime; },
         get crosshairPrice()  { return crosshairPrice; },
         get slPrice()           { return slPrice; },
@@ -3268,8 +3269,9 @@ setInterval(() => {
 ====================== */
 function saveViewState() {
     try {
-        // Flush any unsaved lines from active panels into symbolLinesStore before saving
-        panels.forEach(p => { if (p.symbol) symbolLinesStore[p.symbol] = p.getUserLines(); });
+        // Flush lines only from panels that have finished loading — panels mid-load have
+        // empty userLines and would overwrite valid saved lines in symbolLinesStore
+        panels.forEach(p => { if (p.symbol && p.historyLoaded) symbolLinesStore[p.symbol] = p.getUserLines(); });
         localStorage.setItem('otpViewState', JSON.stringify({
             layout: activeLayout,
             autoPopulate: document.getElementById('autoPopulateSelect').value,
