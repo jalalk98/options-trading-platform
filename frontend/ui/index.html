@@ -1255,35 +1255,27 @@ function createPanel(id) {
             if (dow === 0 || dow === 6) { attempts++; continue; }
             const dateStr = prevDate.toISOString().split('T')[0];
             try {
-                const [histRes, gapRes] = await Promise.all([
-                    fetch(`/api/history/${symbol}?date=${dateStr}`),
-                    fetch(`/api/gaps/${symbol}?date=${dateStr}`)
-                ]);
-                const histData = await histRes.json();
-                const gapData  = await gapRes.json();
-                prevCandles = histData.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
-                prevGapsRaw = gapData;
+                const res     = await fetch(`/api/chart/${symbol}?date=${dateStr}`);
+                const payload = await res.json();
+                prevCandles = payload.history.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
+                prevGapsRaw = payload.gaps;
                 if (prevCandles.length > 0) foundDate = dateStr;
             } catch (_) {}
             attempts++;
         }
         if (prevCandles.length === 0) { noMoreHistory = true; isLoadingHistory = false; return; }
         earliestDate = foundDate;
+        // is_filled pre-computed server-side — no O(N×G) loop needed
         prevGapsRaw.forEach(g => {
             const dir = g.direction === 'UP' ? 'D' : 'U';
             gapDetails.set(g.time - 19800, {
                 dir, from: g.prev_price, to: g.curr_price,
                 jump: Math.abs(g.curr_price - g.prev_price).toFixed(2),
                 rangeLow: Math.min(g.prev_price, g.curr_price), rangeHigh: Math.max(g.prev_price, g.curr_price),
-                volume: g.vol_change || 0, isFilled: false
+                volume: g.vol_change || 0, isFilled: g.is_filled || false
             });
         });
         allCandles = [...prevCandles, ...allCandles];
-        allCandles.forEach(candle => gapDetails.forEach((gap, gapTime) => {
-            if (!gap.isFilled && candle.time > gapTime &&
-                ((gap.dir === 'D' && candle.low <= gap.from) || (gap.dir === 'U' && candle.high >= gap.from)))
-                gap.isFilled = true;
-        }));
         const range = chart.timeScale().getVisibleLogicalRange();
         candleSeries.setData(allCandles);
         refreshMarkers();
@@ -1481,12 +1473,14 @@ function createPanel(id) {
     }
 
     function refreshMarkers() {
-        candleSeries.setMarkers(Array.from(gapDetails.entries()).map(([time, info]) => ({
+        const markers = Array.from(gapDetails.entries()).map(([time, info]) => ({
             time,
             position: info.dir === 'D' ? 'aboveBar' : 'belowBar',
             color: info.isFilled ? (info.dir === 'D' ? 'rgba(0,128,0,0.3)' : 'rgba(255,0,0,0.3)') : (info.dir === 'D' ? 'green' : 'red'),
             shape: 'text', text: info.dir
-        })));
+        }));
+        markers.sort((a, b) => a.time - b.time);
+        candleSeries.setMarkers(markers);
     }
 
     function checkGapFill(candle) {
