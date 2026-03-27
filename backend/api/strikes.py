@@ -281,73 +281,193 @@ async def resolve_symbol(display: str, request: Request):
 _IST = timezone(timedelta(hours=5, minutes=30))
 _history_cache = {}   # symbol → {"day": date, "data": [...]}
 
+# ── Fast-table flag ────────────────────────────────────────────────────────
+# Set False to revert to scanning gap_ticks (old behaviour, zero risk).
+_USE_FAST_TABLES = True
 
-async def _query_history(conn, symbol: str, date: str = None):
-    # Single query: compute IST day bounds inside SQL, then aggregate OHLC.
-    # Uses idx_gap_ticks_history_cover (symbol, timestamp) INCLUDE (curr_price).
-    # When date (YYYY-MM-DD) is provided, fetch that specific IST day.
+
+_HIST_Q = """
+    WITH ticks AS (
+        SELECT
+            FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+            g.curr_price,
+            g.timestamp
+        FROM gap_ticks g
+        WHERE g.symbol = $1
+          AND g.timestamp >= $2::date + TIME '09:15:00'
+          AND g.timestamp <= $2::date + TIME '16:00:00'
+    )
+    SELECT
+        bucket,
+        (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
+        MAX(curr_price)                                     AS high,
+        MIN(curr_price)                                     AS low,
+        (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
+    FROM ticks
+    GROUP BY bucket
+    ORDER BY bucket ASC
+"""
+
+_HIST_INCR_Q = """
+    WITH ticks AS (
+        SELECT
+            FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
+            g.curr_price,
+            g.timestamp
+        FROM gap_ticks g
+        WHERE g.symbol = $1
+          AND g.timestamp >= TO_TIMESTAMP($2) - INTERVAL '10 seconds'
+          AND g.timestamp >= $3::date + TIME '09:15:00'
+          AND g.timestamp <= $3::date + TIME '16:00:00'
+    )
+    SELECT
+        bucket,
+        (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
+        MAX(curr_price)                                     AS high,
+        MIN(curr_price)                                     AS low,
+        (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
+    FROM ticks
+    GROUP BY bucket
+    ORDER BY bucket ASC
+"""
+
+
+def _rows_to_candles(rows):
+    return [
+        [int(r["bucket"]), float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])]
+        for r in rows
+    ]
+
+
+# ── Fast queries (candles_5s / gap_events) ────────────────────────────────
+
+_CANDLES_Q = """
+    SELECT bucket, open, high, low, close
+    FROM candles_5s
+    WHERE symbol = $1
+      AND bucket >= EXTRACT(EPOCH FROM $2::date + TIME '09:15:00')::BIGINT
+      AND bucket <= EXTRACT(EPOCH FROM $2::date + TIME '16:00:00')::BIGINT
+    ORDER BY bucket ASC
+"""
+
+_CANDLES_INCR_Q = """
+    SELECT bucket, open, high, low, close
+    FROM candles_5s
+    WHERE symbol = $1
+      AND bucket >= $2 - 10
+      AND bucket >= EXTRACT(EPOCH FROM $3::date + TIME '09:15:00')::BIGINT
+      AND bucket <= EXTRACT(EPOCH FROM $3::date + TIME '16:00:00')::BIGINT
+    ORDER BY bucket ASC
+"""
+
+_GAP_EVENTS_Q = """
+    SELECT bucket, direction, prev_price, curr_price, vol_change
+    FROM gap_events
+    WHERE symbol = $1
+      AND bucket >= EXTRACT(EPOCH FROM $2::date + TIME '09:15:00')::BIGINT
+      AND bucket <= EXTRACT(EPOCH FROM $2::date + TIME '16:00:00')::BIGINT
+    ORDER BY bucket ASC
+"""
+
+
+def _rows_to_candles_fast(rows):
+    return [
+        [int(r["bucket"]), float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])]
+        for r in rows
+    ]
+
+
+async def _query_history_fast(conn, symbol: str, date: str = None, since_bucket: int = None):
+    """Read OHLC from candles_5s — scans ~375 rows vs ~30k in gap_ticks."""
     if date:
-        date_obj = PyDate.fromisoformat(date)
-        rows = await conn.fetch("""
-            WITH ticks AS (
-                SELECT
-                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                    g.curr_price,
-                    g.timestamp
-                FROM gap_ticks g
-                WHERE g.symbol = $1
-                  AND g.timestamp >= $2::date + TIME '09:15:00'
-                  AND g.timestamp <= $2::date + TIME '16:00:00'
-            )
-            SELECT
-                bucket,
-                (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
-                MAX(curr_price)                                     AS high,
-                MIN(curr_price)                                     AS low,
-                (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
-            FROM ticks
-            GROUP BY bucket
-            ORDER BY bucket ASC
-        """, symbol, date_obj)
-    else:
-        _HIST_Q = """
-            WITH ticks AS (
-                SELECT
-                    FLOOR(EXTRACT(EPOCH FROM g.timestamp)/5)*5 AS bucket,
-                    g.curr_price,
-                    g.timestamp
-                FROM gap_ticks g
-                WHERE g.symbol = $1
-                  AND g.timestamp >= $2::date + TIME '09:15:00'
-                  AND g.timestamp <= $2::date + TIME '16:00:00'
-            )
-            SELECT
-                bucket,
-                (ARRAY_AGG(curr_price ORDER BY timestamp))[1]      AS open,
-                MAX(curr_price)                                     AS high,
-                MIN(curr_price)                                     AS low,
-                (ARRAY_AGG(curr_price ORDER BY timestamp DESC))[1]  AS close
-            FROM ticks
-            GROUP BY bucket
+        rows = await conn.fetch(_CANDLES_Q, symbol, PyDate.fromisoformat(date))
+        return _rows_to_candles_fast(rows)
+
+    today = PyDate.today()
+    if since_bucket:
+        rows = await conn.fetch(_CANDLES_INCR_Q, symbol, since_bucket, today)
+        return _rows_to_candles_fast(rows)
+
+    rows = await conn.fetch(_CANDLES_Q, symbol, today)
+    if not rows:
+        last_date = await conn.fetchval(
+            "SELECT DATE(timestamp) FROM gap_ticks WHERE symbol=$1 ORDER BY timestamp DESC LIMIT 1",
+            symbol)
+        if last_date:
+            rows = await conn.fetch(_CANDLES_Q, symbol, last_date)
+    return _rows_to_candles_fast(rows)
+
+
+async def _query_gaps_fast(conn, symbol: str, date: str = None, since_bucket: int = None):
+    """Read gap events from gap_events — scans ~10-30 rows vs ~30k in gap_ticks.
+    SENSEX index uses the old gap_ticks path (non-standard filter, one symbol)."""
+    if symbol == "SENSEX":
+        return None  # caller falls back to original _query_gaps
+
+    def _to_gap_list(rows):
+        return [
+            {
+                "time":       int(r["bucket"]),
+                "direction":  r["direction"],
+                "prev_price": float(r["prev_price"]),
+                "curr_price": float(r["curr_price"]),
+                "vol_change": int(r["vol_change"]) if r["vol_change"] else 0,
+            }
+            for r in rows
+        ]
+
+    if date:
+        rows = await conn.fetch(_GAP_EVENTS_Q, symbol, PyDate.fromisoformat(date))
+        return _to_gap_list(rows)
+
+    today = PyDate.today()
+    if since_bucket:
+        incr_q = """
+            SELECT bucket, direction, prev_price, curr_price, vol_change
+            FROM gap_events
+            WHERE symbol = $1
+              AND bucket >= $2 - 10
+              AND bucket >= EXTRACT(EPOCH FROM $3::date + TIME '09:15:00')::BIGINT
+              AND bucket <= EXTRACT(EPOCH FROM $3::date + TIME '16:00:00')::BIGINT
             ORDER BY bucket ASC
         """
-        today = PyDate.today()
-        rows = await conn.fetch(_HIST_Q, symbol, today)
-        if not rows:
-            # Weekend/holiday/late-start — fall back to last date with any tick data
-            last_date = await conn.fetchval("""
-                SELECT DATE(timestamp) FROM gap_ticks
-                WHERE symbol = $1
-                ORDER BY timestamp DESC LIMIT 1
-            """, symbol)
-            if last_date:
-                rows = await conn.fetch(_HIST_Q, symbol, last_date)
+        rows = await conn.fetch(incr_q, symbol, since_bucket, today)
+        return _to_gap_list(rows)
 
-    # Compact array format [time, open, high, low, close] — 54% smaller than dict format
-    return [
-        [int(row["bucket"]), float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])]
-        for row in rows
-    ]
+    rows = await conn.fetch(_GAP_EVENTS_Q, symbol, today)
+    if not rows:
+        last_date = await conn.fetchval(
+            "SELECT DATE(timestamp) FROM gap_ticks WHERE symbol=$1 ORDER BY timestamp DESC LIMIT 1",
+            symbol)
+        if last_date:
+            rows = await conn.fetch(_GAP_EVENTS_Q, symbol, last_date)
+    return _to_gap_list(rows)
+
+
+async def _query_history(conn, symbol: str, date: str = None, since_bucket: int = None):
+    """Full or incremental OHLC history query.
+    since_bucket: if set, only fetch candles at or after that epoch second (incremental update).
+    """
+    if _USE_FAST_TABLES:
+        return await _query_history_fast(conn, symbol, date, since_bucket)
+
+    if date:
+        rows = await conn.fetch(_HIST_Q, symbol, PyDate.fromisoformat(date))
+        return _rows_to_candles(rows)
+
+    today = PyDate.today()
+    if since_bucket:
+        rows = await conn.fetch(_HIST_INCR_Q, symbol, since_bucket, today)
+        return _rows_to_candles(rows)
+
+    rows = await conn.fetch(_HIST_Q, symbol, today)
+    if not rows:
+        last_date = await conn.fetchval(
+            "SELECT DATE(timestamp) FROM gap_ticks WHERE symbol=$1 ORDER BY timestamp DESC LIMIT 1",
+            symbol)
+        if last_date:
+            rows = await conn.fetch(_HIST_Q, symbol, last_date)
+    return _rows_to_candles(rows)
 
 
 @router.get("/history/{symbol}")
@@ -363,7 +483,7 @@ async def get_history(symbol: str, request: Request, nocache: bool = False, date
     async with pool.acquire() as conn:
         data = await _query_history(conn, symbol, date)
 
-    ttl = 3600 if date else 300 + random.randint(0, 60)  # historical data cached longer
+    ttl = 3600 if date else 600 + random.randint(0, 60)
     _history_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl}
     return data
 
@@ -371,12 +491,21 @@ async def get_history(symbol: str, request: Request, nocache: bool = False, date
 _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 
 
-async def _query_gaps(conn, symbol: str, date: str = None):
+async def _query_gaps(conn, symbol: str, date: str = None, since_bucket: int = None):
+    if _USE_FAST_TABLES:
+        result = await _query_gaps_fast(conn, symbol, date, since_bucket)
+        if result is not None:  # None means SENSEX — fall through to old path
+            return result
+
     # Use SENSEX price-jump filter only for the index itself, not for SENSEX options
     is_sensex = symbol == "SENSEX"
 
-    async def _run_gaps_query(date_obj):
+    async def _run_gaps_query(date_obj, since_epoch=None):
         ts_filter = "g.timestamp >= $2::date + TIME '09:15:00' AND g.timestamp <= $2::date + TIME '16:00:00'"
+        params = [symbol, date_obj]
+        if since_epoch is not None:
+            ts_filter += " AND g.timestamp >= TO_TIMESTAMP($3) - INTERVAL '10 seconds'"
+            params.append(float(since_epoch))
         if is_sensex:
             return await conn.fetch(f"""
                 SELECT DISTINCT ON (bucket)
@@ -389,7 +518,7 @@ async def _query_gaps(conn, symbol: str, date: str = None):
                   AND g.time_diff  = 0.0
                   AND g.spread_pct <= 0.75
                 ORDER BY bucket, g.timestamp ASC
-            """, symbol, date_obj)
+            """, *params)
         else:
             return await conn.fetch(f"""
                 SELECT DISTINCT ON (bucket)
@@ -400,14 +529,14 @@ async def _query_gaps(conn, symbol: str, date: str = None):
                   AND g.is_gap    = true
                   AND {ts_filter}
                 ORDER BY bucket, g.timestamp ASC
-            """, symbol, date_obj)
+            """, *params)
 
     if date:
         rows = await _run_gaps_query(PyDate.fromisoformat(date))
     else:
         today = PyDate.today()
-        rows = await _run_gaps_query(today)
-        if not rows:
+        rows = await _run_gaps_query(today, since_epoch=since_bucket)
+        if not rows and since_bucket is None:
             # Weekend/holiday/late-start — fall back to last date with any tick data
             last_date = await conn.fetchval("""
                 SELECT DATE(timestamp) FROM gap_ticks
@@ -441,7 +570,7 @@ async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: s
     async with pool.acquire() as conn:
         data = await _query_gaps(conn, symbol, date)
 
-    ttl = 3600 if date else 300 + random.randint(0, 60)
+    ttl = 3600 if date else 600 + random.randint(0, 60)
     _gaps_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl}
     return data
 
@@ -479,15 +608,52 @@ _chart_cache = {}   # symbol → {"data": {...}, "ts": float, "ttl": int}
 @router.get("/chart/{symbol}")
 async def get_chart(symbol: str, request: Request, nocache: bool = False, date: str = None):
     """Combined history + gaps endpoint with server-side gap-fill computation.
-    Replaces two separate /history and /gaps fetches on every panel load."""
+    For today's data: uses incremental DB scan when cache is stale (only fetches
+    new candles since last_bucket, merges with cached data) to avoid O(N) full scan."""
     pool = request.app.state.pool
     cache_key = f"CHART:{symbol}:{date}" if date else f"CHART:{symbol}"
 
     if not nocache:
         cached = _chart_cache.get(cache_key)
-        if cached and time.monotonic() - cached["ts"] < cached.get("ttl", 300):
-            return Response(content=orjson.dumps(cached["data"]), media_type="application/json")
+        if cached:
+            age = time.monotonic() - cached["ts"]
+            if age < cached.get("ttl", 600):
+                return Response(content=orjson.dumps(cached["data"]), media_type="application/json")
+            # Stale today-cache with a known last_bucket → incremental update
+            if not date and cached.get("last_bucket"):
+                last_bucket = cached["last_bucket"]
 
+                async def _fetch_incr_history():
+                    async with pool.acquire() as conn:
+                        return await _query_history(conn, symbol, since_bucket=last_bucket)
+
+                async def _fetch_incr_gaps():
+                    async with pool.acquire() as conn:
+                        return await _query_gaps(conn, symbol, since_bucket=last_bucket)
+
+                new_history, new_gaps = await asyncio.gather(_fetch_incr_history(), _fetch_incr_gaps())
+
+                # Merge candles: new candles overwrite cached ones (last_bucket candle may have grown)
+                hist_dict = {c[0]: c for c in cached["data"]["history"]}
+                for c in new_history:
+                    hist_dict[c[0]] = c
+                merged_history = sorted(hist_dict.values(), key=lambda c: c[0])
+
+                # Merge gaps: new gaps overwrite cached ones (fill status can change)
+                gaps_dict = {g["time"]: g for g in cached["data"]["gaps"]}
+                for g in new_gaps:
+                    gaps_dict[g["time"]] = g
+                merged_gaps = sorted(gaps_dict.values(), key=lambda g: g["time"])
+
+                _compute_gap_fills(merged_history, merged_gaps)
+
+                data = {"history": merged_history, "gaps": merged_gaps}
+                new_last_bucket = merged_history[-1][0] if merged_history else last_bucket
+                ttl = 600 + random.randint(0, 60)
+                _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl, "last_bucket": new_last_bucket}
+                return Response(content=orjson.dumps(data), media_type="application/json")
+
+    # Full query path: first load, nocache=true, or historical date
     async def _fetch_history():
         async with pool.acquire() as conn:
             return await _query_history(conn, symbol, date)
@@ -500,8 +666,9 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
     _compute_gap_fills(history, gaps)
 
     data = {"history": history, "gaps": gaps}
-    ttl = 3600 if date else 300 + random.randint(0, 60)
-    _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl}
+    last_bucket = history[-1][0] if history else None
+    ttl = 3600 if date else 600 + random.randint(0, 60)
+    _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl, "last_bucket": last_bucket}
     return Response(content=orjson.dumps(data), media_type="application/json")
 
 
@@ -553,7 +720,7 @@ async def get_batch(body: BatchRequest, request: Request):
             h_cached = _history_cache.get(symbol)
             g_cached  = _gaps_cache.get(symbol)
             now = time.monotonic()
-            if (h_cached and now - h_cached["ts"] < h_cached.get("ttl", 300)) and (g_cached and now - g_cached["ts"] < g_cached.get("ttl", 300)):
+            if (h_cached and now - h_cached["ts"] < h_cached.get("ttl", 600)) and (g_cached and now - g_cached["ts"] < g_cached.get("ttl", 600)):
                 return symbol, h_cached["data"], g_cached["data"]
 
         async def do_history():
@@ -573,7 +740,7 @@ async def get_batch(body: BatchRequest, request: Request):
         if history is None:
             return symbol, None, None
         _compute_gap_fills(history, gaps)
-        ttl = 300 + random.randint(0, 60)
+        ttl = 600 + random.randint(0, 60)
         _history_cache[symbol] = {"data": history, "ts": time.monotonic(), "ttl": ttl}
         _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic(), "ttl": ttl}
         return symbol, history, gaps

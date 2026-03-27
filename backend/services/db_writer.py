@@ -6,6 +6,7 @@ import asyncpg
 from backend.core.redis_client import redis_client
 import json
 from backend.api.streaming import manager
+from collections import defaultdict
 from datetime import timezone, timedelta, datetime
 from config.credentials import (
     DB_HOST,
@@ -17,6 +18,71 @@ from config.credentials import (
 
 BATCH_SIZE = 5
 FLUSH_INTERVAL = 0.07  # seconds
+
+# ── Pre-aggregated tables ──────────────────────────────────────────────────
+# candles_5s and gap_events are maintained alongside gap_ticks so that
+# history and gap queries can read from small pre-aggregated tables (~375 rows
+# per symbol per day) instead of scanning all raw ticks (~30k rows).
+# To revert to gap_ticks-only queries, set _USE_FAST_TABLES=False in strikes.py.
+
+_PG_EPOCH = datetime(1970, 1, 1)
+
+def _pg_bucket(ts: datetime) -> int:
+    """Compute the same bucket value PostgreSQL uses:
+    FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 for a timestamp without timezone."""
+    return int((ts.replace(tzinfo=None) - _PG_EPOCH).total_seconds() // 5) * 5
+
+
+def _build_fast_records(buffer):
+    """Build (candle_records, gap_records) from a flush buffer.
+    candle_records: (symbol, bucket, open, high, low, close)
+    gap_records:    (symbol, bucket, direction, prev_price, curr_price, vol_change)
+    """
+    candle_groups = defaultdict(list)
+    gap_map = {}
+
+    for row in buffer:
+        ts = row.get("timestamp")
+        if not isinstance(ts, datetime):
+            continue
+        price = row.get("curr_price")
+        if price is None:
+            continue
+        sym = row["symbol"]
+        bucket = _pg_bucket(ts)
+        candle_groups[(sym, bucket)].append((ts, float(price)))
+        if row.get("is_gap") and (sym, bucket) not in gap_map:
+            gap_map[(sym, bucket)] = (
+                sym, bucket,
+                row.get("direction"),
+                row.get("prev_price"),
+                float(price),
+                int(row.get("vol_change") or 0),
+            )
+
+    candle_records = []
+    for (sym, bucket), ticks in candle_groups.items():
+        ticks.sort(key=lambda x: x[0])
+        prices = [p for _, p in ticks]
+        candle_records.append((sym, bucket, prices[0], max(prices), min(prices), prices[-1]))
+
+    return candle_records, list(gap_map.values())
+
+
+_CANDLE_UPSERT = """
+    INSERT INTO candles_5s (symbol, bucket, open, high, low, close)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (symbol, bucket) DO UPDATE SET
+        high  = GREATEST(candles_5s.high,  EXCLUDED.high),
+        low   = LEAST(candles_5s.low,   EXCLUDED.low),
+        close = EXCLUDED.close
+"""
+
+_GAP_EVENT_INSERT = """
+    INSERT INTO gap_events (symbol, bucket, direction, prev_price, curr_price, vol_change)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT (symbol, bucket) DO NOTHING
+"""
 
 
 async def create_pool():
@@ -187,6 +253,8 @@ async def flush(pool, buffer):
             row["is_gap"]
         ))
 
+    candle_records, gap_records = _build_fast_records(buffer)
+
     async with pool.acquire() as conn:
         await conn.executemany(INSERT_QUERY, records)
         # Keep tracked_symbols up to date for fast strike lookups
@@ -199,5 +267,10 @@ async def flush(pool, buffer):
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (symbol) DO NOTHING
         """, list(unique_symbols))
+        # Maintain pre-aggregated tables for fast chart reads
+        if candle_records:
+            await conn.executemany(_CANDLE_UPSERT, candle_records)
+        if gap_records:
+            await conn.executemany(_GAP_EVENT_INSERT, gap_records)
 
     logger.info(f"Inserted {len(buffer)} rows into DB")

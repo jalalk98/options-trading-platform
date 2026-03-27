@@ -172,7 +172,7 @@
         /* ── Buy / Sell buttons ── */
         #orderBar {
             position: fixed;
-            top: 42px; /* updated dynamically via updateLayout() */
+            top: 42px; /* updated dynamically via updateLayout() unless manually dragged */
             left: 12px;
             z-index: 200;
             display: flex;
@@ -183,6 +183,19 @@
             font-family: Arial, sans-serif;
             user-select: none;
         }
+        #obDragHandle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            background: #0c1320;
+            cursor: grab;
+            flex-shrink: 0;
+            opacity: 0.7;
+            transition: opacity 0.15s;
+        }
+        #obDragHandle:hover  { opacity: 1; }
+        #obDragHandle:active { cursor: grabbing; }
         .ob-btn {
             display: flex;
             flex-direction: column;
@@ -953,6 +966,13 @@
 
 <!-- Buy / Sell order bar -->
 <div id="orderBar">
+    <div id="obDragHandle" title="Drag to reposition">
+        <svg width="8" height="18" viewBox="0 0 8 18" fill="#94a3b8">
+            <circle cx="2" cy="4"  r="1.4"/><circle cx="6" cy="4"  r="1.4"/>
+            <circle cx="2" cy="9"  r="1.4"/><circle cx="6" cy="9"  r="1.4"/>
+            <circle cx="2" cy="14" r="1.4"/><circle cx="6" cy="14" r="1.4"/>
+        </svg>
+    </div>
     <div class="ob-type-group" id="typeGroupLeft">
         <button class="ob-type-btn active" data-type="L"  onclick="setOrderType('L')">L</button>
         <button class="ob-type-btn"        data-type="M"  onclick="setOrderType('M')">M</button>
@@ -1278,13 +1298,21 @@ function createPanel(id) {
         });
         allCandles = [...prevCandles, ...allCandles];
         const range = chart.timeScale().getVisibleLogicalRange();
-        candleSeries.setData(allCandles);
-        refreshMarkers();
-        if (range) {
-            _syncLock = true;
-            try {
+        // Hold sync lock across setData + range adjustment:
+        // setData fires a visibleLogicalRangeChange event, and the subsequent
+        // setVisibleLogicalRange fires another. Without the lock covering both,
+        // each panel's async load completion cascades to all other panels,
+        // causing erratic back-and-forth movement when multiple panels load
+        // history concurrently (all hit range.from<=2 simultaneously in sync mode).
+        _syncLock = true;
+        try {
+            candleSeries.setData(allCandles);
+            refreshMarkers();
+            if (range) {
                 chart.timeScale().setVisibleLogicalRange({ from: range.from + prevCandles.length, to: range.to + prevCandles.length });
-            } finally { _syncLock = false; }
+            }
+        } finally {
+            _syncLock = false;
         }
         isLoadingHistory = false;
     }
@@ -2136,9 +2164,57 @@ function updateLayout() {
     const headerH  = topbarH + histBarH;
     const grid     = document.getElementById('chartGrid');
     grid.style.height = (window.innerHeight - headerH) + 'px';
-    document.getElementById('orderBar').style.top = (headerH + 6) + 'px';
+    // Only reset top if user hasn't manually dragged the order bar
+    if (!document.getElementById('orderBar')._manualPos) {
+        document.getElementById('orderBar').style.top = (headerH + 6) + 'px';
+    }
     panels.forEach(p => p.resize());
 }
+
+// ── Order bar drag-to-move ─────────────────────────────────────────────────
+(function () {
+    const bar    = document.getElementById('orderBar');
+    const handle = document.getElementById('obDragHandle');
+    let dragging = false, ox = 0, oy = 0;
+
+    // Restore saved position from previous session
+    try {
+        const saved = JSON.parse(localStorage.getItem('otpOrderBarPos'));
+        if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+            bar.style.left = saved.left + 'px';
+            bar.style.top  = saved.top  + 'px';
+            bar._manualPos = true;
+        }
+    } catch (_) {}
+
+    handle.addEventListener('mousedown', e => {
+        e.preventDefault();
+        dragging = true;
+        const rect = bar.getBoundingClientRect();
+        ox = e.clientX - rect.left;
+        oy = e.clientY - rect.top;
+    });
+
+    document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const maxL = window.innerWidth  - bar.offsetWidth;
+        const maxT = window.innerHeight - bar.offsetHeight;
+        bar.style.left = Math.max(0, Math.min(e.clientX - ox, maxL)) + 'px';
+        bar.style.top  = Math.max(0, Math.min(e.clientY - oy, maxT)) + 'px';
+        bar._manualPos = true;
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        try {
+            localStorage.setItem('otpOrderBarPos', JSON.stringify({
+                left: parseInt(bar.style.left),
+                top:  parseInt(bar.style.top),
+            }));
+        } catch (_) {}
+    });
+}());
 
 window.addEventListener('resize', updateLayout);
 
@@ -2229,7 +2305,7 @@ async function refreshAllPanels() {
     showLoadingBar();
     // Turn sync off before refreshing (re-enables after if it was already off)
     if (syncCharts) toggleSyncCharts();
-    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
+    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, false)));
     btn.classList.remove('spinning');
     hideLoadingBar();
 }
@@ -2346,7 +2422,7 @@ async function autoPopulatePanels(mode) {
         // Stagger panel loads 30ms apart — prevents thundering herd on DB pool
         await Promise.all(panelSymbols.map((sym, i) => {
             if (!sym) return Promise.resolve();
-            return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, true));
+            return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, false));
         }));
         hideLoadingBar();
         saveViewState();
@@ -2377,7 +2453,7 @@ async function autoPopulatePanels(mode) {
     // Stagger panel loads 30ms apart — prevents thundering herd on DB pool
     await Promise.all(panelSymbols.map((sym, i) => {
         if (!sym) return Promise.resolve();
-        return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, true));
+        return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, false));
     }));
     hideLoadingBar();
     saveViewState();
