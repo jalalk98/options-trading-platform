@@ -27,7 +27,8 @@ async def create_pool():
         password=DB_PASSWORD,
         database=DB_NAME,
         min_size=1,
-        max_size=5
+        max_size=5,
+        max_inactive_connection_lifetime=300,  # close idle connections after 5 min → drops to 0 outside trading hours
     )
 
 
