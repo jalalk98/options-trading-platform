@@ -201,10 +201,22 @@ def _idx_entry(d):
 async def get_index_ltp(request: Request):
     """Returns live LTP + change from prev close for all tracked indices."""
     now = time.monotonic()
-    if _ltp_cache["data"] and (now - _ltp_cache["ts"]) < LTP_CACHE_TTL:
-        return _ltp_cache["data"]
+    cached = _ltp_cache.get("data")
+    if cached and (now - _ltp_cache["ts"]) < _ltp_cache.get("ttl", LTP_CACHE_TTL):
+        return cached
+
+    # Run _kite.quote() in a thread so it never blocks the asyncio event loop.
+    # 2-second timeout: if Kite is unreachable (weekend/market closed) we fail
+    # fast instead of stalling for 10+ seconds.
     try:
-        data = _kite.quote(["NSE:NIFTY 50", "BSE:SENSEX", "NSE:NIFTY BANK", "NSE:NIFTY FIN SERVICE", "NSE:NIFTY MID SELECT"])
+        loop = asyncio.get_event_loop()
+        data = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: _kite.quote(
+                ["NSE:NIFTY 50", "BSE:SENSEX", "NSE:NIFTY BANK",
+                 "NSE:NIFTY FIN SERVICE", "NSE:NIFTY MID SELECT"]
+            )),
+            timeout=2.0,
+        )
         result = {
             "NIFTY":      _idx_entry(data.get("NSE:NIFTY 50",          {})),
             "SENSEX":     _idx_entry(data.get("BSE:SENSEX",             {})),
@@ -214,24 +226,28 @@ async def get_index_ltp(request: Request):
         }
         if any(v["ltp"] is not None for v in result.values()):
             _ltp_cache["data"] = result
-            _ltp_cache["ts"] = now
+            _ltp_cache["ts"]   = now
+            _ltp_cache["ttl"]  = LTP_CACHE_TTL   # live data: 2s TTL
             return result
     except Exception:
         pass
 
-    # Fallback: read latest prices from gap_ticks DB
+    # Fallback: read latest prices from candles_5s (fast index scan, no heap fetches)
     try:
         pool = request.app.state.pool
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT DISTINCT ON (symbol) symbol, curr_price
-                FROM gap_ticks
-                WHERE symbol IN ('NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY')
-                  AND timestamp >= NOW() - INTERVAL '7 days'
-                ORDER BY symbol, timestamp DESC
+                SELECT c.symbol, c.close AS curr_price
+                FROM candles_5s c
+                JOIN (
+                    SELECT symbol, MAX(bucket) AS max_bucket
+                    FROM candles_5s
+                    WHERE symbol IN ('NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY')
+                      AND bucket >= EXTRACT(EPOCH FROM NOW() - INTERVAL '5 days')::BIGINT
+                    GROUP BY symbol
+                ) latest ON c.symbol = latest.symbol AND c.bucket = latest.max_bucket
             """)
         db_prices = {r["symbol"]: r["curr_price"] for r in rows}
-        empty = {"ltp": None, "change": None, "change_pct": None}
         result = {
             "NIFTY":      {"ltp": db_prices.get("NIFTY"),      "change": None, "change_pct": None},
             "SENSEX":     {"ltp": db_prices.get("SENSEX"),     "change": None, "change_pct": None},
@@ -240,7 +256,8 @@ async def get_index_ltp(request: Request):
             "MIDCPNIFTY": {"ltp": db_prices.get("MIDCPNIFTY"), "change": None, "change_pct": None},
         }
         _ltp_cache["data"] = result
-        _ltp_cache["ts"] = now
+        _ltp_cache["ts"]   = now
+        _ltp_cache["ttl"]  = 60   # DB fallback (market closed): cache for 60s
         return result
     except Exception:
         empty = {"ltp": None, "change": None, "change_pct": None}
