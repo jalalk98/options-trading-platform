@@ -277,7 +277,8 @@
         .dq-input.active { border-color: #fbbf24; color: #fbbf24; }
         .dq-clear { background: #374151; color: #9ca3af; border: none; border-radius: 3px; padding: 2px 6px; font-size: 10px; cursor: pointer; }
         .dq-clear:hover { background: #475569; }
-        .ob-qty.dq-active { color: #fbbf24 !important; font-weight: bold; }
+        .ob-qty.dq-active    { color: #fbbf24 !important; font-weight: bold; }
+        .ob-qty.sq-off-active { color: #fb923c !important; font-weight: bold; }
 
         /* ── SL config popup ── */
         #slConfigPopup {
@@ -1274,6 +1275,7 @@ function createPanel(id) {
     let slPollTimer      = null;
     let slTriggerBuffer  = 0.20;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
+    let openPositionQty  = null; // null=unknown, 0=flat, positive=long, negative=short
     // ── Lazy history load state ───────────────────
     let allCandles       = [];
     let earliestDate     = null;
@@ -1281,6 +1283,20 @@ function createPanel(id) {
     let noMoreHistory    = false;
     // Tracks unfilled gap count — checkGapFill returns immediately when 0
     let _unfilledGapCount = 0;
+
+    // ── Open position refresh ─────────────────────
+    async function refreshPosition() {
+        if (!symbol) { openPositionQty = null; if (panel === activePanel) updateOrderBar(null); return; }
+        try {
+            const exchange = symbol.startsWith('SENSEX') ? 'BFO' : 'NFO';
+            const res  = await fetch(`/api/net-position?symbol=${encodeURIComponent(symbol)}&exchange=${exchange}`);
+            const data = await res.json();
+            openPositionQty = typeof data.net_qty === 'number' ? data.net_qty : null;
+        } catch (_) {
+            openPositionQty = null;
+        }
+        if (panel === activePanel) updateOrderBar(null);
+    }
 
     // ── Lazy previous-day loader ──────────────────
     async function loadPreviousDay() {
@@ -1813,6 +1829,7 @@ function createPanel(id) {
             loadSLStateLocal(sym);
             startSLPoll(sym);
             connectWebSocket(sym);
+            refreshPosition();
         }
     }
 
@@ -1871,8 +1888,10 @@ function createPanel(id) {
         set slTriggerBuffer(v)  { slTriggerBuffer = v; },
         get panelLots()         { return panelLots; },
         set panelLots(v)        { panelLots = v; },
+        get openPositionQty()   { return openPositionQty; },
         get chart()             { return chart; },
         updateGoToLiveBtn,
+        refreshPosition,
         loadSymbol: panelLoadSymbol,
         updateSLLine: updateSLLineLocal,
         scrollToEnd,
@@ -1903,6 +1922,7 @@ function activatePanel(p) {
         document.getElementById('qtyPopupTitle').textContent =
             `Quantity (${getIndexName(sym)} · ${orderLotSize}/lot)`;
         updateOrderBar(null);
+        p.refreshPosition();
     }
     updateSLBadge();
     if (p.updateGoToLiveBtn) p.updateGoToLiveBtn();
@@ -2603,16 +2623,24 @@ function updateOrderBar(ltp) {
     if (ltp != null) currentLTP = ltp;
     const p      = currentLTP != null ? currentLTP.toFixed(2) : '—';
     const qty    = orderLots * orderLotSize;
-    const buyQty  = defaultBuyQty  != null ? defaultBuyQty  : qty;
-    const sellQty = defaultSellQty != null ? defaultSellQty : qty;
+
+    const posQty   = activePanel ? activePanel.openPositionQty : null;
+    const isLong   = posQty != null && posQty > 0;
+    const isShort  = posQty != null && posQty < 0;
+
+    const buyQty  = isShort ? Math.abs(posQty) : (defaultBuyQty  != null ? defaultBuyQty  : qty);
+    const sellQty = isLong  ? posQty            : (defaultSellQty != null ? defaultSellQty : qty);
+
     document.getElementById('buyPrice').textContent  = p;
     document.getElementById('sellPrice').textContent = p;
     const buyQtyEl  = document.getElementById('buyQty');
     const sellQtyEl = document.getElementById('sellQty');
-    buyQtyEl.textContent  = `${buyQty} qty`;
-    sellQtyEl.textContent = `${sellQty} qty`;
-    buyQtyEl.classList.toggle('dq-active',  defaultBuyQty  != null);
-    sellQtyEl.classList.toggle('dq-active', defaultSellQty != null);
+    buyQtyEl.textContent  = isShort ? `${buyQty} ✕` : `${buyQty} qty`;
+    sellQtyEl.textContent = isLong  ? `${sellQty} ✕` : `${sellQty} qty`;
+    buyQtyEl.classList.toggle('dq-active',     !isShort && defaultBuyQty  != null);
+    sellQtyEl.classList.toggle('dq-active',    !isLong  && defaultSellQty != null);
+    buyQtyEl.classList.toggle('sq-off-active', isShort);
+    sellQtyEl.classList.toggle('sq-off-active', isLong);
     document.getElementById('calcQtyDisplay').textContent  = qty;
     document.getElementById('calcLotsDisplay').textContent = `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
     const inp = document.getElementById('qtyDisplay');
@@ -2685,12 +2713,30 @@ async function placeOrder(side) {
     if (!activePanel || !activePanel.symbol) { toast('No symbol selected', 'warn'); return; }
     const sym = activePanel.symbol;
     if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
-    let price = parseFloat(currentLTP.toFixed(2));
-    if (orderType === 'L') price = parseFloat((price + (side === 'BUY' ? limitBuffer : -limitBuffer)).toFixed(2));
-    const qty = side === 'BUY'
-        ? (defaultBuyQty  != null ? defaultBuyQty  : orderLots * orderLotSize)
-        : (defaultSellQty != null ? defaultSellQty : orderLots * orderLotSize);
-    const label = `${side} ${qty} ${sym} @ ${price} [${orderType}]`;
+
+    const posQty      = activePanel.openPositionQty;
+    const isSquareOff = (side === 'SELL' && posQty != null && posQty > 0) ||
+                        (side === 'BUY'  && posQty != null && posQty < 0);
+
+    let price, qty;
+    if (isSquareOff) {
+        qty   = Math.abs(posQty);
+        price = parseFloat(currentLTP.toFixed(2));
+        if (orderType === 'L') {
+            // Fixed buffer per index: Sensex = 5 pts, everything else = 2 pts
+            const sqBuf = sym.startsWith('SENSEX') ? 5 : 2;
+            price = parseFloat((price + (side === 'BUY' ? sqBuf : -sqBuf)).toFixed(2));
+        }
+        // Market mode: price is irrelevant but send LTP as reference
+    } else {
+        price = parseFloat(currentLTP.toFixed(2));
+        if (orderType === 'L') price = parseFloat((price + (side === 'BUY' ? limitBuffer : -limitBuffer)).toFixed(2));
+        qty = side === 'BUY'
+            ? (defaultBuyQty  != null ? defaultBuyQty  : orderLots * orderLotSize)
+            : (defaultSellQty != null ? defaultSellQty : orderLots * orderLotSize);
+    }
+
+    const label = `${isSquareOff ? 'SQ OFF' : side} ${qty} ${sym} @ ${price} [${orderType}]`;
     toast(`⏳ Placing ${label}…`, 'info', 2000);
     const res = await fetch('/api/place-limit-order', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2698,6 +2744,10 @@ async function placeOrder(side) {
     });
     const data = await res.json();
     toastOrder(data, label);
+    // Refresh position after any successful order (allow 1.5s for order to register)
+    if (data.status === 'success') {
+        setTimeout(() => { if (activePanel?.symbol === sym) activePanel.refreshPosition(); }, 1500);
+    }
     // Trigger post-fill automation for SL orders
     if (orderType === 'SL' && data.status === 'success' && data.order_id) {
         handleSlOrderFlow(data.order_id, side, sym, qty, data.price).catch(err => {

@@ -219,6 +219,16 @@ async def _fetch_net_position(symbol: str, exchange: str) -> int:
     return 0
 
 
+# ─────────────────────────────────────────────
+# GET /api/net-position?symbol=XXX&exchange=NFO
+# Returns live net open qty for a symbol.
+# ─────────────────────────────────────────────
+@router.get("/net-position")
+async def get_net_position(symbol: str, exchange: str = "NFO"):
+    qty = await _fetch_net_position(symbol, exchange)
+    return {"symbol": symbol, "net_qty": qty}
+
+
 async def _place_market_order(exchange: str, symbol: str, tx: str, qty: int) -> dict:
     """Place a plain MARKET order (not SL) for the given qty."""
     headers = {
