@@ -2368,24 +2368,25 @@ async function autoPopulatePanels(mode) {
 
     const STEP = { NIFTY: 50, SENSEX: 100 };
 
-    // Fetch live index prices + DB ATM fallbacks all in parallel — no sequential waits
-    const [ltpData, atmNifty, atmSensex] = await Promise.all([
-        fetch('/api/index-ltp').then(r => r.json()).catch(() => ({})),
-        fetch('/api/atm-symbol?index=NIFTY').then(r => r.json()).catch(() => ({})),
-        fetch('/api/atm-symbol?index=SENSEX').then(r => r.json()).catch(() => ({})),
-    ]);
-    const atmFallback = { NIFTY: atmNifty, SENSEX: atmSensex };
+    // Fetch live index prices; only call ATM endpoint for indices where LTP is unavailable
+    const ltpData = await fetch('/api/index-ltp').then(r => r.json()).catch(() => ({}));
     const atmMap = {};
     let usedFallback = false;
-    for (const idx of ['NIFTY', 'SENSEX']) {
+    const indicesNeedingAtm = ['NIFTY', 'SENSEX'].filter(idx => {
         const ltp = ltpData[idx] && ltpData[idx].ltp;
-        if (ltp) {
-            atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx];
-        } else {
-            const strike = atmFallback[idx] && atmFallback[idx].strike;
+        if (ltp) { atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx]; return false; }
+        return true;
+    });
+    if (indicesNeedingAtm.length) {
+        // Fetch ATM for indices with no live LTP — run in parallel if multiple
+        const atmResults = await Promise.all(
+            indicesNeedingAtm.map(idx => fetch(`/api/atm-symbol?index=${idx}`).then(r => r.json()).catch(() => ({})))
+        );
+        indicesNeedingAtm.forEach((idx, i) => {
+            const strike = atmResults[i] && atmResults[i].strike;
             atmMap[idx] = strike ? Math.round(strike) : null;
             if (atmMap[idx]) usedFallback = true;
-        }
+        });
     }
     if (usedFallback) toast('Market closed — using last known ATM from DB', 'warn');
 

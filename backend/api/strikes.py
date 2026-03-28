@@ -3,6 +3,7 @@
 import time
 import random
 import asyncio
+import bisect
 import logging
 import orjson
 from fastapi import Response
@@ -115,24 +116,31 @@ async def _query_atm_symbol(conn, index: str = "NIFTY"):
     if not symbols:
         return None
 
-    # Step 2: get latest price for all symbols in one batch query
+    # Step 2: get latest price for all symbols from candles_5s (fast index scan, no heap fetches)
     symbol_list = [s["symbol"] for s in symbols]
     symbol_meta = {s["symbol"]: {"strike": s["strike"], "option_type": s["option_type"]} for s in symbols}
-    # Try today first; fall back to last 7 days if no data (e.g. weekend/holiday)
     price_rows = await conn.fetch("""
-        SELECT DISTINCT ON (symbol) symbol, curr_price
-        FROM gap_ticks
-        WHERE symbol = ANY($1)
-          AND timestamp >= CURRENT_DATE
-        ORDER BY symbol, timestamp DESC
+        SELECT c.symbol, c.close AS curr_price
+        FROM candles_5s c
+        JOIN (
+            SELECT symbol, MAX(bucket) AS max_bucket
+            FROM candles_5s
+            WHERE symbol = ANY($1)
+              AND bucket >= EXTRACT(EPOCH FROM NOW() - INTERVAL '5 days')::BIGINT
+            GROUP BY symbol
+        ) latest ON c.symbol = latest.symbol AND c.bucket = latest.max_bucket
     """, symbol_list)
     if not price_rows:
+        # Widen search if no recent candles (e.g. long holiday break)
         price_rows = await conn.fetch("""
-            SELECT DISTINCT ON (symbol) symbol, curr_price
-            FROM gap_ticks
-            WHERE symbol = ANY($1)
-              AND timestamp >= NOW() - INTERVAL '7 days'
-            ORDER BY symbol, timestamp DESC
+            SELECT c.symbol, c.close AS curr_price
+            FROM candles_5s c
+            JOIN (
+                SELECT symbol, MAX(bucket) AS max_bucket
+                FROM candles_5s
+                WHERE symbol = ANY($1)
+                GROUP BY symbol
+            ) latest ON c.symbol = latest.symbol AND c.bucket = latest.max_bucket
         """, symbol_list)
     prices = {
         r["symbol"]: {**symbol_meta[r["symbol"]], "price": r["curr_price"]}
@@ -377,6 +385,13 @@ def _rows_to_candles_fast(rows):
     ]
 
 
+async def _get_last_trading_date(conn, symbol: str) -> PyDate | None:
+    """Find the most recent trading date for a symbol using candles_5s (0.1ms index scan)."""
+    last_bucket = await conn.fetchval(
+        "SELECT MAX(bucket) FROM candles_5s WHERE symbol=$1", symbol)
+    return PyDate.fromtimestamp(last_bucket) if last_bucket else None
+
+
 async def _query_history_fast(conn, symbol: str, date: str = None, since_bucket: int = None):
     """Read OHLC from candles_5s — scans ~375 rows vs ~30k in gap_ticks."""
     if date:
@@ -390,9 +405,7 @@ async def _query_history_fast(conn, symbol: str, date: str = None, since_bucket:
 
     rows = await conn.fetch(_CANDLES_Q, symbol, today)
     if not rows:
-        last_date = await conn.fetchval(
-            "SELECT DATE(timestamp) FROM gap_ticks WHERE symbol=$1 ORDER BY timestamp DESC LIMIT 1",
-            symbol)
+        last_date = await _get_last_trading_date(conn, symbol)
         if last_date:
             rows = await conn.fetch(_CANDLES_Q, symbol, last_date)
     return _rows_to_candles_fast(rows)
@@ -436,9 +449,7 @@ async def _query_gaps_fast(conn, symbol: str, date: str = None, since_bucket: in
 
     rows = await conn.fetch(_GAP_EVENTS_Q, symbol, today)
     if not rows:
-        last_date = await conn.fetchval(
-            "SELECT DATE(timestamp) FROM gap_ticks WHERE symbol=$1 ORDER BY timestamp DESC LIMIT 1",
-            symbol)
+        last_date = await _get_last_trading_date(conn, symbol)
         if last_date:
             rows = await conn.fetch(_GAP_EVENTS_Q, symbol, last_date)
     return _to_gap_list(rows)
@@ -577,28 +588,40 @@ async def get_gaps(symbol: str, request: Request, nocache: bool = False, date: s
 
 def _compute_gap_fills(history, gaps):
     """Mark each gap is_filled=True if any later candle's high/low crosses the prev_price level.
-    Runs server-side in Python so the browser's main thread is never blocked by this work.
-    Filled gaps are removed from the working set so they are never re-checked — O(N × unfilled_G)
-    instead of O(N × G), which matters a lot by mid-day when most gaps are already filled."""
+
+    Uses suffix min(low) / suffix max(high) arrays so each gap needs only a binary search
+    + O(1) array lookup — O(N + G log N) total vs the old O(N × G) scan."""
+    if not gaps:
+        return gaps
+
+    n = len(history)
+    if n == 0:
+        for g in gaps:
+            g["is_filled"] = False
+        return gaps
+
+    buckets = [c[0] for c in history]   # sorted list of candle bucket times
+
+    # Build suffix max(high) and suffix min(low) — O(N)
+    INF = float("inf")
+    suffix_max_high = [0.0] * (n + 1)
+    suffix_min_low  = [INF]  * (n + 1)
+    for i in range(n - 1, -1, -1):
+        h = history[i][2]
+        l = history[i][3]
+        suffix_max_high[i] = h if h > suffix_max_high[i + 1] else suffix_max_high[i + 1]
+        suffix_min_low[i]  = l if l < suffix_min_low[i + 1]  else suffix_min_low[i + 1]
+
+    # For each gap, binary-search the first candle after the gap, then check suffix — O(G log N)
     for g in gaps:
-        g["is_filled"] = False
-    unfilled = list(gaps)
-    for candle in history:
-        if not unfilled:
-            break  # all gaps filled — no point scanning remaining candles
-        bucket, _o, high, low, _c = candle
-        still_unfilled = []
-        for g in unfilled:
-            if bucket <= g["time"]:
-                still_unfilled.append(g)
-                continue
-            if g["direction"] == "UP" and low <= g["prev_price"]:
-                g["is_filled"] = True
-            elif g["direction"] != "UP" and high >= g["prev_price"]:
-                g["is_filled"] = True
-            else:
-                still_unfilled.append(g)
-        unfilled = still_unfilled
+        idx = bisect.bisect_right(buckets, g["time"])   # first candle strictly after gap
+        if idx >= n:
+            g["is_filled"] = False
+        elif g["direction"] == "UP":
+            g["is_filled"] = suffix_min_low[idx] <= g["prev_price"]
+        else:
+            g["is_filled"] = suffix_max_high[idx] >= g["prev_price"]
+
     return gaps
 
 
@@ -623,15 +646,9 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
             if not date and cached.get("last_bucket"):
                 last_bucket = cached["last_bucket"]
 
-                async def _fetch_incr_history():
-                    async with pool.acquire() as conn:
-                        return await _query_history(conn, symbol, since_bucket=last_bucket)
-
-                async def _fetch_incr_gaps():
-                    async with pool.acquire() as conn:
-                        return await _query_gaps(conn, symbol, since_bucket=last_bucket)
-
-                new_history, new_gaps = await asyncio.gather(_fetch_incr_history(), _fetch_incr_gaps())
+                async with pool.acquire() as conn:
+                    new_history = await _query_history(conn, symbol, since_bucket=last_bucket)
+                    new_gaps    = await _query_gaps(conn, symbol, since_bucket=last_bucket)
 
                 # Merge candles: new candles overwrite cached ones (last_bucket candle may have grown)
                 hist_dict = {c[0]: c for c in cached["data"]["history"]}
@@ -654,15 +671,10 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
                 return Response(content=orjson.dumps(data), media_type="application/json")
 
     # Full query path: first load, nocache=true, or historical date
-    async def _fetch_history():
-        async with pool.acquire() as conn:
-            return await _query_history(conn, symbol, date)
-
-    async def _fetch_gaps():
-        async with pool.acquire() as conn:
-            return await _query_gaps(conn, symbol, date)
-
-    history, gaps = await asyncio.gather(_fetch_history(), _fetch_gaps())
+    # Single connection per chart keeps pool usage to 1 per panel (8 vs 16 for 8 panels).
+    async with pool.acquire() as conn:
+        history = await _query_history(conn, symbol, date)
+        gaps    = await _query_gaps(conn, symbol, date)
     _compute_gap_fills(history, gaps)
 
     data = {"history": history, "gaps": gaps}
