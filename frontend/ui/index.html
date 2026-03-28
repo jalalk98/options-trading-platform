@@ -2368,9 +2368,13 @@ async function autoPopulatePanels(mode) {
 
     const STEP = { NIFTY: 50, SENSEX: 100 };
 
-    // Fetch live index prices and compute ATM as floor(ltp/step)*step
-    // If market is closed (LTP null), fall back to last known ATM from DB
-    const ltpData = await fetch('/api/index-ltp').then(r => r.json());
+    // Fetch live index prices + DB ATM fallbacks all in parallel — no sequential waits
+    const [ltpData, atmNifty, atmSensex] = await Promise.all([
+        fetch('/api/index-ltp').then(r => r.json()).catch(() => ({})),
+        fetch('/api/atm-symbol?index=NIFTY').then(r => r.json()).catch(() => ({})),
+        fetch('/api/atm-symbol?index=SENSEX').then(r => r.json()).catch(() => ({})),
+    ]);
+    const atmFallback = { NIFTY: atmNifty, SENSEX: atmSensex };
     const atmMap = {};
     let usedFallback = false;
     for (const idx of ['NIFTY', 'SENSEX']) {
@@ -2378,12 +2382,9 @@ async function autoPopulatePanels(mode) {
         if (ltp) {
             atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx];
         } else {
-            // Fallback: get ATM strike from DB (last known price via put-call parity)
-            try {
-                const atmRes = await fetch(`/api/atm-symbol?index=${idx}`).then(r => r.json());
-                atmMap[idx] = atmRes.strike ? Math.round(atmRes.strike) : null;
-                if (atmMap[idx]) usedFallback = true;
-            } catch { atmMap[idx] = null; }
+            const strike = atmFallback[idx] && atmFallback[idx].strike;
+            atmMap[idx] = strike ? Math.round(strike) : null;
+            if (atmMap[idx]) usedFallback = true;
         }
     }
     if (usedFallback) toast('Market closed — using last known ATM from DB', 'warn');
@@ -2444,10 +2445,10 @@ async function autoPopulatePanels(mode) {
         }
 
         const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
-        // Stagger panel loads 30ms apart — prevents thundering herd on DB pool
+        // Load all panels in parallel — fast tables (candles_5s) make DB pool stagger unnecessary
         await Promise.all(panelSymbols.map((sym, i) => {
             if (!sym) return Promise.resolve();
-            return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, false));
+            return panels[i].loadSymbol(sym, null, false);
         }));
         hideLoadingBar();
         saveViewState();
@@ -2475,10 +2476,10 @@ async function autoPopulatePanels(mode) {
         panelSymbols = [...g1Symbols, ...g2Symbols];
     }
 
-    // Stagger panel loads 30ms apart — prevents thundering herd on DB pool
+    // Load all panels in parallel — fast tables (candles_5s) make DB pool stagger unnecessary
     await Promise.all(panelSymbols.map((sym, i) => {
         if (!sym) return Promise.resolve();
-        return new Promise(r => setTimeout(r, i * 30)).then(() => panels[i].loadSymbol(sym, null, false));
+        return panels[i].loadSymbol(sym, null, false);
     }));
     hideLoadingBar();
     saveViewState();
