@@ -585,6 +585,24 @@
         .toast.info    { background: #1d4ed8; border-left: 4px solid #93c5fd; }
         .toast.warn    { background: #92400e; border-left: 4px solid #fbbf24; }
 
+        #undoToast {
+            position: fixed;
+            bottom: 20px;
+            left: 16px;
+            z-index: 9998;
+            background: rgba(15, 20, 30, 0.88);
+            color: #94a3b8;
+            font-size: 11px;
+            padding: 5px 11px;
+            border-radius: 4px;
+            border-left: 3px solid #475569;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            white-space: nowrap;
+        }
+        #undoToast.visible { opacity: 1; }
+
         /* ── Chart grid & panels ── */
         #chartGrid {
             display: grid;
@@ -963,6 +981,7 @@
     </svg>
 </button>
 <div id="tooltip"></div>
+<div id="undoToast"></div>
 <div id="toastContainer"></div>
 
 <!-- Buy / Sell order bar -->
@@ -1154,7 +1173,11 @@ function toggleDrawHline() {
 }
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && drawHlineMode) { drawHlineMode = false; document.getElementById('drawHlineBtn').classList.remove('active'); document.getElementById('chartGrid').style.cursor = ''; }
-    if (e.key === 'h' || e.key === 'H') { const tag = document.activeElement?.tagName; if (tag !== 'INPUT' && tag !== 'TEXTAREA') toggleDrawHline(); }
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === 'h' || e.key === 'H') { toggleDrawHline(); }
+    if (e.ctrlKey && !e.shiftKey && e.key === 'z') { e.preventDefault(); const msg = activePanel?.undoLastAction?.(); if (msg) _showUndoToast(msg); }
+    if (e.ctrlKey && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); const msg = activePanel?.redoLastAction?.(); if (msg) _showUndoToast(msg); }
 });
 
 const ICON_EXPAND  = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6V1h5"/><path d="M10 1h5v5"/><path d="M15 10v5h-5"/><path d="M6 15H1v-5"/></svg>`;
@@ -1167,7 +1190,7 @@ let orderLotSize = 65;
 let defaultBuyQty  = null;   // null = use orderLots * lotSize; number = fixed qty for BUY
 let defaultSellQty = null;   // null = use orderLots * lotSize; number = fixed qty for SELL
 let orderType      = 'L';
-let limitBuffer    = 0.20;
+let limitBuffer    = parseFloat(localStorage.getItem('limitBuffer') ?? '0.20');
 let limitDefaultSL = 10;
 let slBuffer          = 0.20;
 let slDistance        = 5;
@@ -1272,6 +1295,8 @@ function createPanel(id) {
     let slOrderId        = null;
     let slDragging       = false;
     let hlineDragging    = null;   // user line being dragged {id, price, colorIdx, priceLine}
+    let lineUndoStack    = [];     // [{id, prevPrice}] — last 5 line moves, LIFO
+    let lineRedoStack    = [];     // [{id, prevPrice}] — cleared on any new drag
     let slPollTimer      = null;
     let slTriggerBuffer  = 0.20;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
@@ -1414,22 +1439,28 @@ function createPanel(id) {
         if (symbol) symbolLinesStore[symbol] = userLines.map(l => ({ price: l.price, colorIdx: l.colorIdx }));
     }
 
-    function addUserLine(price, colorIdx = 0) {
+    function addUserLine(price, colorIdx = 0, existingId = null) {
         const rounded = Math.round(price * 20) / 20;
         const priceLine = candleSeries.createPriceLine({
             price: rounded, color: HLINE_COLORS[colorIdx],
             lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
-        const id = Date.now() + Math.random();
+        const id = existingId ?? (Date.now() + Math.random());
         userLines.push({ id, price: rounded, colorIdx, priceLine });
         _syncLinesToStore();
         return id;
     }
 
-    function removeUserLine(id) {
+    function removeUserLine(id, { recordUndo = true } = {}) {
         const idx = userLines.findIndex(l => l.id === id);
         if (idx === -1) return;
+        if (recordUndo) {
+            const l = userLines[idx];
+            lineUndoStack.push({ type: 'delete', id: l.id, price: l.price, colorIdx: l.colorIdx });
+            if (lineUndoStack.length > 5) lineUndoStack.shift();
+            lineRedoStack = [];
+        }
         candleSeries.removePriceLine(userLines[idx].priceLine);
         userLines.splice(idx, 1);
         _syncLinesToStore();
@@ -1653,7 +1684,13 @@ function createPanel(id) {
         if (slPrice && isNearSL(e.clientY)) { slDragging = true; disableScroll(); e.stopPropagation(); return; }
         if (userLines.length && !drawHlineMode) {
             const nearLine = getNearUserLine(e.clientY);
-            if (nearLine) { hlineDragging = nearLine; disableScroll(); e.stopPropagation(); }
+            if (nearLine) {
+                // Record position before drag for undo; new drag clears redo history
+                lineUndoStack.push({ type: 'move', id: nearLine.id, prevPrice: nearLine.price });
+                if (lineUndoStack.length > 5) lineUndoStack.shift();
+                lineRedoStack = [];
+                hlineDragging = nearLine; disableScroll(); e.stopPropagation();
+            }
         }
     });
 
@@ -1899,6 +1936,52 @@ function createPanel(id) {
         getUserLines: () => userLines.map(l => ({ price: l.price, colorIdx: l.colorIdx })),
         restoreUserLines,
         clearUserLines,
+        undoLastAction() {
+            if (!lineUndoStack.length) return 'Nothing to undo';
+            const entry = lineUndoStack.pop();
+            if (entry.type === 'move') {
+                const line = userLines.find(l => l.id === entry.id);
+                if (!line) return;
+                lineRedoStack.push({ type: 'move', id: entry.id, prevPrice: line.price });
+                if (lineRedoStack.length > 5) lineRedoStack.shift();
+                line.price = entry.prevPrice;
+                line.priceLine.applyOptions({ price: entry.prevPrice });
+                _syncLinesToStore();
+                saveViewState();
+                return 'Undo: Line moved';
+            } else if (entry.type === 'delete') {
+                // Recreate with the original id so earlier move entries in the stack stay valid
+                const newId = addUserLine(entry.price, entry.colorIdx, entry.id);
+                lineRedoStack.push({ type: 'delete', id: newId });
+                if (lineRedoStack.length > 5) lineRedoStack.shift();
+                saveViewState();
+                return 'Undo: Line restored';
+            }
+        },
+        redoLastAction() {
+            if (!lineRedoStack.length) return 'Nothing to redo';
+            const entry = lineRedoStack.pop();
+            if (entry.type === 'move') {
+                const line = userLines.find(l => l.id === entry.id);
+                if (!line) return;
+                lineUndoStack.push({ type: 'move', id: entry.id, prevPrice: line.price });
+                if (lineUndoStack.length > 5) lineUndoStack.shift();
+                line.price = entry.prevPrice;
+                line.priceLine.applyOptions({ price: entry.prevPrice });
+                _syncLinesToStore();
+                saveViewState();
+                return 'Redo: Line moved';
+            } else if (entry.type === 'delete') {
+                // Re-delete the recreated line (recordUndo:false — undo stack already has the entry)
+                const line = userLines.find(l => l.id === entry.id);
+                if (!line) return;
+                lineUndoStack.push({ type: 'delete', id: entry.id, price: line.price, colorIdx: line.colorIdx });
+                if (lineUndoStack.length > 5) lineUndoStack.shift();
+                removeUserLine(entry.id, { recordUndo: false });
+                saveViewState();
+                return 'Redo: Line deleted';
+            }
+        },
     };
     return panel;
 }
@@ -2698,7 +2781,7 @@ function openLimitConfig(anchorEl, type) {
 async function closeLimitConfig() {
     const buf   = parseFloat(document.getElementById('limitBufInput').value);
     const defSl = parseFloat(document.getElementById('limitDefaultSlInput').value);
-    if (!isNaN(buf)   && buf   >= 0) limitBuffer    = buf;
+    if (!isNaN(buf)   && buf   >= 0) { limitBuffer = buf; localStorage.setItem('limitBuffer', buf); }
     if (!isNaN(defSl) && defSl >  0) {
         limitDefaultSL = defSl;
         // Sync to backend so handle_order_update uses the new value
@@ -3021,6 +3104,14 @@ function toast(msg, type = 'info', duration = 7000) {
     container.appendChild(el);
     const timer = setTimeout(dismiss, duration);
     btn.addEventListener('click', () => clearTimeout(timer), { once: true });
+}
+let _undoToastTimer = null;
+function _showUndoToast(msg) {
+    const el = document.getElementById('undoToast');
+    el.textContent = msg;
+    el.classList.add('visible');
+    clearTimeout(_undoToastTimer);
+    _undoToastTimer = setTimeout(() => el.classList.remove('visible'), 1500);
 }
 function toastOrder(data, actionLabel) {
     if (!data) { toast(`${actionLabel}: no response`, 'error'); return; }

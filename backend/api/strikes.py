@@ -283,7 +283,7 @@ async def resolve_symbol(display: str, request: Request):
             row = await conn.fetchrow(
                 """
                 SELECT symbol
-                FROM gap_ticks
+                FROM tracked_symbols
                 WHERE strike = $1
                 AND option_type = $2
                 AND expiry_date = $3
