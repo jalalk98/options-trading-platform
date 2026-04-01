@@ -54,6 +54,18 @@ def process_tick(tick: dict):
             "only_gap":         False,
             "gap_with_spread":  False,
             "is_gap":           False,
+            "last_quantity"   : None,
+            "average_price"   : None,
+            "last_trade_time" : None,
+            "oi"              : None,
+            "oi_day_high"     : None,
+            "oi_day_low"      : None,
+            "buy_quantity"    : None,
+            "sell_quantity"   : None,
+            "depth"           : None,
+            "bid_depth_qty"   : None,
+            "ask_depth_qty"   : None,
+            "depth_imbalance" : None,
         }
 
     if tick.get("mode") != "full":
@@ -63,6 +75,24 @@ def process_tick(tick: dict):
     curr_volume = tick.get("volume_traded")
     timestamp = tick.get("exchange_timestamp")
     depth = tick.get("depth", {})
+
+    last_quantity   = tick.get("last_quantity")
+    average_price   = tick.get("average_price")
+    last_trade_time = tick.get("last_trade_time")
+    oi              = tick.get("oi")
+    oi_day_high     = tick.get("oi_day_high")
+    oi_day_low      = tick.get("oi_day_low")
+    buy_quantity    = tick.get("buy_quantity")
+    sell_quantity   = tick.get("sell_quantity")
+
+    # Compute depth derived fields
+    buy_levels      = depth.get("buy", [])  if depth else []
+    sell_levels     = depth.get("sell", []) if depth else []
+    bid_depth_qty   = sum(l.get("quantity", 0) for l in buy_levels)
+    ask_depth_qty   = sum(l.get("quantity", 0) for l in sell_levels)
+    total_depth     = bid_depth_qty + ask_depth_qty
+    depth_imbalance = round(bid_depth_qty / total_depth, 4) if total_depth > 0 else None
+    depth_json      = depth if depth else None
 
     if not curr_price or not timestamp:
         return None
@@ -160,7 +190,7 @@ def process_tick(tick: dict):
         "volume": curr_volume,
         "timestamp": timestamp
     }
-    
+
     # print("Row created at:",datetime.now())
     return {
         "instrument_token": instrument_token,
@@ -189,5 +219,18 @@ def process_tick(tick: dict):
 
         "only_gap": only_gap,
         "gap_with_spread": gap_with_spread,
-        "is_gap": is_gap
+        "is_gap": is_gap,
+
+        "last_quantity"   : last_quantity,
+        "average_price"   : average_price,
+        "last_trade_time" : last_trade_time,
+        "oi"              : oi,
+        "oi_day_high"     : oi_day_high,
+        "oi_day_low"      : oi_day_low,
+        "buy_quantity"    : buy_quantity,
+        "sell_quantity"   : sell_quantity,
+        "depth"           : depth_json,
+        "bid_depth_qty"   : bid_depth_qty,
+        "ask_depth_qty"   : ask_depth_qty,
+        "depth_imbalance" : depth_imbalance,
     }

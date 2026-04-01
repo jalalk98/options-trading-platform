@@ -9,7 +9,8 @@ import orjson
 from fastapi import Response
 
 logger = logging.getLogger(__name__)
-from datetime import timezone, timedelta, date as PyDate
+import json
+from datetime import datetime, timezone, timedelta, date as PyDate
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from kiteconnect import KiteConnect
@@ -643,6 +644,195 @@ def _compute_gap_fills(history, gaps):
 
 
 _chart_cache = {}   # symbol → {"data": {...}, "ts": float, "ttl": int}
+
+
+# ── Conviction scorer ──────────────────────────────────────────────────────
+_CONVICTION_Q = """
+    SELECT
+        symbol,
+        to_timestamp(bucket) AT TIME ZONE 'UTC' AS candle_time,
+        bucket,
+        close,
+        gap_ref_price,
+        gap_ref_bucket,
+        dist_from_gap,
+        dist_from_gap_pct,
+        closed_above_gap,
+        candles_above_gap,
+        seconds_above_gap,
+        delta,
+        cum_delta,
+        oi_close,
+        oi_change,
+        depth_imbalance
+    FROM candles_5s
+    WHERE symbol = $1
+      AND bucket >= EXTRACT(EPOCH FROM CURRENT_DATE
+                   + TIME '09:15:00')::BIGINT
+      AND candles_above_gap >= 3
+    ORDER BY bucket DESC
+    LIMIT 1
+"""
+
+_CONVICTION_SAVE_Q = """
+    INSERT INTO conviction_signals (
+        symbol, bucket, signal_time, score,
+        gap_ref_price, candles_above, seconds_above,
+        dist_from_gap_pct, checks
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (symbol, bucket) DO NOTHING
+    RETURNING id
+"""
+
+_CONVICTION_HISTORY_Q = """
+    SELECT
+        bucket,
+        score,
+        gap_ref_price,
+        candles_above,
+        seconds_above,
+        dist_from_gap_pct,
+        checks
+    FROM conviction_signals
+    WHERE symbol = $1
+      AND bucket >= EXTRACT(EPOCH FROM ($2::date
+                   + TIME '09:15:00'))::BIGINT
+      AND bucket <= EXTRACT(EPOCH FROM ($2::date
+                   + TIME '16:00:00'))::BIGINT
+    ORDER BY bucket ASC
+"""
+
+@router.get("/conviction/history/{symbol}")
+async def get_conviction_history(symbol: str, request: Request, date: str = None):
+    """
+    Returns all conviction signals for a symbol on a given date (defaults to today).
+    Used by frontend to render historical ▲ markers.
+    """
+    try:
+        target_date = (
+            datetime.strptime(date, "%Y-%m-%d").date()
+            if date
+            else PyDate.today()
+        )
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                _CONVICTION_HISTORY_Q,
+                symbol,
+                target_date,
+            )
+        signals = [
+            {
+                "bucket"           : row["bucket"],
+                "score"            : row["score"],
+                "gap_ref_price"    : row["gap_ref_price"],
+                "candles_above"    : row["candles_above"],
+                "seconds_above"    : row["seconds_above"],
+                "dist_from_gap_pct": row["dist_from_gap_pct"],
+                "checks"           : row["checks"] or {},
+            }
+            for row in rows
+        ]
+        return {"symbol": symbol, "signals": signals}
+    except Exception as e:
+        return {"symbol": symbol, "signals": [], "error": str(e)}
+
+
+@router.get("/conviction/{symbol}")
+async def get_conviction(symbol: str, request: Request):
+    """
+    Returns go-long conviction score for a symbol.
+    Only scores when candles_above_gap >= 3.
+    Score >= 4 out of 6 = go_long signal.
+    Saves signal to conviction_signals on first fire (candles_above == 3).
+    """
+    try:
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(_CONVICTION_Q, symbol)
+
+            if row is None:
+                return {
+                    "symbol"        : symbol,
+                    "go_long"       : False,
+                    "score"         : 0,
+                    "reason"        : "no_gap_sustaining",
+                    "checks"        : {},
+                    "candles_above" : 0,
+                }
+
+            # ── Run the 6 conviction checks ───────────────────────
+            checks = {
+                "candles_held"      : (
+                    row["candles_above_gap"] is not None
+                    and row["candles_above_gap"] >= 3
+                ),
+                "safe_buffer"       : (
+                    row["dist_from_gap_pct"] is not None
+                    and row["dist_from_gap_pct"] > 0.3
+                ),
+                "delta_positive"    : (
+                    row["delta"] is not None
+                    and row["delta"] > 0
+                ),
+                "cum_delta_positive": (
+                    row["cum_delta"] is not None
+                    and row["cum_delta"] > 0
+                ),
+                "oi_expanding"      : (
+                    row["oi_change"] is not None
+                    and row["oi_change"] > 0
+                ),
+                "bids_stacking"     : (
+                    row["depth_imbalance"] is not None
+                    and row["depth_imbalance"] > 0.55
+                ),
+            }
+
+            score   = sum(checks.values())
+            go_long = score >= 4
+
+            # ── Save signal on first fire (candles_above == 3) ───
+            if go_long and row["candles_above_gap"] == 3:
+                try:
+                    await conn.fetchval(
+                        _CONVICTION_SAVE_Q,
+                        symbol,
+                        row["bucket"],
+                        row["candle_time"],
+                        score,
+                        row["gap_ref_price"],
+                        row["candles_above_gap"],
+                        row["seconds_above_gap"],
+                        row["dist_from_gap_pct"],
+                        json.dumps(checks),
+                    )
+                except Exception as e:
+                    print(f"Conviction save failed (non-critical): {e}")
+
+        return {
+            "symbol"            : symbol,
+            "candle_time"       : row["candle_time"].isoformat()
+                                  if row["candle_time"] else None,
+            "bucket"            : row["bucket"],
+            "gap_ref_price"     : row["gap_ref_price"],
+            "candles_above"     : row["candles_above_gap"],
+            "seconds_above"     : row["seconds_above_gap"],
+            "dist_from_gap_pct" : row["dist_from_gap_pct"],
+            "checks"            : checks,
+            "score"             : score,
+            "go_long"           : go_long,
+        }
+
+    except Exception as e:
+        return {
+            "symbol"  : symbol,
+            "go_long" : False,
+            "score"   : 0,
+            "error"   : str(e),
+            "checks"  : {},
+        }
 
 
 @router.get("/chart/{symbol}")

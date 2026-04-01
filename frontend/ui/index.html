@@ -18,6 +18,18 @@
             z-index: 1000;
             white-space: nowrap;
         }
+        /* ── Conviction popup ──────────────────────── */
+        .cv-popup { font-family: monospace; font-size: 12px; min-width: 220px; color: #e0e0e0; }
+        .cv-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .cv-symbol { font-size: 11px; color: #aaa; font-weight: bold; }
+        .cv-score  { font-size: 13px; font-weight: bold; }
+        .cv-divider { border-top: 1px solid #444; margin: 5px 0; }
+        .cv-row   { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
+        .cv-icon  { width: 16px; flex-shrink: 0; }
+        .cv-label { flex: 1; color: #ccc; }
+        .cv-val   { color: #fff; font-weight: bold; text-align: right; min-width: 60px; }
+        .cv-footer { display: flex; justify-content: space-between; font-size: 10px; color: #888; margin-top: 4px; }
+        .cv-footer b { color: #ccc; }
         html, body { margin: 0; height: 100%; overflow: hidden; font-family: Arial; }
 
         .topbar {
@@ -1189,6 +1201,8 @@ let orderLots    = 1;
 let orderLotSize = 65;
 let defaultBuyQty  = null;   // null = use orderLots * lotSize; number = fixed qty for BUY
 let defaultSellQty = null;   // null = use orderLots * lotSize; number = fixed qty for SELL
+let _savedBuyQty   = null;   // snapshot of defaultBuyQty taken at entry order — restored on square off
+let _savedSellQty  = null;   // snapshot of defaultSellQty taken at entry order — restored on square off
 let orderType      = 'L';
 let limitBuffer    = parseFloat(localStorage.getItem('limitBuffer') ?? '0.20');
 let limitDefaultSL = 10;
@@ -1298,6 +1312,10 @@ function createPanel(id) {
     let lineUndoStack    = [];     // [{id, prevPrice}] — last 5 line moves, LIFO
     let lineRedoStack    = [];     // [{id, prevPrice}] — cleared on any new drag
     let slPollTimer      = null;
+    let _convictionMarker        = null;
+    let _convictionData          = null;
+    let _convictionFired         = false;
+    let _historicalConvictions   = [];
     let slTriggerBuffer  = 0.20;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
     let openPositionQty  = null; // null=unknown, 0=flat, positive=long, negative=short
@@ -1514,14 +1532,52 @@ function createPanel(id) {
             if (price !== null) crosshairPrice = price;
         }
         const tooltip = document.getElementById('tooltip');
-        if (!param.time || !gapDetails.has(param.time)) { tooltip.style.display = 'none'; return; }
-        const g = gapDetails.get(param.time);
-        tooltip.innerHTML = `<b>Gap ${g.dir}</b><br/>From: ${g.from}<br/>To: ${g.to}<br/>Jump: ${g.jump}<br/>Range: ${g.rangeLow} → ${g.rangeHigh}<br/><b>Volume:</b> ${g.volume}`;
-        // offset by panel position so tooltip appears in the correct panel
         const rect = chartAreaEl.getBoundingClientRect();
-        tooltip.style.left = (rect.left + param.point.x + 15) + 'px';
-        tooltip.style.top  = (rect.top  + param.point.y + 15) + 'px';
-        tooltip.style.display = 'block';
+        const _cvLiveMatch = param.time && _convictionMarker && _convictionData && param.time === _convictionMarker.time;
+        const _cvHistMatch = !_cvLiveMatch && param.time && _historicalConvictions && _historicalConvictions.find(s => s.bucket === param.time);
+        const _cvData = _cvLiveMatch ? _convictionData
+            : _cvHistMatch ? { symbol, bucket: _cvHistMatch.bucket, score: _cvHistMatch.score, go_long: true, gap_ref_price: _cvHistMatch.gap_ref_price, candles_above: _cvHistMatch.candles_above, seconds_above: _cvHistMatch.seconds_above, dist_from_gap_pct: _cvHistMatch.dist_from_gap_pct, checks: _cvHistMatch.checks || {} }
+            : null;
+        if (_cvData) {
+            const d = _cvData;
+            const checks = d.checks || {};
+            const checkLine = (label, key, extra) => {
+                const pass = checks[key];
+                const icon = pass ? '✅' : '❌';
+                return `<div class="cv-row"><span class="cv-icon">${icon}</span><span class="cv-label">${label}</span><span class="cv-val">${extra || ''}</span></div>`;
+            };
+            const scoreColor = d.score >= 5 ? '#00C853' : d.score >= 4 ? '#FFD600' : '#FF5252';
+            tooltip.innerHTML = `
+                <div class="cv-popup">
+                    <div class="cv-header">
+                        <span class="cv-symbol">${d.symbol}</span>
+                        <span class="cv-score" style="color:${scoreColor}">▲ GO LONG &nbsp; ${d.score}/6</span>
+                    </div>
+                    <div class="cv-divider"></div>
+                    ${checkLine('Candles held',       'candles_held',      `${d.candles_above || 0} candles`)}
+                    ${checkLine('Safe buffer',        'safe_buffer',       d.dist_from_gap_pct != null ? `+${d.dist_from_gap_pct.toFixed(2)}%` : '')}
+                    ${checkLine('Delta positive',     'delta_positive',    '')}
+                    ${checkLine('Cum delta positive', 'cum_delta_positive','')}
+                    ${checkLine('OI expanding',       'oi_expanding',      '')}
+                    ${checkLine('Bids stacking',      'bids_stacking',     '')}
+                    <div class="cv-divider"></div>
+                    <div class="cv-footer">
+                        <span>Gap ref &nbsp;<b>${d.gap_ref_price ?? '—'}</b></span>
+                        <span>Above for &nbsp;<b>${d.seconds_above ?? 0}s</b></span>
+                    </div>
+                </div>`;
+            tooltip.style.left = (rect.left + param.point.x + 15) + 'px';
+            tooltip.style.top  = (rect.top  + param.point.y + 15) + 'px';
+            tooltip.style.display = 'block';
+        } else if (param.time && gapDetails.has(param.time)) {
+            const g = gapDetails.get(param.time);
+            tooltip.innerHTML = `<b>Gap ${g.dir}</b><br/>From: ${g.from}<br/>To: ${g.to}<br/>Jump: ${g.jump}<br/>Range: ${g.rangeLow} → ${g.rangeHigh}<br/><b>Volume:</b> ${g.volume}`;
+            tooltip.style.left = (rect.left + param.point.x + 15) + 'px';
+            tooltip.style.top  = (rect.top  + param.point.y + 15) + 'px';
+            tooltip.style.display = 'block';
+        } else {
+            tooltip.style.display = 'none';
+        }
     });
 
     function updateGoToLiveBtn() {
@@ -1575,6 +1631,20 @@ function createPanel(id) {
             color: info.isFilled ? (info.dir === 'D' ? 'rgba(0,128,0,0.3)' : 'rgba(255,0,0,0.3)') : (info.dir === 'D' ? 'green' : 'red'),
             shape: 'text', text: info.dir
         }));
+        if (_convictionMarker) markers.push(_convictionMarker);
+        if (_historicalConvictions && _historicalConvictions.length > 0) {
+            for (const sig of _historicalConvictions) {
+                if (_convictionMarker && _convictionMarker.time === sig.bucket) continue;
+                markers.push({
+                    time    : sig.bucket,
+                    position: 'belowBar',
+                    color   : '#00C853',
+                    shape   : 'arrowUp',
+                    text    : `▲ ${sig.score}/6`,
+                    size    : 2,
+                });
+            }
+        }
         markers.sort((a, b) => a.time - b.time);
         candleSeries.setMarkers(markers);
     }
@@ -1608,6 +1678,54 @@ function createPanel(id) {
 
     function stopSLPoll() { if (slPollTimer) { clearInterval(slPollTimer); slPollTimer = null; } }
 
+    async function fetchConvictionHistory(sym, dateStr) {
+        try {
+            const url = dateStr
+                ? `/api/conviction/history/${sym}?date=${dateStr}`
+                : `/api/conviction/history/${sym}`;
+            const res  = await fetch(url);
+            const data = await res.json();
+            return data.signals || [];
+        } catch (e) {
+            console.warn('Conviction history fetch failed:', e);
+            return [];
+        }
+    }
+
+    async function fetchConviction(sym) {
+        try {
+            const res  = await fetch(`/api/conviction/${sym}`);
+            const data = await res.json();
+            if (!data.go_long) {
+                // Gap failed — reset so next gap can fire fresh
+                if (_convictionMarker) {
+                    _convictionMarker = null;
+                    _convictionData   = null;
+                    refreshMarkers();
+                }
+                _convictionFired = false;
+                return;
+            }
+            // go_long = true
+            if (_convictionFired) return;  // already locked — marker stays fixed
+            // First fire: lock marker at this bucket (adjusted for chart time offset)
+            const chartTime = data.bucket - 19800;
+            _convictionMarker = {
+                time    : chartTime,
+                position: 'belowBar',
+                color   : '#00C853',
+                shape   : 'arrowUp',
+                text    : `▲ ${data.score}/6`,
+                size    : 2,
+            };
+            _convictionData  = data;
+            _convictionFired = true;
+            refreshMarkers();
+        } catch (e) {
+            console.warn('Conviction fetch failed:', e);
+        }
+    }
+
     function startSLPoll(sym) {
         stopSLPoll();
         slPollTimer = setInterval(async () => {
@@ -1623,6 +1741,7 @@ function createPanel(id) {
                 if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
                 if (data.state === 'hit') setTimeout(() => updateSLLineLocal(null, 'none'), 2000);
             }
+            fetchConviction(sym);
         }, 2000);
     }
 
@@ -1802,6 +1921,7 @@ function createPanel(id) {
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = [];
         stopSLPoll();
         let history, gapsRaw;
         if (prefetched) {
@@ -1858,6 +1978,9 @@ function createPanel(id) {
             }
         }
         historyLoaded = true;
+        _historicalConvictions = (await fetchConvictionHistory(sym, histDate || null))
+            .map(s => ({ ...s, bucket: s.bucket - 19800 }));
+        refreshMarkers();
         if (savedLines.length) restoreUserLines(savedLines);
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
         if (!histDate) saveViewState();
@@ -2433,7 +2556,7 @@ async function refreshAllPanels() {
     showLoadingBar();
     // Turn sync off before refreshing (re-enables after if it was already off)
     if (syncCharts) toggleSyncCharts();
-    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, false)));
+    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
     btn.classList.remove('spinning');
     hideLoadingBar();
 }
@@ -2552,7 +2675,7 @@ async function autoPopulatePanels(mode) {
         // Load all panels in parallel — fast tables (candles_5s) make DB pool stagger unnecessary
         await Promise.all(panelSymbols.map((sym, i) => {
             if (!sym) return Promise.resolve();
-            return panels[i].loadSymbol(sym, null, false);
+            return panels[i].loadSymbol(sym, null, true);
         }));
         hideLoadingBar();
         saveViewState();
@@ -2583,7 +2706,7 @@ async function autoPopulatePanels(mode) {
     // Load all panels in parallel — fast tables (candles_5s) make DB pool stagger unnecessary
     await Promise.all(panelSymbols.map((sym, i) => {
         if (!sym) return Promise.resolve();
-        return panels[i].loadSymbol(sym, null, false);
+        return panels[i].loadSymbol(sym, null, true);
     }));
     hideLoadingBar();
     saveViewState();
@@ -2820,6 +2943,33 @@ async function placeOrder(side) {
     }
 
     const label = `${isSquareOff ? 'SQ OFF' : side} ${qty} ${sym} @ ${price} [${orderType}]`;
+
+    // Square off with an active SL order: convert the SL instead of placing a new opposite order
+    if (isSquareOff && activePanel.slOrderId && (orderType === 'M' || orderType === 'L')) {
+        toast(`⏳ Converting SL → ${orderType} to square off…`, 'info', 2000);
+        let sqRes;
+        if (orderType === 'M') {
+            sqRes = await fetch('/api/sl/convert-to-market', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ symbol: sym }),
+            });
+        } else {
+            sqRes = await fetch('/api/sl/convert-to-limit', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ symbol: sym, price }),
+            });
+        }
+        const sqData = await sqRes.json();
+        toastOrder(sqData, label);
+        if (sqData.status === 'ok') {
+            defaultBuyQty = _savedBuyQty; defaultSellQty = _savedSellQty;
+            _savedBuyQty = null; _savedSellQty = null;
+            updateOrderBar(currentLTP);
+            setTimeout(() => { if (activePanel?.symbol === sym) activePanel.refreshPosition(); }, 1500);
+        }
+        return;
+    }
+
     toast(`⏳ Placing ${label}…`, 'info', 2000);
     const res = await fetch('/api/place-limit-order', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2829,6 +2979,14 @@ async function placeOrder(side) {
     toastOrder(data, label);
     // Refresh position after any successful order (allow 1.5s for order to register)
     if (data.status === 'success') {
+        if (isSquareOff) {
+            defaultBuyQty = _savedBuyQty; defaultSellQty = _savedSellQty;
+            _savedBuyQty = null; _savedSellQty = null;
+            updateOrderBar(currentLTP);
+        } else {
+            // Snapshot qtys at entry so square off can restore them
+            _savedBuyQty = defaultBuyQty; _savedSellQty = defaultSellQty;
+        }
         setTimeout(() => { if (activePanel?.symbol === sym) activePanel.refreshPosition(); }, 1500);
     }
     // Trigger post-fill automation for SL orders
@@ -3403,7 +3561,7 @@ async function loadNamedLayout(id) {
     const syms = layout.symbols || [];
     await Promise.all(syms.map((sym, i) => {
         if (!sym || !panels[i]) return Promise.resolve();
-        return panels[i].loadSymbol(sym, null, false);
+        return panels[i].loadSymbol(sym, null, true);
     }));
 
     // Restore user-drawn horizontal lines per panel
@@ -3549,7 +3707,7 @@ function saveViewState() {
         const syms = saved.symbols;
         await Promise.all(syms.map((sym, i) => {
             if (!sym || !panels[i]) return Promise.resolve();
-            return panels[i].loadSymbol(sym, null, false);
+            return panels[i].loadSymbol(sym, null, true);
         }));
     }
 })();

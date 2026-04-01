@@ -45,9 +45,10 @@ def should_subscribe(index_name, expiry_str):
     if index_name in ["NIFTY", "SENSEX"]:
         return True
 
-    # BANKNIFTY, FINNIFTY, MIDCPNIFTY only in last 2 days of expiry
+    # BANKNIFTY, FINNIFTY, MIDCPNIFTY only in last 2 trading days of expiry.
+    # Using <= 2 calendar days to correctly capture Friday when expiry is Monday.
     if index_name in ["BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]:
-        return 0 <= days_left <= 1
+        return 0 <= days_left <= 2
 
     return True
 
@@ -103,9 +104,9 @@ async def main():
     subscriptions = [
         {"index": "NIFTY",      "ltp_symbol": "NSE:NIFTY 50",          "gap": 50,  "count": 10},
         {"index": "SENSEX",     "ltp_symbol": "BSE:SENSEX",             "gap": 100, "count": 10},
-        {"index": "BANKNIFTY",  "ltp_symbol": "NSE:NIFTY BANK",         "gap": 100, "count": 8},
-        {"index": "FINNIFTY",   "ltp_symbol": "NSE:NIFTY FIN SERVICE",  "gap": 50,  "count": 6},
-        {"index": "MIDCPNIFTY", "ltp_symbol": "NSE:NIFTY MID SELECT",   "gap": 25,  "count": 6},
+        {"index": "BANKNIFTY",  "ltp_symbol": "NSE:NIFTY BANK",         "gap": 100, "count": 10},
+        {"index": "FINNIFTY",   "ltp_symbol": "NSE:NIFTY FIN SERVICE",  "gap": 50,  "count": 10},
+        {"index": "MIDCPNIFTY", "ltp_symbol": "NSE:NIFTY MID SELECT",   "gap": 25,  "count": 10},
     ]
 
     all_tokens = []
