@@ -245,13 +245,13 @@
             font-weight: bold;
             letter-spacing: 0.4px;
             padding: 0 9px;
-            color: #64748b;
-            background: transparent;
+            color: #ffffff;
+            background: #1f2937;
             transition: background 0.12s, color 0.12s;
             white-space: nowrap;
         }
-        .ob-type-btn:hover { background: #1e293b; color: #94a3b8; }
-        .ob-type-btn.active { background: #334155; color: #f1f5f9; }
+        .ob-type-btn:hover { background: #374151; color: #e2e8f0; }
+        .ob-type-btn.active { background: #4b5563; color: #f9fafb; }
 
         /* ── Quantity calculator popup ── */
         #qtyPopup {
@@ -484,6 +484,7 @@
         }
         #refreshAllBtn:hover { background: #e4e4e4; }
         #refreshAllBtn.spinning svg { animation: spin 0.6s linear; }
+        #archiveBtn:hover { background: #1565C0; color: #fff; border-color: #42A5F5; }
 
         /* Loading bar */
         #loadingBar {
@@ -953,7 +954,7 @@
             onclick="refreshAutoPopulate()"
             title="Select an auto populate mode first"
             disabled
-            style="padding:4px 10px;border-radius:4px;border:1px solid #333;background:#1a1a2e;color:#555;cursor:not-allowed;font-size:12px;display:inline-flex;align-items:center;gap:5px;transition:all 0.2s;">
+            style="padding:3px 7px;border-radius:4px;border:1px solid #374151;background:#1f2937;color:#ffffff;cursor:not-allowed;font-size:11px;display:inline-flex;align-items:center;gap:3px;transition:all 0.2s;">
             🔄 Refresh Panels
         </button>
         <button id="syncBtn" title="Sync chart axes" onclick="toggleSyncCharts()">
@@ -962,14 +963,14 @@
         <button id="drawHlineBtn" title="Draw horizontal line (H) — click chart to place, right-click line to delete" onclick="toggleDrawHline()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="6" x2="6" y2="6" stroke-width="1.2" opacity="0.4"/><line x1="2" y1="18" x2="6" y2="18" stroke-width="1.2" opacity="0.4"/></svg>
         </button>
-        <button id="resetPositionsBtn" title="Reset position cache — use before placing order from mobile" onclick="resetPositionCache()" style="font-size:11px;padding:3px 7px;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;cursor:pointer;color:#856404;">Reset Cache</button>
+        <button id="resetPositionsBtn" title="Reset position cache — use before placing order from mobile" onclick="resetPositionCache()" style="font-size:11px;padding:3px 7px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#ffffff;">Reset Cache</button>
         <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
         <button id="savedLayoutsBtn" title="Saved layouts (Ctrl+S)" onclick="openLayoutsModal()">
             <svg width="13" height="12" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
             <span id="layoutBtnName"></span>
             <span id="layoutBtnArrow">▾</span>
         </button>
-        <button id="archiveBtn" title="Archive Manager" onclick="openArchiveModal()" style="font-size:11px;padding:3px 7px;background:#1a1a2e;border:1px solid #333;border-radius:4px;cursor:pointer;color:#aaa;">🗄 Archive</button>
+        <button id="archiveBtn" title="Archive Manager" onclick="openArchiveModal()" style="font-size:11px;padding:3px 7px;background:#0D2137;border:1px solid #1565C0;border-radius:4px;cursor:pointer;color:#42A5F5;transition:all 0.2s;">🗄 Archive</button>
         <script>
             (function() {
                 const now = new Date();
@@ -977,8 +978,11 @@
                 const mins = ist.getHours() * 60 + ist.getMinutes();
                 if (mins >= 9*60+15 && mins < 15*60+30) {
                     const btn = document.getElementById('archiveBtn');
-                    btn.style.opacity = '0.35';
-                    btn.style.cursor  = 'not-allowed';
+                    btn.style.background  = '#0a0f1a';
+                    btn.style.color       = '#1a3a5c';
+                    btn.style.border      = '1px solid #1a2a3a';
+                    btn.style.cursor      = 'not-allowed';
+                    btn.style.opacity     = '0.5';
                     btn.title = 'Archive Manager — disabled during market hours (9:15–15:30 IST)';
                 }
             })();
@@ -2635,9 +2639,9 @@ async function resetPositionCache() {
     }
     setTimeout(() => {
         btn.textContent = orig;
-        btn.style.background = '#fff3cd';
-        btn.style.borderColor = '#ffc107';
-        btn.style.color = '#856404';
+        btn.style.background = '#1f2937';
+        btn.style.borderColor = '#374151';
+        btn.style.color = '#ffffff';
         btn.disabled = false;
     }, 2000);
 }
@@ -2653,7 +2657,8 @@ async function refreshAutoPopulate() {
     if (btn) {
         btn.disabled         = true;
         btn.innerHTML        = '⏳ Populating...';
-        btn.style.background = '#0d47a1';
+        btn.style.background = '#0a2e1a';
+        btn.style.color      = '#00E676';
     }
     showLoadingBar();
     try {
@@ -2665,7 +2670,8 @@ async function refreshAutoPopulate() {
         if (btn) {
             btn.disabled         = false;
             btn.innerHTML        = '🔄 Refresh Panels';
-            btn.style.background = '#1565C0';
+            btn.style.background = '#1B4332';
+            btn.style.color      = '#00E676';
         }
     }
 }
@@ -2710,16 +2716,16 @@ function onAutoPopulateChange(mode) {
     };
     if (mode) {
         btn.disabled          = false;
-        btn.style.background  = '#1565C0';
-        btn.style.color       = '#fff';
-        btn.style.border      = '1px solid #1565C0';
+        btn.style.background  = '#1B4332';
+        btn.style.color       = '#00E676';
+        btn.style.border      = '1px solid #2E7D52';
         btn.style.cursor      = 'pointer';
         btn.title             = `Re-run: ${labels[mode] || mode}`;
     } else {
         btn.disabled          = true;
-        btn.style.background  = '#1a1a2e';
-        btn.style.color       = '#555';
-        btn.style.border      = '1px solid #333';
+        btn.style.background  = '#1f2937';
+        btn.style.color       = '#ffffff';
+        btn.style.border      = '1px solid #374151';
         btn.style.cursor      = 'not-allowed';
         btn.title             = 'Select an auto populate mode first';
     }
