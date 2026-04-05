@@ -11,7 +11,7 @@ from config.credentials import (
 from backend.services.redis_streamer import redis_streamer
 from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
-from backend.api.strikes import router as strikes_router, prewarm_strikes_cache
+from backend.api.strikes import router as strikes_router, prewarm_strikes_cache, refresh_b2_cache
 from backend.api.sl import router as sl_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
@@ -56,6 +56,26 @@ async def startup():
 
     asyncio.create_task(redis_streamer())
     await prewarm_strikes_cache(app.state.pool)  # blocking — cache must be warm before serving requests
+
+    # B2 manifest is slow (blocking S3 call) — skip during market hours to
+    # avoid stalling the event loop while charts are actively being used.
+    def _in_market_hours() -> bool:
+        ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        mins = ist.hour * 60 + ist.minute
+        return 9 * 60 + 15 <= mins < 15 * 60 + 30
+
+    async def _b2_refresh_loop():
+        while True:
+            if _in_market_hours():
+                print("[B2 cache] market hours — skipping refresh", flush=True)
+            else:
+                try:
+                    await refresh_b2_cache(app.state.pool)
+                except Exception as e:
+                    print(f"[B2 cache] refresh error: {e}")
+            await asyncio.sleep(300)  # check every 5 minutes
+
+    asyncio.create_task(_b2_refresh_loop())
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):

@@ -819,6 +819,73 @@
             color: #f1f5f9; font-size: 13px; font-weight: 500;
             width: 100%; padding: 1px 4px; box-sizing: border-box;
         }
+        /* ── Archive Manager ───────────────────────── */
+        .stat-card {
+            background: #0d1117;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 12px;
+            text-align: center;
+        }
+        .stat-label {
+            font-size: 10px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 16px;
+            color: #fff;
+            font-weight: bold;
+        }
+        .arch-tab {
+            background: none;
+            border: 1px solid #333;
+            color: #888;
+            padding: 6px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .arch-tab.active {
+            background: #1565C0;
+            border-color: #1565C0;
+            color: #fff;
+        }
+        .arch-tab:hover:not(.active) {
+            border-color: #555;
+            color: #ccc;
+        }
+        .arch-row { border-bottom: 1px solid #1a1a1a; }
+        .arch-row:hover { background: #0d1117; }
+        .arch-row td { padding: 6px; vertical-align: middle; }
+        .retain-input {
+            width: 60px;
+            background: #0d1117;
+            border: 1px solid #333;
+            color: #fff;
+            padding: 4px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 12px;
+            text-align: center;
+        }
+        .save-btn {
+            background: #1B5E20; border: none; color: #fff;
+            padding: 3px 10px; border-radius: 3px;
+            cursor: pointer; font-size: 11px;
+        }
+        .restore-btn {
+            background: #1565C0; border: none; color: #fff;
+            padding: 3px 10px; border-radius: 3px;
+            cursor: pointer; font-size: 11px;
+        }
+        .cleanup-btn {
+            background: #B71C1C; border: none; color: #fff;
+            padding: 3px 10px; border-radius: 3px;
+            cursor: pointer; font-size: 11px;
+        }
     </style>
 </head>
 <body>
@@ -895,6 +962,20 @@
             <span id="layoutBtnName"></span>
             <span id="layoutBtnArrow">▾</span>
         </button>
+        <button id="archiveBtn" title="Archive Manager" onclick="openArchiveModal()" style="font-size:11px;padding:3px 7px;background:#1a1a2e;border:1px solid #333;border-radius:4px;cursor:pointer;color:#aaa;">🗄 Archive</button>
+        <script>
+            (function() {
+                const now = new Date();
+                const ist = new Date(now.toLocaleString('en-US', {timeZone:'Asia/Kolkata'}));
+                const mins = ist.getHours() * 60 + ist.getMinutes();
+                if (mins >= 9*60+15 && mins < 15*60+30) {
+                    const btn = document.getElementById('archiveBtn');
+                    btn.style.opacity = '0.35';
+                    btn.style.cursor  = 'not-allowed';
+                    btn.title = 'Archive Manager — disabled during market hours (9:15–15:30 IST)';
+                }
+            })();
+        </script>
     </div>
 </div>
 
@@ -1558,7 +1639,7 @@ function createPanel(id) {
                     ${checkLine('Safe buffer',        'safe_buffer',       d.dist_from_gap_pct != null ? `+${d.dist_from_gap_pct.toFixed(2)}%` : '')}
                     ${checkLine('Delta positive',     'delta_positive',    '')}
                     ${checkLine('Cum delta positive', 'cum_delta_positive','')}
-                    ${checkLine('OI expanding',       'oi_expanding',      '')}
+                    ${checkLine('Cum delta strong',   'cum_delta_strong',  '')}
                     ${checkLine('Bids stacking',      'bids_stacking',     '')}
                     <div class="cv-divider"></div>
                     <div class="cv-footer">
@@ -3712,7 +3793,1010 @@ function saveViewState() {
     }
 })();
 
+// ══════════════════════════════════════════════════════════════
+// ARCHIVE MANAGER
+// ══════════════════════════════════════════════════════════════
+
+let _archiveTab = 'retention';
+
+function _isMarketHours() {
+    const now = new Date();
+    const ist = new Date(now.toLocaleString('en-US', {timeZone: 'Asia/Kolkata'}));
+    const h = ist.getHours(), m = ist.getMinutes();
+    const mins = h * 60 + m;
+    return mins >= 9 * 60 + 15 && mins < 15 * 60 + 30;
+}
+
+function openArchiveModal() {
+    if (_isMarketHours()) {
+        alert('Archive Manager is disabled during market hours (9:15 AM – 3:30 PM IST).\n\nPlease use it after market close.');
+        return;
+    }
+    document.getElementById('archiveModal').style.display = 'block';
+
+    // Reset progress divs so stale state from a previous run doesn't show
+    const restoreProgress = document.getElementById('restoreProgress');
+    const archiveProgress = document.getElementById('archiveProgress');
+    if (restoreProgress) restoreProgress.style.display = 'none';
+    if (archiveProgress) archiveProgress.style.display = 'none';
+
+    const restoreLive = document.getElementById('restoreLiveStatus');
+    const archiveLive = document.getElementById('archiveLiveStatus');
+    if (restoreLive) restoreLive.style.display = 'none';
+    if (archiveLive) archiveLive.style.display = 'none';
+
+    const restoreSubmit = document.getElementById('restoreSubmitSection');
+    if (restoreSubmit) restoreSubmit.style.display = 'block';
+
+    updateRestoreMode(); // apply default checked state
+    loadArchiveData();
+}
+
+function closeArchiveModal() {
+    document.getElementById('archiveModal').style.display = 'none';
+}
+
+function showArchiveTab(tab) {
+    _archiveTab = tab;
+    ['retention','history','restore'].forEach(t => {
+        document.getElementById(`archTab-${t}`).style.display = t === tab ? 'block' : 'none';
+        document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+    });
+}
+
+let _b2DatesMap = {};
+function _renderB2Dates(b2) {
+    _b2DatesMap = Object.fromEntries((b2.dates||[]).map(d => [d.date, {in_db: d.in_db, in_db_rows: d.in_db_rows}]));
+    document.getElementById('statB2Size').textContent =
+        ((b2.dates || []).reduce((s, d) => s + d.size_mb, 0)).toFixed(0) + ' MB';
+    document.getElementById('b2DatesBody').innerHTML = (b2.dates||[]).length === 0
+        ? `<tr><td colspan="5" style="color:#555;padding:12px;text-align:center;">No archives in Backblaze B2 yet</td></tr>`
+        : (b2.dates||[]).map(d => `
+        <tr class="arch-row">
+            <td style="padding:6px;"><input type="checkbox" class="restore-date-check" value="${d.date}" onchange="updateRestoreCount()"></td>
+            <td style="color:#fff;">${d.date}</td>
+            <td style="text-align:right;color:#aaa;">${(d.total_rows||0).toLocaleString()}</td>
+            <td style="text-align:right;color:#aaa;">${d.size_mb} MB</td>
+            <td style="text-align:right;">${d.in_db
+                ? `<span style="color:#00C853;">${(d.in_db_rows||0).toLocaleString()}</span>`
+                : `<span style="color:#555;">—</span>`
+            }</td>
+        </tr>`).join('');
+
+    // ── Archive History (source of truth = B2 manifest, not archive_log) ──
+    document.getElementById('archiveHistoryBody').innerHTML = (b2.dates||[]).length === 0
+        ? `<tr><td colspan="4" style="color:#555;padding:12px;text-align:center;">No archive history yet</td></tr>`
+        : (b2.dates||[]).map(d => `
+        <tr class="arch-row">
+            <td style="color:#00C853;">${d.date}</td>
+            <td style="text-align:right;color:#aaa;">${(d.total_rows||0).toLocaleString()}</td>
+            <td style="text-align:right;color:#aaa;">${d.size_mb} MB</td>
+            <td style="color:#555;font-size:10px;">${d.archived_at ? _toIST(d.archived_at) : '—'}</td>
+        </tr>`).join('');
+}
+
+async function loadArchiveData() {
+    try {
+        // B2 manifest is slow (network round-trip to Backblaze).
+        // Fetch it in parallel but don't block the rest of the UI on it.
+        const b2Promise = fetch('/api/archive/b2');
+
+        const [statusRes, configRes, restoreRes] = await Promise.all([
+            fetch('/api/archive/status'),
+            fetch('/api/archive/config'),
+            fetch('/api/restore/status'),
+        ]);
+
+        const status  = await statusRes.json();
+        const config  = await configRes.json();
+        const restore = await restoreRes.json();
+
+        // eligible and restore/log fetched separately with timeouts
+        // so they never block the main UI from rendering
+        const _safeFetch = async (url, fallback) => {
+            try {
+                const ctrl = new AbortController();
+                const tid  = setTimeout(() => ctrl.abort(), 8000);
+                const res  = await fetch(url, { signal: ctrl.signal });
+                clearTimeout(tid);
+                return await res.json();
+            } catch (e) {
+                console.warn(`Fetch timeout/error for ${url}:`, e.message);
+                return fallback;
+            }
+        };
+
+        const eligible   = await _safeFetch('/api/archive/eligible', { eligible: [] });
+        const restoreLog = await _safeFetch('/api/restore/log',       { restores: [] });
+
+        // ── Stats cards ───────────────────────────────────────
+        const pgSize = status.postgresql?.tables?.find(t => t.table_name === 'gap_ticks')?.size || '—';
+        const disk   = status.disk || {};
+
+        document.getElementById('statPgSize').textContent = pgSize;
+        document.getElementById('statB2Size').textContent = '…';  // filled when b2 loads
+        document.getElementById('statDisk').textContent   = `${disk.pct_used}% (${disk.free_gb}GB free)`;
+        document.getElementById('statRange').textContent  =
+            `${status.postgresql?.oldest_date || '—'} → ${status.postgresql?.newest_date || '—'}`;
+
+        const diskEl = document.getElementById('statDisk');
+        diskEl.style.color = disk.pct_used > 75 ? '#FF5252' : disk.pct_used > 60 ? '#FFD600' : '#00C853';
+
+        // ── Retention config table ────────────────────────────
+        document.getElementById('retentionTableBody').innerHTML = (config.config || []).map(r => `
+            <tr class="arch-row">
+                <td style="color:#fff;font-weight:bold;">${r.symbol_type}</td>
+                <td style="color:#888;">${r.description || ''}</td>
+                <td style="text-align:center;">
+                    <input class="retain-input" id="retain-${r.symbol_type}"
+                        type="number" value="${r.retain_days}" min="1" max="90">
+                </td>
+                <td style="text-align:center;">
+                    <button class="save-btn" onclick="saveRetention('${r.symbol_type}')">Save</button>
+                </td>
+            </tr>`).join('');
+
+        // ── Eligible to archive (with checkboxes) ─────────────
+        const eligDates = eligible.eligible || [];
+        document.getElementById('eligibleDatesBody').innerHTML = eligDates.length === 0
+            ? `<tr><td colspan="4" style="color:#555;padding:12px;text-align:center;">✅ No dates eligible for archiving — all data within retention period</td></tr>`
+            : eligDates.map(r => `
+            <tr class="arch-row">
+                <td style="padding:6px;"><input type="checkbox" class="arch-date-check" value="${r.date}" onchange="updateArchiveCount()"></td>
+                <td style="color:#FFD600;">${r.date}</td>
+                <td style="text-align:right;color:#aaa;">${r.rows != null ? r.rows.toLocaleString() : '~'}</td>
+                <td style="text-align:right;color:#555;font-size:10px;">—</td>
+            </tr>`).join('');
+
+        // ── Already archived (populated from B2 manifest via _renderB2Dates) ──
+        document.getElementById('archiveHistoryBody').innerHTML =
+            `<tr><td colspan="4" style="color:#555;padding:12px;text-align:center;">Loading from B2…</td></tr>`;
+
+        // ── Active test tables ────────────────────────────────
+        const testTables = restore.test_tables || [];
+        document.getElementById('testTablesBody').innerHTML = testTables.length === 0
+            ? '<span style="color:#555;">No active test tables</span>'
+            : testTables.map(t => `
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                        padding:6px 0;border-bottom:1px solid #1a1a1a;">
+                <span style="color:#fff;">${t.table_name}</span>
+                <span style="color:#888;margin:0 12px;">${t.size}</span>
+                <button class="cleanup-btn" onclick="cleanupRestore('${t.table_name}')">❌ Remove</button>
+            </div>`).join('');
+
+        // ── Recent restores ───────────────────────────────────────
+        const recentBody = document.getElementById('recentRestoresBody');
+        if (!recentBody) return;
+        const restores   = restoreLog.restores || [];
+        if (restores.length === 0) {
+            recentBody.innerHTML = '<div style="color:#555;padding:8px;">No restore history yet</div>';
+        } else {
+            recentBody.innerHTML = restores.slice(0, 10).map(r => {
+                const statusIcon  = r.status === 'completed' ? '✅' : r.status === 'failed' ? '❌' : '⏳';
+                const statusColor = r.status === 'completed' ? '#00C853' : r.status === 'failed' ? '#FF5252' : '#FFD600';
+                const firstEntry  = r.entries && r.entries[0];
+                const restoredAt  = firstEntry ? _toIST(firstEntry.completed_at) : 'unknown time';
+                const isPermanent = firstEntry && firstEntry.restored_as
+                    ? !firstEntry.restored_as.includes('_test_')
+                    : true;
+                const modeBadge = firstEntry && firstEntry.restored_as
+                    ? isPermanent
+                        ? `<span style="background:#0d2b0d;border:1px solid #1B5E20;color:#00C853;font-size:9px;padding:1px 6px;border-radius:3px;margin-left:6px;">PERMANENT</span>`
+                        : `<span style="background:#1a1a2e;border:1px solid #333;color:#888;font-size:9px;padding:1px 6px;border-radius:3px;margin-left:6px;">TEST</span>`
+                    : '';
+                const tableBreakdown = (r.entries || []).map(e => `
+                    <div style="display:flex;justify-content:space-between;padding:1px 0 1px 12px;font-size:10px;">
+                      <span style="color:#555;">${e.table}${e.restored_as && e.restored_as !== e.table ? `<span style="color:#333;font-size:9px;"> → ${e.restored_as}</span>` : ''}</span>
+                      <span>${e.status === 'completed'
+                          ? `<span style="color:#00C853;">✅ ${(e.rows||0).toLocaleString()} rows</span>`
+                          : e.status === 'failed'
+                          ? `<span style="color:#FF5252;">❌ ${e.error||'failed'}</span>`
+                          : `<span style="color:#555;">${e.status}</span>`
+                      }</span>
+                    </div>`
+                ).join('');
+                return `
+                <div style="padding:8px;border:1px solid #1a1a2e;border-radius:4px;margin-bottom:6px;background:#0d1117;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                    <div>
+                      <span style="color:#fff;font-weight:bold;font-size:12px;">${statusIcon} ${r.date}</span>
+                      ${modeBadge}
+                      <span style="color:#555;font-size:10px;margin-left:8px;">Restored: ${restoredAt}</span>
+                    </div>
+                    <span style="color:${statusColor};font-size:11px;">${r.tables_done}/${r.tables_total} tables &nbsp;|&nbsp; ${(r.total_rows||0).toLocaleString()} rows</span>
+                  </div>
+                  <div>${tableBreakdown}</div>
+                </div>`;
+            }).join('');
+        }
+
+        // ── B2 tab loads asynchronously (may take ~2 min first time) ──
+        document.getElementById('b2DatesBody').innerHTML =
+            `<tr><td colspan="5" style="color:#555;padding:12px;text-align:center;">
+                Loading from Backblaze B2… (cached after first load)
+            </td></tr>`;
+        b2Promise
+            .then(r => r.json())
+            .then(b2 => _renderB2Dates(b2))
+            .catch(() => {
+                document.getElementById('b2DatesBody').innerHTML =
+                    `<tr><td colspan="5" style="color:#FF5252;padding:12px;text-align:center;">
+                        Failed to load B2 data
+                    </td></tr>`;
+            });
+
+    } catch (e) {
+        console.error('Archive data load failed:', e);
+    }
+}
+
+async function saveRetention(symbolType) {
+    const input = document.getElementById(`retain-${symbolType}`);
+    const days  = parseInt(input.value);
+    if (isNaN(days) || days < 1 || days > 90) { alert('Retain days must be between 1 and 90'); return; }
+    try {
+        const res  = await fetch('/api/archive/config', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({symbol_type: symbolType, retain_days: days}),
+        });
+        const data = await res.json();
+        if (data.success) {
+            input.style.borderColor = '#00C853';
+            setTimeout(() => { input.style.borderColor = '#333'; }, 2000);
+        } else { alert('Save failed: ' + (data.error || 'Unknown')); }
+    } catch (e) { alert('Save failed: ' + e.message); }
+}
+
+// ── Refresh with visual feedback ─────────────────────────────
+function refreshWithFeedback() {
+    const btn = document.getElementById('refreshStatusBtn');
+    if (!btn) return;
+    btn.style.background = '#1B5E20';
+    btn.textContent      = '✅ Refreshing...';
+    btn.disabled         = true;
+    loadArchiveData().then(() => {
+        btn.style.background = '#1565C0';
+        btn.textContent      = '🔄 Refresh Status';
+        btn.disabled         = false;
+    }).catch(() => {
+        btn.style.background = '#1565C0';
+        btn.textContent      = '🔄 Refresh Status';
+        btn.disabled         = false;
+    });
+}
+
+// ── IST time helper ───────────────────────────────────────────
+function _toIST(utcStr) {
+    if (!utcStr) return 'unknown time';
+    try {
+        // DB stores UTC timestamps without Z — append Z so JS parses as UTC,
+        // otherwise it treats the string as local time (double-converts IST)
+        const s = (utcStr.endsWith('Z') || utcStr.includes('+')) ? utcStr : utcStr + 'Z';
+        const d = new Date(s);
+        return d.toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+        }) + ' IST';
+    } catch (e) { return utcStr.slice(0, 16); }
+}
+
+// ── Archive selection helpers ─────────────────────────────────
+function updateArchiveCount() {
+    const checked = document.querySelectorAll('.arch-date-check:checked');
+    const footer  = document.getElementById('eligibleFooter');
+    const el      = document.getElementById('archSelectedCount');
+    if (checked.length > 0) {
+        el.textContent = `${checked.length} date(s) selected`;
+        el.style.color = '#FFD600';
+        if (footer) footer.style.display = '';
+    } else {
+        el.textContent = 'No dates selected';
+        el.style.color = '#666';
+        if (footer) footer.style.display = 'none';
+    }
+}
+function toggleSelectAllArchive(cb) {
+    document.querySelectorAll('.arch-date-check').forEach(c => c.checked = cb.checked);
+    updateArchiveCount();
+}
+function clearArchiveSelection() {
+    document.querySelectorAll('.arch-date-check').forEach(c => c.checked = false);
+    const sa = document.getElementById('archSelectAll');
+    if (sa) sa.checked = false;
+    updateArchiveCount();
+}
+
+// ── Restore selection helpers ─────────────────────────────────
+function updateRestoreCount() {
+    const checked = document.querySelectorAll('.restore-date-check:checked');
+    let totalMb = 0;
+    checked.forEach(cb => {
+        const row = cb.closest('tr');
+        if (row && row.cells[3]) totalMb += parseFloat(row.cells[3].textContent) || 0;
+    });
+    const el = document.getElementById('restoreSelectedCount');
+    el.textContent = checked.length > 0 ? `${checked.length} date(s) selected — ${totalMb.toFixed(1)} MB` : 'No dates selected';
+    el.style.color = checked.length > 0 ? '#FFD600' : '#666';
+}
+function toggleSelectAllRestore(cb) {
+    document.querySelectorAll('.restore-date-check').forEach(c => c.checked = cb.checked);
+    updateRestoreCount();
+}
+function clearRestoreSelection() {
+    document.querySelectorAll('.restore-date-check').forEach(c => c.checked = false);
+    const sa = document.getElementById('restoreSelectAll'); if (sa) sa.checked = false;
+    const fd = document.getElementById('restoreFromDate'); if (fd) fd.value = '';
+    const td = document.getElementById('restoreToDate'); if (td) td.value = '';
+    updateRestoreCount();
+}
+function selectRestoreDateRange() {
+    const from = document.getElementById('restoreFromDate').value;
+    const to   = document.getElementById('restoreToDate').value;
+    if (!from || !to) { alert('Please select both From and To dates'); return; }
+    document.querySelectorAll('.restore-date-check').forEach(cb => { cb.checked = cb.value >= from && cb.value <= to; });
+    updateRestoreCount();
+}
+
+// ── Archive selected dates ────────────────────────────────────
+async function runArchiveNow() {
+    const checked = [...document.querySelectorAll('.arch-date-check:checked')].map(cb => cb.value);
+
+    if (checked.length === 0) {
+        if (!confirm('No dates selected.\n\nRun auto archive? This will archive\nall dates past retention config.')) return;
+        try {
+            const res  = await fetch('/api/archive/run', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+            const data = await res.json();
+            if (data.success) alert('✅ Auto archive started\nCheck Telegram for completion.');
+        } catch (e) { alert('❌ Error: ' + e.message); }
+        return;
+    }
+
+    if (!confirm(`Archive ${checked.length} date(s)?\n\n${checked.join(', ')}\n\nData will be moved to Backblaze B2\nand deleted from PostgreSQL.\n\nProceed?`)) return;
+
+    const progressDiv    = document.getElementById('archiveProgress');
+    const progressBar    = document.getElementById('archiveProgressBar');
+    const progressLabel  = document.getElementById('archiveProgressLabel');
+    const progressEta    = document.getElementById('archiveProgressEta');
+    const progressDetail = document.getElementById('archiveProgressDetail');
+    const liveStatus     = document.getElementById('archiveLiveStatus');
+    const liveBody       = document.getElementById('archiveLiveBody');
+    const liveFooter     = document.getElementById('archiveLiveFooter');
+
+    progressDiv.style.display = 'block';
+    progressDiv.scrollIntoView({behavior:'smooth'});
+
+    const startTime      = Date.now();
+    const estSecsPerDate = 180;
+    const totalEstSecs   = checked.length * estSecsPerDate;
+
+    const timerInterval = setInterval(() => {
+        const elapsed   = Math.floor((Date.now() - startTime) / 1000);
+        const remaining = Math.max(0, totalEstSecs - elapsed);
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        progressEta.textContent = remaining > 0 ? `~${mins}m ${secs}s remaining` : 'Finishing up...';
+    }, 1000);
+
+    // Send all dates in a single request — backend runs them sequentially
+    // in one process with a single VACUUM at the end. Firing one Popen
+    // per date caused N parallel VACUUMs on gap_ticks → IO starvation.
+    progressBar.style.width   = '15%';
+    progressLabel.textContent = `⏳ Submitting ${checked.length} date(s)…`;
+    let success = 0;
+    try {
+        const res  = await fetch('/api/archive/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({dates: checked, force: false}),
+        });
+        const data = await res.json();
+        if (data.success) success = checked.length; else success = 0;
+    } catch (e) { success = 0; }
+
+    progressBar.style.width   = '30%';
+    progressLabel.textContent = `⏳ ${checked.length} date(s) queued, running sequentially…`;
+    progressDetail.style.display = 'none';
+    liveStatus.style.display     = 'block';
+    clearInterval(timerInterval);
+
+    const pollDates = [...checked];
+    let   pollCount = 0;
+    const maxPolls  = 120;
+
+    const pollInterval = setInterval(async () => {
+        pollCount++;
+        try {
+            let allDone   = true;
+            let liveHtml  = '';
+            let totalRows = 0;
+            let totalDone = 0;
+            let totalFail = 0;
+
+            for (const dateStr of pollDates) {
+                const res     = await fetch(`/api/archive/log?date=${dateStr}`);
+                const data    = await res.json();
+                const archive = (data.archives || []).find(a => a.date === dateStr);
+
+                if (!archive) {
+                    allDone = false;
+                    liveHtml += `<div style="padding:6px 0;border-bottom:1px solid #1a1a2e;font-size:12px;"><span style="color:#fff;">${dateStr}</span><span style="color:#555;margin-left:8px;">⏳ Waiting to start...</span></div>`;
+                    continue;
+                }
+
+                const statusIcon  = archive.status === 'completed' ? '✅' : archive.status === 'failed' ? '❌' : '⏳';
+                const statusColor = archive.status === 'completed' ? '#00C853' : archive.status === 'failed' ? '#FF5252' : '#FFD600';
+
+                if (archive.status !== 'completed' && archive.status !== 'failed' && archive.status !== 'skipped') allDone = false;
+
+                totalRows += archive.total_rows || 0;
+                totalDone += archive.tables_done || 0;
+                totalFail += archive.tables_failed || 0;
+
+                progressBar.style.width = Math.min(30 + Math.round((totalDone / (pollDates.length * 3)) * 70), 99) + '%';
+
+                const tableRows = (archive.entries || []).map(e => `
+                    <div style="display:flex;justify-content:space-between;padding:2px 0 2px 16px;font-size:10px;color:#666;">
+                      <span>${e.table}</span>
+                      <span>${e.status === 'completed' ? `<span style="color:#00C853">✅ ${(e.rows||0).toLocaleString()} rows${e.size_mb > 0 ? ` (${e.size_mb}MB)` : ' (skipped B2)'}</span>` : e.status === 'skipped' ? `<span style="color:#888">⏭ skipped</span>` : e.status === 'failed' ? `<span style="color:#FF5252">❌ ${e.error||'failed'}</span>` : `<span style="color:#FFD600">⏳ running...</span>`}</span>
+                    </div>`).join('');
+
+                liveHtml += `
+                    <div style="padding:8px 0;border-bottom:1px solid #1a1a2e;">
+                      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                        <span style="color:#fff;font-size:12px;">${statusIcon} ${dateStr}</span>
+                        <span style="color:${statusColor};font-size:11px;">${archive.tables_done}/${archive.tables_total} tables — ${(archive.total_rows||0).toLocaleString()} rows${archive.total_mb > 0 ? ` (${archive.total_mb} MB)` : ''}</span>
+                      </div>
+                      ${tableRows}
+                    </div>`;
+            }
+
+            liveBody.innerHTML = liveHtml || '<div style="color:#555;padding:8px">⏳ Waiting for archive to start...</div>';
+
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            liveFooter.textContent = `Total: ${totalRows.toLocaleString()} rows archived | ${totalDone} tables done${totalFail > 0 ? ` | ${totalFail} failed` : ''} | Elapsed: ${Math.floor(elapsed/60)}m ${elapsed%60}s${allDone ? '' : ' | Polling every 5s...'}`;
+
+            if (allDone || pollCount >= maxPolls) {
+                clearInterval(pollInterval);
+                progressBar.style.width      = '100%';
+                progressBar.style.background = totalFail > 0 ? '#B71C1C' : 'linear-gradient(90deg,#1B5E20,#00C853)';
+                progressLabel.textContent    = totalFail > 0 ? `⚠️ Archive completed with ${totalFail} failures` : `✅ Archive completed — ${totalRows.toLocaleString()} rows`;
+                progressEta.textContent      = '';
+                liveFooter.textContent      += allDone ? ' ✅ Complete!' : ' ⚠️ Timed out';
+
+                setTimeout(() => {
+                    progressDiv.style.display    = 'none';
+                    liveStatus.style.display     = 'none';
+                    progressBar.style.width      = '0%';
+                    progressBar.style.background = 'linear-gradient(90deg,#1565C0,#42A5F5)';
+                    loadArchiveData();
+                }, 3000);
+            }
+        } catch (e) {
+            console.error('Archive poll error:', e);
+            const footer = document.getElementById('archiveLiveFooter');
+            if (footer) footer.textContent = `⚠️ Poll error: ${e.message} — check console`;
+        }
+    }, 3000);
+
+    clearArchiveSelection();
+}
+
+// ── Restore selected dates ────────────────────────────────────
+function updateRestoreMode() {
+    const isPermanent = document.getElementById('restoreModePermanent').checked;
+    document.getElementById('permanentWarning').style.display = isPermanent ? 'block' : 'none';
+    const btn = document.querySelector('[onclick="restoreSelectedDates()"]');
+    if (btn) {
+        btn.style.background = '#1565C0';
+        btn.textContent = isPermanent ? '▶ Restore Permanent' : '▶ Restore Selected';
+    }
+}
+
+async function runForceArchive() {
+    const fromDate = document.getElementById('forceArchiveFrom').value;
+    const toDate   = document.getElementById('forceArchiveTo').value;
+
+    if (!fromDate) { alert('Please select at least a FROM date'); return; }
+
+    const dates = [];
+    const from  = new Date(fromDate);
+    const to    = toDate ? new Date(toDate) : new Date(fromDate);
+
+    const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24)) + 1;
+    if (diffDays > 30) {
+        alert('Maximum 30 days per force archive run.\nPlease use a smaller date range.');
+        return;
+    }
+
+    for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+        dates.push(d.toISOString().slice(0, 10));
+    }
+
+    if (!confirm(
+        `⚠️ FORCE ARCHIVE ${dates.length} date(s)\n\n` +
+        dates.join(', ') + '\n\n' +
+        'This bypasses retention config.\n' +
+        'Data will be moved to Backblaze B2 and\n' +
+        'DELETED from PostgreSQL immediately.\n\n' +
+        'Are you sure?'
+    )) return;
+
+    let success = 0, failed = 0;
+    for (const dateStr of dates) {
+        try {
+            const res  = await fetch('/api/archive/run', {
+                method : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body   : JSON.stringify({ date: dateStr, force: true }),
+            });
+            const data = await res.json();
+            if (data.success) success++; else failed++;
+        } catch (e) { failed++; }
+    }
+
+    alert(
+        `Force archive jobs started:\n` +
+        `✅ ${success} started\n` +
+        `❌ ${failed} failed\n\n` +
+        `Each date runs as a background job.\n` +
+        `Check Telegram for completion notifications.`
+    );
+
+    document.getElementById('forceArchiveFrom').value = '';
+    document.getElementById('forceArchiveTo').value   = '';
+    setTimeout(() => loadArchiveData(), 5000);
+}
+
+async function restoreSelectedDates() {
+    const checked = [...document.querySelectorAll('.restore-date-check:checked')].map(cb => cb.value);
+    if (checked.length === 0) { alert('Please select at least one date to restore'); return; }
+
+    const isPermanent = document.getElementById('restoreModePermanent').checked;
+
+    const alreadyInDb = checked.filter(d => (_b2DatesMap[d] || {}).in_db);
+    const inDbWarning = alreadyInDb.length > 0
+        ? `\n\n⚠️ Already in PostgreSQL:\n` +
+          alreadyInDb.map(d => `  • ${d}`).join('\n') +
+          `\nExisting rows will be skipped (no duplicates).`
+        : '';
+    const confirmMsg = isPermanent
+        ? `⚠️ PERMANENT RESTORE — ${checked.length} date(s)\n\n` +
+          `Dates: ${checked.join(', ')}` +
+          inDbWarning +
+          `\n\nLoads into MAIN tables:\n` +
+          `  • gap_ticks\n` +
+          `  • candles_5s\n` +
+          `  • gap_events\n\n` +
+          `Charts will show this data.\n` +
+          `Auto archive re-archives at 4 AM.\n\n` +
+          `Proceed?`
+        : `Restore ${checked.length} date(s) to test tables?\n\n` +
+          `Dates: ${checked.join(', ')}` +
+          inDbWarning +
+          `\n\nSafe — does NOT affect live data.\n\n` +
+          `Proceed?`;
+    if (!confirm(confirmMsg)) return;
+
+    let success = 0;
+    let failed  = 0;
+    const total = checked.length;
+
+    const progressDiv    = document.getElementById('restoreProgress');
+    const progressBar    = document.getElementById('restoreProgressBar');
+    const progressLabel  = document.getElementById('restoreProgressLabel');
+    const progressEta    = document.getElementById('restoreProgressEta');
+    const progressDetail = document.getElementById('restoreProgressDetail');
+
+    progressDiv.style.display = 'block';
+    progressDiv.scrollIntoView({behavior: 'smooth'});
+
+    const estSecsPerDate = 120;
+    const totalEstSecs   = total * estSecsPerDate;
+    const startTime      = Date.now();
+
+    const timerInterval = setInterval(() => {
+        const elapsed   = Math.floor((Date.now() - startTime) / 1000);
+        const remaining = Math.max(0, totalEstSecs - elapsed);
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        progressEta.textContent = remaining > 0
+            ? `~${mins}m ${secs}s remaining`
+            : 'Finishing up...';
+    }, 1000);
+
+    for (let i = 0; i < checked.length; i++) {
+        const dateStr = checked[i];
+        const pct     = Math.round((i / total) * 100);
+        progressBar.style.width   = pct + '%';
+        progressLabel.textContent = `⏳ Submitting ${i + 1}/${total}: ${dateStr}`;
+        progressDetail.textContent = `Mode: ${isPermanent ? 'Permanent (main tables)' : 'Test tables'} — job running in background`;
+
+        try {
+            const res  = await fetch('/api/restore', {
+                method : 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body   : JSON.stringify({date: dateStr, permanent: isPermanent}),
+            });
+            const data = await res.json();
+            if (data.success) success++;
+            else {
+                failed++;
+                progressDetail.textContent = `❌ ${dateStr} failed: ` + (data.error || 'Unknown');
+            }
+        } catch (e) { failed++; }
+    }
+
+    clearInterval(timerInterval);
+    progressBar.style.width      = '100%';
+    progressBar.style.background = failed > 0
+        ? '#B71C1C'
+        : 'linear-gradient(90deg,#1B5E20,#00C853)';
+    progressLabel.textContent = failed > 0
+        ? `⚠️ ${success}/${total} jobs started (${failed} failed)`
+        : `✅ ${success}/${total} restore jobs started`;
+    progressEta.textContent = '';
+
+    clearRestoreSelection();
+    if (isPermanent) {
+        document.getElementById('restoreModeTest').checked = true;
+        updateRestoreMode();
+    }
+
+    // Switch from submit view to live status view
+    document.getElementById('restoreSubmitSection').style.display = 'none';
+    document.getElementById('restoreLiveStatus').style.display    = 'block';
+
+    // Start polling restore_log every 5 seconds
+    const pollDates  = [...checked];
+    let   pollCount  = 0;
+    const maxPolls   = 120; // 10 min max
+
+    const pollInterval = setInterval(async () => {
+        pollCount++;
+        try {
+            let allDone   = true;
+            let liveHtml  = '';
+            let totalRows = 0;
+            let totalDone = 0;
+            let totalFail = 0;
+
+            for (const dateStr of pollDates) {
+                const res     = await fetch(`/api/restore/log?date=${dateStr}`);
+                const data    = await res.json();
+                const restore = (data.restores || []).find(r => r.date === dateStr);
+
+                if (!restore) {
+                    allDone = false;
+                    liveHtml += `
+                        <div style="padding:6px 0;border-bottom:1px solid #1a1a2e;font-size:12px;">
+                          <span style="color:#fff;">${dateStr}</span>
+                          <span style="color:#555;margin-left:8px;">⏳ Waiting to start...</span>
+                        </div>`;
+                    continue;
+                }
+
+                const statusIcon  = restore.status === 'completed' ? '✅' : restore.status === 'failed' ? '❌' : '⏳';
+                const statusColor = restore.status === 'completed' ? '#00C853' : restore.status === 'failed' ? '#FF5252' : '#FFD600';
+
+                if (restore.status !== 'completed' && restore.status !== 'failed') allDone = false;
+
+                totalRows += restore.total_rows    || 0;
+                totalDone += restore.tables_done   || 0;
+                totalFail += restore.tables_failed || 0;
+
+                const tableRows = (restore.entries || []).map(e => `
+                    <div style="display:flex;justify-content:space-between;padding:2px 0 2px 16px;font-size:10px;color:#666;">
+                      <span>${e.table}</span>
+                      <span>${e.status === 'completed'
+                        ? `✅ ${(e.rows||0).toLocaleString()} rows`
+                        : e.status === 'failed'
+                        ? `❌ ${e.error || 'failed'}`
+                        : '⏳ running...'
+                      }</span>
+                    </div>`).join('');
+
+                liveHtml += `
+                    <div style="padding:8px 0;border-bottom:1px solid #1a1a2e;">
+                      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                        <span style="color:#fff;font-size:12px;">${statusIcon} ${dateStr}</span>
+                        <span style="color:${statusColor};font-size:11px;">
+                          ${restore.tables_done}/${restore.tables_total} tables
+                          — ${(restore.total_rows||0).toLocaleString()} rows
+                        </span>
+                      </div>
+                      ${tableRows}
+                    </div>`;
+            }
+
+            document.getElementById('restoreLiveBody').innerHTML = liveHtml ||
+                `<div style="color:#555;padding:8px;">⏳ Waiting for restore to start...</div>`;
+
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const mins    = Math.floor(elapsed / 60);
+            const secs    = elapsed % 60;
+            document.getElementById('restoreLiveFooter').textContent =
+                `Total: ${totalRows.toLocaleString()} rows` +
+                ` | ${totalDone} tables completed` +
+                (totalFail > 0 ? ` | ${totalFail} failed` : '') +
+                ` | Elapsed: ${mins}m ${secs}s` +
+                (allDone ? '' : ' | Polling every 5s...');
+
+            if (allDone || pollCount >= maxPolls) {
+                clearInterval(pollInterval);
+                document.getElementById('restoreLiveFooter').textContent +=
+                    allDone ? ' ✅ Complete!' : ' ⚠️ Timed out — check Telegram';
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                    document.getElementById('restoreSubmitSection').style.display = 'block';
+                    document.getElementById('restoreLiveStatus').style.display    = 'none';
+                    loadArchiveData();
+                }, 3000);
+            }
+        } catch (e) {
+            console.error('Restore poll error:', e);
+            const footer = document.getElementById('restoreLiveFooter');
+            if (footer) footer.textContent = `⚠️ Poll error: ${e.message} — check console`;
+        }
+    }, 3000);
+}
+
+// ── Single-date restore (kept for compatibility) ──────────────
+async function restoreDate(dateStr) {
+    if (!confirm(`Restore data for ${dateStr}?\n\nData will be loaded into temporary test tables.\nThis will NOT affect live trading data.\n\nThis may take several minutes.`)) return;
+    try {
+        const res  = await fetch('/api/restore', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({date: dateStr, permanent: false})});
+        const data = await res.json();
+        if (data.success) {
+            alert(`✅ Restore started for ${dateStr}\nCheck ~/restore_b2.log for progress\nRefresh this panel when complete to see test tables.`);
+            setTimeout(() => loadArchiveData(), 3000);
+        } else { alert('❌ Failed: ' + (data.error || 'Unknown')); }
+    } catch (e) { alert('❌ Error: ' + e.message); }
+}
+
+async function cleanupRestore(tableName) {
+    const match = tableName.match(/(\d{8})$/);
+    if (!match) { alert('Could not parse date from table name'); return; }
+    const d = match[1];
+    const dateStr = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+    if (!confirm(`Remove test tables for ${dateStr}?\n\nThis will drop all _test_ tables for this date.`)) return;
+    try {
+        const res  = await fetch(`/api/restore/${dateStr}`, {method: 'DELETE'});
+        const data = await res.json();
+        if (data.success) { await loadArchiveData(); }
+        else { alert('❌ Failed: ' + (data.error || 'Unknown')); }
+    } catch (e) { alert('❌ Error: ' + e.message); }
+}
+
+document.getElementById('archiveModal').addEventListener('click', function(e) {
+    if (e.target === this) closeArchiveModal();
+});
+
 </script>
+
+<!-- Archive Manager Modal -->
+<div id="archiveModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;overflow-y:auto;">
+  <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;max-width:900px;margin:40px auto;padding:24px;color:#e0e0e0;font-family:monospace;">
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;color:#fff;font-size:16px;">🗄 Archive Manager</h2>
+      <button onclick="closeArchiveModal()" style="background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;">✕</button>
+    </div>
+
+    <div id="archiveStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+      <div class="stat-card"><div class="stat-label">PostgreSQL</div><div class="stat-value" id="statPgSize">—</div></div>
+      <div class="stat-card"><div class="stat-label">Backblaze B2</div><div class="stat-value" id="statB2Size">—</div></div>
+      <div class="stat-card"><div class="stat-label">Disk Used</div><div class="stat-value" id="statDisk">—</div></div>
+      <div class="stat-card"><div class="stat-label">Data Range</div><div class="stat-value" id="statRange">—</div></div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid #333;padding-bottom:8px;">
+      <button class="arch-tab active" onclick="showArchiveTab('retention')" id="tab-retention">Retention Config</button>
+      <button class="arch-tab" onclick="showArchiveTab('history')" id="tab-history">Archive History</button>
+      <button class="arch-tab" onclick="showArchiveTab('restore')" id="tab-restore">Restore</button>
+    </div>
+
+    <!-- Tab: Retention Config -->
+    <div id="archTab-retention">
+      <p style="color:#aaa;font-size:11px;margin:0 0 12px;">Configure how many days of data to keep in PostgreSQL per symbol type. Older data is automatically archived to Backblaze B2.</p>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="color:#888;text-align:left;">
+            <th style="padding:6px;">Symbol Type</th>
+            <th style="padding:6px;">Description</th>
+            <th style="padding:6px;text-align:center;">Retain Days</th>
+            <th style="padding:6px;"></th>
+          </tr>
+        </thead>
+        <tbody id="retentionTableBody">
+          <tr><td colspan="4" style="color:#555;padding:12px;text-align:center;">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Tab: Archive History -->
+    <div id="archTab-history" style="display:none;">
+
+      <!-- Section 1: Eligible to Archive -->
+      <div style="margin-bottom:24px;">
+        <!-- Force Archive section -->
+        <div style="background:#0a0e1a;border:1px solid #1565C0;border-radius:6px;padding:12px;margin-bottom:16px;">
+          <div style="color:#1565C0;font-size:11px;text-transform:uppercase;margin-bottom:10px;">
+            ▶ Force Archive
+            <span style="color:#555;font-size:10px;margin-left:6px;text-transform:none;">Archive any date regardless of retention config</span>
+          </div>
+          <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+            <div>
+              <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">FROM DATE</label>
+              <input type="date" id="forceArchiveFrom" style="background:#1a1a2e;border:1px solid #1565C0;color:#fff;padding:4px 8px;border-radius:3px;font-size:12px;">
+            </div>
+            <div>
+              <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">TO DATE</label>
+              <input type="date" id="forceArchiveTo" style="background:#1a1a2e;border:1px solid #1565C0;color:#fff;padding:4px 8px;border-radius:3px;font-size:12px;">
+            </div>
+            <div>
+              <button onclick="runForceArchive()" style="background:#1565C0;border:none;color:#fff;padding:5px 16px;border-radius:3px;cursor:pointer;font-size:12px;">▶ Force Archive Range</button>
+            </div>
+          </div>
+          <div style="color:#555;font-size:10px;margin-top:8px;">⚠️ This bypasses retention config and archives selected dates immediately to Backblaze B2. Data will be deleted from PostgreSQL.</div>
+        </div>
+
+        <div id="archiveProgress" style="display:none;background:#0d1117;border:1px solid #1565C0;border-radius:6px;padding:14px;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span id="archiveProgressLabel" style="color:#fff;font-size:12px;">⏳ Submitting archive jobs...</span>
+            <span id="archiveProgressEta" style="color:#888;font-size:11px;"></span>
+          </div>
+          <div style="background:#1a1a2e;border-radius:4px;height:6px;overflow:hidden;margin-bottom:8px;">
+            <div id="archiveProgressBar" style="height:100%;background:linear-gradient(90deg,#1565C0,#42A5F5);border-radius:4px;width:0%;transition:width 0.5s ease;"></div>
+          </div>
+          <div id="archiveLiveStatus" style="display:none;">
+            <div style="color:#888;font-size:11px;text-transform:uppercase;margin-bottom:8px;">Live Archive Status</div>
+            <div id="archiveLiveBody"></div>
+            <div id="archiveLiveFooter" style="color:#555;font-size:10px;margin-top:8px;border-top:1px solid #1a1a2e;padding-top:8px;"></div>
+          </div>
+          <div id="archiveProgressDetail" style="color:#555;font-size:10px;margin-top:4px;"></div>
+        </div>
+
+        <div style="color:#FFD600;font-size:11px;margin-bottom:6px;">ELIGIBLE TO ARCHIVE <span style="color:#555;font-size:10px;margin-left:6px;">(in PostgreSQL, past retention period)</span></div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:20px;">
+          <thead>
+            <tr style="color:#888;text-align:left;">
+              <th style="padding:6px;width:30px;"><input type="checkbox" id="archSelectAll" onclick="toggleSelectAllArchive(this)"></th>
+              <th style="padding:6px;">Date</th>
+              <th style="padding:6px;text-align:right;">Rows</th>
+              <th style="padding:6px;text-align:right;"></th>
+            </tr>
+          </thead>
+          <tbody id="eligibleDatesBody">
+            <tr><td colspan="4" style="color:#555;padding:12px;text-align:center;">Loading...</td></tr>
+          </tbody>
+          <tfoot id="eligibleFooter" style="display:none;">
+            <tr>
+              <td colspan="4" style="padding:8px 6px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span id="archSelectedCount" style="color:#FFD600;font-size:11px;">No dates selected</span>
+                  <div style="display:flex;gap:8px;">
+                    <button onclick="clearArchiveSelection()" style="background:none;border:1px solid #333;color:#888;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:11px;">Clear</button>
+                    <button onclick="runArchiveNow()" style="background:#1565C0;border:none;color:#fff;padding:5px 14px;border-radius:3px;cursor:pointer;font-size:12px;">▶ Archive Selected</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- Section 2: Already Archived (read only) -->
+      <div>
+        <div style="color:#00C853;font-size:11px;margin-bottom:6px;">ALREADY ARCHIVED IN BACKBLAZE B2 <span style="color:#555;font-size:10px;margin-left:6px;">(read only — use Restore tab to retrieve)</span></div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="color:#888;text-align:left;">
+              <th style="padding:6px;">Date</th>
+              <th style="padding:6px;text-align:right;">Rows</th>
+              <th style="padding:6px;text-align:right;">Size</th>
+              <th style="padding:6px;">Archived At</th>
+            </tr>
+          </thead>
+          <tbody id="archiveHistoryBody">
+            <tr><td colspan="4" style="color:#555;padding:12px;text-align:center;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+
+    <!-- Tab: Restore -->
+    <div id="archTab-restore" style="display:none;">
+      <p style="color:#aaa;font-size:11px;margin:0 0 12px;">Restore archived data from Backblaze B2 back into PostgreSQL as temporary test tables. Select one or more dates below.</p>
+      <div style="background:#0d1117;border:1px solid #333;border-radius:6px;padding:12px;margin-bottom:16px;">
+        <div style="color:#888;font-size:11px;margin-bottom:10px;text-transform:uppercase;">Select Dates to Restore</div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <div>
+            <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">FROM DATE</label>
+            <input type="date" id="restoreFromDate" style="background:#1a1a2e;border:1px solid #333;color:#fff;padding:4px 8px;border-radius:3px;font-size:12px;">
+          </div>
+          <div>
+            <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">TO DATE</label>
+            <input type="date" id="restoreToDate" style="background:#1a1a2e;border:1px solid #333;color:#fff;padding:4px 8px;border-radius:3px;font-size:12px;">
+          </div>
+          <div style="padding-top:16px;">
+            <button onclick="selectRestoreDateRange()" style="background:#333;border:none;color:#fff;padding:5px 12px;border-radius:3px;cursor:pointer;font-size:12px;">Select Range</button>
+          </div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <span style="color:#666;font-size:10px;text-transform:uppercase;margin-right:12px;">Restore Mode:</span>
+          <label style="cursor:pointer;margin-right:16px;font-size:12px;color:#aaa;">
+            <input type="radio" name="restoreMode" id="restoreModeTest" value="test" onchange="updateRestoreMode()">
+            &nbsp;Test Tables <span style="color:#555;font-size:10px;">(safe)</span>
+          </label>
+          <label style="cursor:pointer;font-size:12px;color:#1565C0;">
+            <input type="radio" name="restoreMode" id="restoreModePermanent" value="permanent" checked onchange="updateRestoreMode()">
+            &nbsp;Permanent <span style="color:#555;font-size:10px;">(loads into main tables)</span>
+          </label>
+        </div>
+        <div id="permanentWarning" style="display:none;background:#0a1020;border:1px solid #1565C0;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#90CAF9;">
+          ⚠️ PERMANENT MODE: Data will be loaded directly into gap_ticks, candles_5s and gap_events. This cannot be undone without re-archiving. Live trading data will be affected.
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span id="restoreSelectedCount" style="color:#666;font-size:11px;">No dates selected</span>
+          <div style="display:flex;gap:8px;">
+            <button onclick="clearRestoreSelection()" style="background:none;border:1px solid #333;color:#888;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:11px;">Clear</button>
+            <button onclick="restoreSelectedDates()" style="background:#1565C0;border:none;color:#fff;padding:5px 14px;border-radius:3px;cursor:pointer;font-size:12px;">▶ Restore Selected</button>
+          </div>
+        </div>
+      </div>
+      <div id="restoreProgress" style="display:none;background:#0d1117;border:1px solid #1565C0;border-radius:6px;padding:14px;margin-bottom:16px;">
+        <!-- Submission progress -->
+        <div id="restoreSubmitSection">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span id="restoreProgressLabel" style="color:#fff;font-size:12px;">⏳ Submitting jobs...</span>
+            <span id="restoreProgressEta" style="color:#888;font-size:11px;"></span>
+          </div>
+          <div style="background:#1a1a2e;border-radius:4px;height:6px;overflow:hidden;margin-bottom:8px;">
+            <div id="restoreProgressBar" style="height:100%;background:linear-gradient(90deg,#1565C0,#42A5F5);border-radius:4px;width:0%;transition:width 0.5s ease;"></div>
+          </div>
+          <div id="restoreProgressDetail" style="color:#555;font-size:10px;"></div>
+        </div>
+        <!-- Live status section (shown after submit) -->
+        <div id="restoreLiveStatus" style="display:none;">
+          <div style="color:#888;font-size:11px;text-transform:uppercase;margin-bottom:8px;">Live Restore Status</div>
+          <div id="restoreLiveBody"></div>
+          <div id="restoreLiveFooter" style="color:#555;font-size:10px;margin-top:8px;border-top:1px solid #1a1a2e;padding-top:8px;"></div>
+        </div>
+      </div>
+
+      <div style="color:#888;font-size:11px;margin-bottom:6px;">AVAILABLE IN BACKBLAZE B2</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="color:#888;text-align:left;">
+            <th style="padding:6px;width:30px;"><input type="checkbox" id="restoreSelectAll" onclick="toggleSelectAllRestore(this)"></th>
+            <th style="padding:6px;">Date</th>
+            <th style="padding:6px;text-align:right;">B2 Rows</th>
+            <th style="padding:6px;text-align:right;">Size</th>
+            <th style="padding:6px;text-align:right;">DB Rows</th>
+          </tr>
+        </thead>
+        <tbody id="b2DatesBody">
+          <tr><td colspan="5" style="color:#555;padding:12px;text-align:center;">Loading...</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:20px;margin-bottom:20px;">
+        <div style="color:#888;font-size:11px;text-transform:uppercase;margin-bottom:8px;">
+          Recent Restores
+          <span style="color:#555;font-size:10px;margin-left:6px;">(last 10 restore operations)</span>
+          <button id="refreshStatusBtn" onclick="refreshWithFeedback()" style="float:right;background:#1565C0;border:none;color:#fff;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;transition:background 0.2s;">🔄 Refresh Status</button>
+        </div>
+        <div id="recentRestoresBody" style="font-size:12px;">Loading...</div>
+      </div>
+      <div style="margin-top:20px;">
+        <div style="color:#888;font-size:11px;margin-bottom:8px;text-transform:uppercase;">Active Test Tables in PostgreSQL</div>
+        <div id="testTablesBody" style="color:#555;font-size:12px;padding:4px;">Loading...</div>
+      </div>
+    </div>
+
+  </div>
+</div>
 
 </body>
 </html>

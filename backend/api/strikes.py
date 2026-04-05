@@ -6,6 +6,8 @@ import asyncio
 import bisect
 import logging
 import orjson
+import subprocess
+import shutil
 from fastapi import Response
 
 logger = logging.getLogger(__name__)
@@ -780,9 +782,9 @@ async def get_conviction(symbol: str, request: Request):
                     row["cum_delta"] is not None
                     and row["cum_delta"] > 0
                 ),
-                "oi_expanding"      : (
-                    row["oi_change"] is not None
-                    and row["oi_change"] > 0
+                "cum_delta_strong"  : (
+                    row["cum_delta"] is not None
+                    and row["cum_delta"] > 500
                 ),
                 "bids_stacking"     : (
                     row["depth_imbalance"] is not None
@@ -791,7 +793,7 @@ async def get_conviction(symbol: str, request: Request):
             }
 
             score   = sum(checks.values())
-            go_long = score >= 4
+            go_long = score >= 3
 
             # ── Save signal on first fire (candles_above == 3) ───
             if go_long and row["candles_above_gap"] == 3:
@@ -1023,3 +1025,656 @@ async def place_sl_order(order: SLOrder):
     except Exception as e:
         logger.error(f"place-sl-order error: {e}")
         return {"status": "error", "message": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════
+# ARCHIVE MANAGEMENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+# ── GET /api/archive/config ──────────────────────────────────
+@router.get("/archive/config")
+async def get_archive_config(request: Request):
+    """Get current retention config for all symbol types."""
+    try:
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT symbol_type, retain_days, description,
+                       updated_at
+                FROM retention_config
+                ORDER BY retain_days DESC, symbol_type ASC
+            """)
+        return {"config": [dict(r) for r in rows]}
+    except Exception as e:
+        return {"error": str(e), "config": []}
+
+
+# ── POST /api/archive/config ─────────────────────────────────
+@router.post("/archive/config")
+async def update_archive_config(request: Request, payload: dict):
+    """
+    Update retention days for a symbol type.
+    Body: {"symbol_type": "NIFTY_OPTIONS", "retain_days": 21}
+    """
+    try:
+        symbol_type = payload.get("symbol_type")
+        retain_days = payload.get("retain_days")
+
+        if not symbol_type or not retain_days:
+            return {"error": "symbol_type and retain_days required"}
+
+        if not (1 <= int(retain_days) <= 90):
+            return {"error": "retain_days must be between 1 and 90"}
+
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE retention_config
+                SET retain_days = $2,
+                    updated_at  = NOW()
+                WHERE symbol_type = $1
+            """, symbol_type, int(retain_days))
+
+        return {
+            "success"    : True,
+            "symbol_type": symbol_type,
+            "retain_days": retain_days,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── GET /api/archive/status ──────────────────────────────────
+@router.get("/archive/status")
+async def get_archive_status(request: Request):
+    """
+    Returns storage stats — PostgreSQL sizes,
+    disk usage, archive log summary.
+    """
+    try:
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = 0")
+
+            sizes = await conn.fetch("""
+                SELECT
+                    tablename AS table_name,
+                    pg_size_pretty(pg_total_relation_size(
+                        'public.'||tablename)) AS size,
+                    pg_total_relation_size(
+                        'public.'||tablename) AS size_bytes
+                FROM pg_tables
+                WHERE schemaname = 'public'
+                  AND tablename IN (
+                    'gap_ticks','candles_5s',
+                    'gap_events','conviction_signals'
+                  )
+                ORDER BY size_bytes DESC
+            """)
+
+            # Use index-friendly queries instead of full-table COUNT/MIN/MAX
+            date_range = await conn.fetchrow("""
+                SELECT
+                    (SELECT timestamp FROM gap_ticks
+                     ORDER BY timestamp ASC  LIMIT 1)::date AS oldest_date,
+                    (SELECT timestamp FROM gap_ticks
+                     ORDER BY timestamp DESC LIMIT 1)::date AS newest_date,
+                    (SELECT reltuples::bigint FROM pg_class
+                     WHERE relname = 'gap_ticks')           AS total_rows
+            """)
+
+            archive_summary = await conn.fetch("""
+                SELECT
+                    archive_date,
+                    COUNT(*)             AS tables_archived,
+                    SUM(rows_archived)   AS total_rows,
+                    SUM(file_size_bytes) AS total_bytes,
+                    MAX(completed_at)    AS completed_at
+                FROM archive_log
+                WHERE status = 'completed'
+                GROUP BY archive_date
+                ORDER BY archive_date DESC
+                LIMIT 30
+            """)
+
+            dead_tuples = await conn.fetch("""
+                SELECT relname, n_dead_tup
+                FROM pg_stat_user_tables
+                WHERE relname IN (
+                    'gap_ticks','candles_5s','gap_events'
+                )
+                ORDER BY n_dead_tup DESC
+            """)
+
+        disk       = shutil.disk_usage('/')
+        disk_pct   = round(disk.used / disk.total * 100, 1)
+        disk_free  = round(disk.free  / 1024**3, 1)
+        disk_total = round(disk.total / 1024**3, 1)
+        disk_used  = round(disk.used  / 1024**3, 1)
+
+        return {
+            "postgresql": {
+                "tables"      : [dict(r) for r in sizes],
+                "oldest_date" : str(date_range["oldest_date"])
+                                if date_range["oldest_date"] else None,
+                "newest_date" : str(date_range["newest_date"])
+                                if date_range["newest_date"] else None,
+                "total_rows"  : date_range["total_rows"],
+                "dead_tuples" : [dict(r) for r in dead_tuples],
+            },
+            "disk": {
+                "used_gb" : disk_used,
+                "free_gb" : disk_free,
+                "total_gb": disk_total,
+                "pct_used": disk_pct,
+            },
+            "archive_log": [
+                {
+                    "date"        : str(r["archive_date"]),
+                    "tables"      : r["tables_archived"],
+                    "rows"        : r["total_rows"],
+                    "size_mb"     : round(
+                        (r["total_bytes"] or 0) / 1024 / 1024, 1
+                    ),
+                    "completed_at": str(r["completed_at"]),
+                }
+                for r in archive_summary
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# In-memory cache for B2 manifest (avoids 2-min S3 round-trip on every open)
+# In-memory cache for B2 manifest (avoids 2-min S3 round-trip on every open)
+_b2_cache: dict = {"data": None, "ts": 0.0}
+_B2_CACHE_TTL = 300  # seconds (5 minutes)
+
+
+async def refresh_b2_cache(pool):
+    """Fetch B2 manifest + per-date existence check; store in _b2_cache.
+    Called by background task in chart_server.py every 5 minutes."""
+    import time as _time, boto3
+    from botocore.client import Config
+    from pathlib import Path
+    from datetime import date as _date, timedelta
+    global _b2_cache
+
+    secrets = {}
+    for line in (Path.home() / '.kite_secrets').read_text().splitlines():
+        if '=' in line and not line.startswith('#'):
+            k, _, v = line.partition('=')
+            secrets[k.strip()] = v.strip()
+
+    # Blocking boto3 call (fast: manifest.json is small)
+    s3 = boto3.client(
+        's3',
+        endpoint_url          = f"https://{secrets['BACKBLAZE_ENDPOINT']}",
+        aws_access_key_id     = secrets['BACKBLAZE_KEY_ID'],
+        aws_secret_access_key = secrets['BACKBLAZE_APP_KEY'],
+        config                = Config(signature_version='s3v4', connect_timeout=15, read_timeout=30),
+    )
+    obj      = s3.get_object(Bucket=secrets['BACKBLAZE_BUCKET'], Key='manifest.json')
+    manifest = json.loads(obj['Body'].read())
+
+    # Per-date existence check via Index Only Scan (ORDER BY ts LIMIT 1 = instant)
+    dates_in_b2 = sorted(manifest.keys())
+    db_exists: dict = {}
+    if dates_in_b2:
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = 0")
+            for d_str in dates_in_b2:
+                d     = _date.fromisoformat(d_str)
+                d_end = d + timedelta(days=1)
+                row   = await conn.fetchrow(
+                    "SELECT timestamp FROM gap_ticks"
+                    " WHERE timestamp >= $1::timestamp AND timestamp < $2::timestamp"
+                    " ORDER BY timestamp LIMIT 1",
+                    d, d_end)
+                db_exists[d_str] = row is not None
+
+    dates = []
+    for d in sorted(manifest.keys(), reverse=True):
+        tables      = manifest[d]
+        total_rows  = sum(t.get('rows', 0) for t in tables.values())
+        total_size  = sum(t.get('size_bytes', 0) for t in tables.values())
+        in_db       = db_exists.get(d, False)
+        # Latest archived_at across all tables for this date
+        archived_at = max(
+            (t.get('archived_at', '') for t in tables.values()),
+            default=''
+        )
+        dates.append({
+            "date"        : d,
+            "tables"      : list(tables.keys()),
+            "total_rows"  : total_rows,
+            "size_mb"     : round(total_size / 1024 / 1024, 1),
+            "in_db_rows"  : total_rows if in_db else 0,
+            "in_db"       : in_db,
+            "archived_at" : archived_at,
+        })
+
+    result = {"dates": dates}
+    _b2_cache["data"] = result
+    _b2_cache["ts"]   = _time.monotonic()
+    print("[B2 cache] refreshed: " + str(len(dates)) + " dates", flush=True)
+
+# ── GET /api/archive/b2 ─────────────────
+@router.get("/archive/b2")
+async def get_b2_manifest(request: Request):
+    """Returns cached B2 manifest. Cache is populated by background task every 5 min."""
+    if _b2_cache["data"] is not None:
+        return _b2_cache["data"]
+    return {"dates": [], "loading": True}
+
+
+# ── GET /api/archive/log ──────────────────────────────────────
+@router.get("/archive/log")
+async def get_archive_log(request: Request, date: str = None):
+    """Returns archive_log entries for live polling.
+    Used by UI to show archive progress."""
+    try:
+        from collections import defaultdict
+        from datetime import date as _date
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            if date:
+                rows = await conn.fetch("""
+                    SELECT
+                        archive_date,
+                        table_name,
+                        rows_archived,
+                        file_size_bytes,
+                        status,
+                        error_message,
+                        started_at,
+                        completed_at
+                    FROM archive_log
+                    WHERE archive_date = $1
+                    ORDER BY table_name ASC
+                """, _date.fromisoformat(date))
+            else:
+                rows = await conn.fetch("""
+                    SELECT
+                        archive_date,
+                        table_name,
+                        rows_archived,
+                        file_size_bytes,
+                        status,
+                        error_message,
+                        started_at,
+                        completed_at
+                    FROM archive_log
+                    ORDER BY started_at DESC
+                    LIMIT 30
+                """)
+
+        by_date = defaultdict(list)
+        for r in rows:
+            by_date[str(r["archive_date"])].append({
+                "table"       : r["table_name"],
+                "rows"        : r["rows_archived"] or 0,
+                "size_mb"     : round((r["file_size_bytes"] or 0) / 1024 / 1024, 1),
+                "status"      : r["status"],
+                "error"       : r["error_message"],
+                "started_at"  : str(r["started_at"]) if r["started_at"] else None,
+                "completed_at": str(r["completed_at"]) if r["completed_at"] else None,
+            })
+
+        archives = []
+        for d, entries in sorted(by_date.items(), reverse=True):
+            total_rows = sum(e["rows"] for e in entries)
+            total_mb   = sum(e["size_mb"] for e in entries)
+            completed  = sum(1 for e in entries if e["status"] == "completed")
+            failed     = sum(1 for e in entries if e["status"] == "failed")
+            running    = sum(1 for e in entries if e["status"] in ("pending", "running"))
+            skipped    = sum(1 for e in entries if e["status"] == "skipped")
+            overall    = (
+                "failed"    if failed   > 0 else
+                "running"   if running  > 0 else
+                "completed" if completed > 0 else
+                "skipped"
+            )
+            archives.append({
+                "date"           : d,
+                "total_rows"     : total_rows,
+                "total_mb"       : round(total_mb, 1),
+                "tables_done"    : completed,
+                "tables_failed"  : failed,
+                "tables_running" : running,
+                "tables_skipped" : skipped,
+                "tables_total"   : len(entries),
+                "status"         : overall,
+                "entries"        : entries,
+            })
+
+        return {"archives": archives}
+    except Exception as e:
+        return {"archives": [], "error": str(e)}
+
+
+@router.post("/archive/run")
+async def run_archive_now(payload: dict = {}):
+    """
+    Trigger archive job manually. Runs as background process.
+    Body: {"date": "2026-03-15"} (optional)
+    """
+    try:
+        import sys
+        from pathlib import Path
+
+        project_dir = Path(__file__).parent.parent.parent
+        script      = project_dir / 'scripts' / 'archive_to_b2.py'
+        python      = project_dir / 'venv' / 'bin' / 'python3'
+
+        if not python.exists():
+            python = Path(sys.executable)
+
+        cmd = [str(python), str(script)]
+
+        # Accept either a list of dates {"dates": [...]} or a single
+        # date {"date": "..."} for backward compat. Always launch ONE
+        # process so VACUUM runs once at the end, not N times in parallel.
+        dates = payload.get("dates") or (
+            [payload["date"]] if payload.get("date") else []
+        )
+        if dates:
+            cmd += ['--dates'] + dates
+        if payload.get("force"):
+            cmd += ['--force']
+
+        subprocess.Popen(
+            cmd,
+            cwd    = str(project_dir),
+            stdout = open(Path.home() / 'archive_b2.log', 'a'),
+            stderr = subprocess.STDOUT,
+        )
+
+        return {
+            "success" : True,
+            "message" : "Archive started in background",
+            "log_file": "~/archive_b2.log",
+            "dates"   : dates or ["auto"],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── POST /api/restore ────────────────────────────────────────
+@router.post("/restore")
+async def restore_from_b2(payload: dict):
+    """
+    Restore archived data from B2 to test tables.
+    Body: {"date": "2026-03-16", "permanent": false}
+    """
+    try:
+        import sys
+        from pathlib import Path
+
+        restore_date = payload.get("date")
+        permanent    = payload.get("permanent", False)
+
+        if not restore_date:
+            return {"error": "date is required"}
+
+        project_dir = Path(__file__).parent.parent.parent
+        script      = project_dir / 'scripts' / 'restore_from_b2.py'
+        python      = project_dir / 'venv' / 'bin' / 'python3'
+
+        if not python.exists():
+            python = Path(sys.executable)
+
+        cmd = [str(python), str(script), '--date', restore_date]
+        if permanent:
+            cmd.append('--permanent')
+
+        subprocess.Popen(
+            cmd,
+            cwd    = str(project_dir),
+            stdout = open(Path.home() / 'restore_b2.log', 'a'),
+            stderr = subprocess.STDOUT,
+        )
+
+        # Invalidate B2 cache so DB Rows column updates after restore completes
+        global _b2_cache
+        _b2_cache["data"] = None
+        _b2_cache["ts"]   = 0.0
+
+        return {
+            "success" : True,
+            "message" : "Restore started in background",
+            "date"    : restore_date,
+            "mode"    : "permanent" if permanent else "test",
+            "log_file": "~/restore_b2.log",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── GET /api/restore/status ──────────────────────────────────
+@router.get("/restore/status")
+async def get_restore_status(request: Request):
+    """Returns list of currently restored test tables."""
+    try:
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+
+            test_tables = await conn.fetch("""
+                SELECT
+                    table_name,
+                    pg_size_pretty(pg_total_relation_size(
+                        'public.'||table_name)) AS size
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name LIKE '%_test_%'
+                ORDER BY table_name
+            """)
+
+            restore_log = await conn.fetch("""
+                SELECT
+                    restore_date,
+                    table_name,
+                    restored_table,
+                    rows_restored,
+                    status,
+                    completed_at
+                FROM restore_log
+                ORDER BY started_at DESC
+                LIMIT 20
+            """)
+
+        return {
+            "test_tables": [dict(r) for r in test_tables],
+            "restore_log": [
+                {
+                    "date"        : str(r["restore_date"]),
+                    "table"       : r["table_name"],
+                    "restored_as" : r["restored_table"],
+                    "rows"        : r["rows_restored"],
+                    "status"      : r["status"],
+                    "completed_at": str(r["completed_at"]),
+                }
+                for r in restore_log
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── GET /api/restore/log ─────────────────────────────────────
+@router.get("/restore/log")
+async def get_restore_log(date: str = None, request: Request = None):
+    """
+    Returns restore_log entries for a specific date or all recent entries.
+    Used by UI to poll restore progress.
+    """
+    try:
+        from collections import defaultdict
+        from datetime import date as _date
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            if date:
+                rows = await conn.fetch("""
+                    SELECT restore_date, table_name, restored_table,
+                           rows_restored, status, error_message,
+                           session_id, started_at, completed_at
+                    FROM restore_log
+                    WHERE restore_date = $1
+                    ORDER BY started_at DESC
+                """, _date.fromisoformat(date))
+            else:
+                rows = await conn.fetch("""
+                    SELECT restore_date, table_name, restored_table,
+                           rows_restored, status, error_message,
+                           session_id, started_at, completed_at
+                    FROM restore_log
+                    ORDER BY started_at DESC
+                    LIMIT 30
+                """)
+
+        entries = []
+        for r in rows:
+            entries.append({
+                "date"        : str(r["restore_date"]),
+                "table"       : r["table_name"],
+                "restored_as" : r["restored_table"],
+                "rows"        : r["rows_restored"] or 0,
+                "status"      : r["status"],
+                "error"       : r["error_message"],
+                "session_id"  : r["session_id"] if "session_id" in r.keys() else None,
+                "started_at"  : r["started_at"].isoformat() if r["started_at"] else None,
+                "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+            })
+
+        # Group by date + session_id so multiple restores of same date show separately
+        by_session = defaultdict(list)
+        for e in entries:
+            key = f"{e['date']}_{e.get('session_id') or ''}"
+            by_session[key].append(e)
+
+        summary = []
+        for key, session_entries in sorted(by_session.items(), reverse=True):
+            d          = session_entries[0]["date"]
+            session_id = session_entries[0].get("session_id", "")
+            total_rows = sum(e["rows"] for e in session_entries)
+            completed  = sum(1 for e in session_entries if e["status"] == "completed")
+            failed     = sum(1 for e in session_entries if e["status"] == "failed")
+            running    = sum(1 for e in session_entries if e["status"] in ("pending", "running"))
+            overall    = (
+                "failed"    if failed   > 0
+                else "running"   if running  > 0
+                else "completed" if completed > 0
+                else "pending"
+            )
+            summary.append({
+                "date"          : d,
+                "session_id"    : session_id,
+                "total_rows"    : total_rows,
+                "tables_done"   : completed,
+                "tables_failed" : failed,
+                "tables_running": running,
+                "tables_total"  : len(session_entries),
+                "status"        : overall,
+                "entries"       : session_entries,
+            })
+
+        return {"restores": summary}
+    except Exception as e:
+        return {"restores": [], "error": str(e)}
+
+
+# ── DELETE /api/restore/{date} ───────────────────────────────
+@router.delete("/restore/{date}")
+async def cleanup_restore(date: str):
+    """Remove test tables for a specific date."""
+    try:
+        import sys
+        from pathlib import Path
+
+        project_dir = Path(__file__).parent.parent.parent
+        script      = project_dir / 'scripts' / 'restore_from_b2.py'
+        python      = project_dir / 'venv' / 'bin' / 'python3'
+
+        if not python.exists():
+            python = Path(sys.executable)
+
+        result = subprocess.run(
+            [str(python), str(script), '--cleanup', date],
+            cwd            = str(project_dir),
+            capture_output = True,
+            text           = True,
+        )
+
+        return {
+            "success": result.returncode == 0,
+            "date"   : date,
+            "output" : result.stdout,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── GET /api/archive/eligible ────────────────────────────────
+@router.get("/archive/eligible")
+async def get_eligible_dates(request: Request):
+    """
+    Returns dates currently in PostgreSQL that are past their
+    retention period and have NOT been archived yet.
+    """
+    try:
+        from datetime import date as _date, timedelta
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = 0")
+
+            config_rows = await conn.fetch(
+                "SELECT symbol_type, retain_days FROM retention_config"
+            )
+            config = {r['symbol_type']: r['retain_days'] for r in config_rows}
+            min_retain = min(config.values())
+            earliest   = _date.today() - timedelta(days=min_retain)
+
+            # Fast approach: use index ORDER BY LIMIT 1 to find date bounds,
+            # then enumerate dates and count per-day with range scans.
+            # Avoids scanning millions of rows when old data has been restored.
+            oldest_ts = await conn.fetchval(
+                "SELECT timestamp FROM gap_ticks WHERE timestamp < $1::timestamp ORDER BY timestamp ASC LIMIT 1",
+                earliest
+            )
+            if not oldest_ts:
+                return {"eligible": []}
+
+            newest_ts = await conn.fetchval(
+                "SELECT timestamp FROM gap_ticks WHERE timestamp < $1::timestamp ORDER BY timestamp DESC LIMIT 1",
+                earliest
+            )
+
+            # Enumerate all dates in range — show ALL dates with data
+            # past retention, regardless of archive_log status.
+            # This ensures restored dates reappear as eligible.
+            d     = oldest_ts.date()
+            end_d = newest_ts.date()
+            eligible_dates = []
+            while d <= end_d:
+                eligible_dates.append(d)
+                d += timedelta(days=1)
+
+            # Use ORDER BY timestamp LIMIT 1 — forces index scan (<1ms).
+            # Plain EXISTS/COUNT without ORDER BY picks seq scan on 19GB.
+            rows = []
+            for d in eligible_dates:
+                hit = await conn.fetchval(
+                    "SELECT 1 FROM gap_ticks WHERE timestamp >= $1::timestamp AND timestamp < $2::timestamp ORDER BY timestamp ASC LIMIT 1",
+                    d, d + timedelta(days=1)
+                )
+                if hit is not None:
+                    rows.append({'tick_date': d, 'row_count': None})
+
+        return {
+            "eligible": [
+                {"date": str(r["tick_date"]), "rows": r["row_count"]}
+                for r in rows
+            ]
+        }
+    except Exception as e:
+        return {"eligible": [], "error": str(e)}
