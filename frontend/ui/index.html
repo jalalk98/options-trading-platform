@@ -199,7 +199,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 14px;
+            width: 18px;
             background: #0c1320;
             cursor: grab;
             flex-shrink: 0;
@@ -213,10 +213,10 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            padding: 4px 11px;
+            padding: 5px 14px;
             cursor: pointer;
             border: none;
-            min-width: 46px;
+            min-width: 58px;
             gap: 1px;
             transition: filter 0.15s;
         }
@@ -224,12 +224,12 @@
         .ob-btn:active { filter: brightness(0.9); }
         .ob-buy  { background: #16a34a; color: #fff; }
         .ob-sell { background: #dc2626; color: #fff; }
-        .ob-calc { background: #1e293b; color: #94a3b8; cursor: pointer; border: none; padding: 4px 7px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; }
+        .ob-calc { background: #1e293b; color: #94a3b8; cursor: pointer; border: none; padding: 5px 9px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; }
         .ob-calc:hover { background: #334155; }
-        .ob-label { font-size: 9px; font-weight: bold; letter-spacing: 0.5px; opacity: 0.85; }
-        .ob-price { font-size: 11px; font-weight: bold; }
-        .ob-qty   { font-size: 9px; opacity: 0.8; }
-        .ob-lots  { font-size: 8px; opacity: 0.65; }
+        .ob-label { font-size: 11px; font-weight: bold; letter-spacing: 0.5px; opacity: 0.85; }
+        .ob-price { font-size: 14px; font-weight: bold; }
+        .ob-qty   { font-size: 11px; opacity: 0.8; }
+        .ob-lots  { font-size: 10px; opacity: 0.65; }
         /* ── Order-type toggle group ── */
         .ob-type-group {
             display: flex;
@@ -241,10 +241,10 @@
             flex: 1;
             border: none;
             cursor: pointer;
-            font-size: 8px;
+            font-size: 10px;
             font-weight: bold;
             letter-spacing: 0.4px;
-            padding: 0 7px;
+            padding: 0 9px;
             color: #64748b;
             background: transparent;
             transition: background 0.12s, color 0.12s;
@@ -949,6 +949,13 @@
         <button id="refreshAllBtn" title="Refresh all charts" onclick="refreshAllPanels()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
+        <button id="refreshAutoPopBtn"
+            onclick="refreshAutoPopulate()"
+            title="Select an auto populate mode first"
+            disabled
+            style="padding:4px 10px;border-radius:4px;border:1px solid #333;background:#1a1a2e;color:#555;cursor:not-allowed;font-size:12px;display:inline-flex;align-items:center;gap:5px;transition:all 0.2s;">
+            🔄 Refresh Panels
+        </button>
         <button id="syncBtn" title="Sync chart axes" onclick="toggleSyncCharts()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         </button>
@@ -1175,15 +1182,19 @@
     </div>
     <hr class="dq-divider">
     <div class="dq-section">Default Qty Override</div>
-    <div class="dq-row">
-        <span class="dq-label buy">BUY</span>
-        <input id="dqBuyInput" class="dq-input" type="number" min="1" step="1" placeholder="e.g. 30000">
-        <button class="dq-clear" id="dqBuyClear">✕</button>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+        <span style="color:#4CAF50;font-size:11px;font-weight:bold;width:32px;">BUY</span>
+        <button onclick="adjustDefaultQty('buy',-1)" onmousedown="startDQHold('buy',-1)" onmouseup="stopDQHold()" onmouseleave="stopDQHold()" style="width:28px;height:28px;background:#1a1a2e;border:1px solid #333;color:#fff;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;">−</button>
+        <input id="dqBuyInput" type="number" min="0" placeholder="qty" oninput="onDQInput('buy')" style="width:70px;text-align:center;background:#0d1117;border:1px solid #333;color:#FFD600;padding:4px;border-radius:4px;font-size:13px;">
+        <button onclick="adjustDefaultQty('buy',+1)" onmousedown="startDQHold('buy',+1)" onmouseup="stopDQHold()" onmouseleave="stopDQHold()" style="width:28px;height:28px;background:#1a1a2e;border:1px solid #333;color:#fff;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;">+</button>
+        <button onclick="clearDefaultQty('buy')" style="width:24px;height:24px;background:none;border:1px solid #333;color:#555;border-radius:4px;cursor:pointer;font-size:12px;">✕</button>
     </div>
-    <div class="dq-row">
-        <span class="dq-label sell">SELL</span>
-        <input id="dqSellInput" class="dq-input" type="number" min="1" step="1" placeholder="e.g. 30000">
-        <button class="dq-clear" id="dqSellClear">✕</button>
+    <div style="display:flex;align-items:center;gap:6px;">
+        <span style="color:#F44336;font-size:11px;font-weight:bold;width:32px;">SELL</span>
+        <button onclick="adjustDefaultQty('sell',-1)" onmousedown="startDQHold('sell',-1)" onmouseup="stopDQHold()" onmouseleave="stopDQHold()" style="width:28px;height:28px;background:#1a1a2e;border:1px solid #333;color:#fff;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;">−</button>
+        <input id="dqSellInput" type="number" min="0" placeholder="qty" oninput="onDQInput('sell')" style="width:70px;text-align:center;background:#0d1117;border:1px solid #333;color:#FFD600;padding:4px;border-radius:4px;font-size:13px;">
+        <button onclick="adjustDefaultQty('sell',+1)" onmousedown="startDQHold('sell',+1)" onmouseup="stopDQHold()" onmouseleave="stopDQHold()" style="width:28px;height:28px;background:#1a1a2e;border:1px solid #333;color:#fff;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;">+</button>
+        <button onclick="clearDefaultQty('sell')" style="width:24px;height:24px;background:none;border:1px solid #333;color:#555;border-radius:4px;cursor:pointer;font-size:12px;">✕</button>
     </div>
     <button id="qtyClose" onclick="toggleQtyPopup()">Done</button>
 </div>
@@ -2631,6 +2642,34 @@ async function resetPositionCache() {
     }, 2000);
 }
 
+async function refreshAutoPopulate() {
+    const select = document.getElementById('autoPopulateSelect');
+    const mode   = select ? select.value : '';
+    if (!mode) {
+        alert('Please select an auto populate mode from the dropdown first.');
+        return;
+    }
+    const btn = document.getElementById('refreshAutoPopBtn');
+    if (btn) {
+        btn.disabled         = true;
+        btn.innerHTML        = '⏳ Populating...';
+        btn.style.background = '#0d47a1';
+    }
+    showLoadingBar();
+    try {
+        await autoPopulatePanels(mode);
+    } catch (e) {
+        console.error('Refresh auto populate failed:', e);
+    } finally {
+        hideLoadingBar();
+        if (btn) {
+            btn.disabled         = false;
+            btn.innerHTML        = '🔄 Refresh Panels';
+            btn.style.background = '#1565C0';
+        }
+    }
+}
+
 async function refreshAllPanels() {
     const btn = document.getElementById('refreshAllBtn');
     btn.classList.add('spinning');
@@ -2642,19 +2681,49 @@ async function refreshAllPanels() {
     hideLoadingBar();
 }
 
-document.getElementById('autoPopulateSelect').addEventListener('change', async function() {
-    const value = this.value;
-    if (!value) return;
-    if (syncCharts) toggleSyncCharts();
-    const label = this.options[this.selectedIndex].text;
-    document.title = label;
-    try {
-        await autoPopulatePanels(value);
-    } catch (e) {
-        hideLoadingBar();
-        toast('Auto populate failed: ' + e.message, 'warn');
-    }
+document.getElementById('autoPopulateSelect').addEventListener('change', function() {
+    onAutoPopulateChange(this.value);
 });
+
+function onAutoPopulateChange(mode) {
+    if (mode) {
+        if (syncCharts) toggleSyncCharts();
+        const sel = document.getElementById('autoPopulateSelect');
+        if (sel) document.title = sel.options[sel.selectedIndex]?.text || mode;
+        autoPopulatePanels(mode).catch(e => {
+            hideLoadingBar();
+            toast('Auto populate failed: ' + e.message, 'warn');
+        });
+    }
+
+    const btn = document.getElementById('refreshAutoPopBtn');
+    if (!btn) return;
+    const labels = {
+        'nifty-sensex-ce': 'Nifty & Sensex CE',
+        'nifty-sensex-pe': 'Nifty & Sensex PE',
+        'nifty-ce-pe'    : 'Nifty CE & PE',
+        'sensex-ce-pe'   : 'Sensex CE & PE',
+        'nifty-ce'       : 'Nifty CE',
+        'nifty-pe'       : 'Nifty PE',
+        'sensex-ce'      : 'Sensex CE',
+        'sensex-pe'      : 'Sensex PE',
+    };
+    if (mode) {
+        btn.disabled          = false;
+        btn.style.background  = '#1565C0';
+        btn.style.color       = '#fff';
+        btn.style.border      = '1px solid #1565C0';
+        btn.style.cursor      = 'pointer';
+        btn.title             = `Re-run: ${labels[mode] || mode}`;
+    } else {
+        btn.disabled          = true;
+        btn.style.background  = '#1a1a2e';
+        btn.style.color       = '#555';
+        btn.style.border      = '1px solid #333';
+        btn.style.cursor      = 'not-allowed';
+        btn.title             = 'Select an auto populate mode first';
+    }
+}
 
 async function autoPopulatePanels(mode) {
     const total = panels.length;
@@ -3214,37 +3283,56 @@ function toggleQtyPopup(e) {
     const sellInp = document.getElementById('dqSellInput');
     buyInp.value  = defaultBuyQty  != null ? defaultBuyQty  : '';
     sellInp.value = defaultSellQty != null ? defaultSellQty : '';
-    buyInp.classList.toggle('active',  defaultBuyQty  != null);
-    sellInp.classList.toggle('active', defaultSellQty != null);
     const inp = document.getElementById('qtyDisplay');
     inp.focus(); inp.select();
 }
 
-// Default qty inputs — save on change, clear on ✕
-document.getElementById('dqBuyInput').addEventListener('change', function() {
-    const v = parseInt(this.value, 10);
-    defaultBuyQty = (!isNaN(v) && v > 0) ? v : null;
-    this.classList.toggle('active', defaultBuyQty != null);
+// ── Default Qty Override helpers ──────────────────────────────
+function onDQInput(side) {
+    const inputId = side === 'buy' ? 'dqBuyInput' : 'dqSellInput';
+    const input   = document.getElementById(inputId);
+    const v       = parseInt(input.value, 10);
+    if (side === 'buy') {
+        defaultBuyQty  = (!isNaN(v) && v > 0) ? v : null;
+    } else {
+        defaultSellQty = (!isNaN(v) && v > 0) ? v : null;
+    }
     updateOrderBar(null);
-});
-document.getElementById('dqSellInput').addEventListener('change', function() {
-    const v = parseInt(this.value, 10);
-    defaultSellQty = (!isNaN(v) && v > 0) ? v : null;
-    this.classList.toggle('active', defaultSellQty != null);
+}
+
+function clearDefaultQty(side) {
+    const inputId = side === 'buy' ? 'dqBuyInput' : 'dqSellInput';
+    document.getElementById(inputId).value = '';
+    if (side === 'buy') defaultBuyQty  = null;
+    else                defaultSellQty = null;
     updateOrderBar(null);
-});
-document.getElementById('dqBuyClear').addEventListener('click', function() {
-    defaultBuyQty = null;
-    document.getElementById('dqBuyInput').value = '';
-    document.getElementById('dqBuyInput').classList.remove('active');
-    updateOrderBar(null);
-});
-document.getElementById('dqSellClear').addEventListener('click', function() {
-    defaultSellQty = null;
-    document.getElementById('dqSellInput').value = '';
-    document.getElementById('dqSellInput').classList.remove('active');
-    updateOrderBar(null);
-});
+}
+
+function adjustDefaultQty(side, delta) {
+    const step    = orderLotSize || 1;
+    const inputId = side === 'buy' ? 'dqBuyInput' : 'dqSellInput';
+    const input   = document.getElementById(inputId);
+    if (!input) return;
+    const current = parseInt(input.value) || 0;
+    const newVal  = Math.max(0, current + delta * step);
+    input.value   = newVal > 0 ? newVal : '';
+    onDQInput(side);
+}
+
+let _dqHoldTimer = null, _dqHoldInterval = null;
+function startDQHold(side, delta) {
+    stopDQHold();
+    _dqHoldTimer = setTimeout(() => {
+        _dqHoldInterval = setInterval(() => adjustDefaultQty(side, delta), 80);
+    }, 400);
+}
+function stopDQHold() {
+    clearTimeout(_dqHoldTimer);
+    clearInterval(_dqHoldInterval);
+}
+
+// Keep input in sync when popup opens (used by toggleQtyPopup)
+// — no addEventListener needed; oninput handles live edits inline.
 function adjustLots(delta) {
     orderLots = Math.max(1, orderLots + delta);
     if (activePanel) activePanel.panelLots = orderLots;
