@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from backend.services.websocket_handler import run_websocket
 
 from backend.services.instrument_registry import (
@@ -184,4 +185,11 @@ async def main():
         await asyncio.sleep(3600)
 
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except Exception as e:
+    from kiteconnect.exceptions import TokenException
+    if isinstance(e, TokenException):
+        logger.error(f"Invalid Kite access_token — service will not restart until token is refreshed: {e}")
+        sys.exit(3)  # exit code 3 = bad token; systemd RestartPreventExitStatus=3 stops the crash loop
+    raise

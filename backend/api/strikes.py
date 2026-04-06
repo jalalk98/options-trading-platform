@@ -1,5 +1,6 @@
 # backend/api/strikes.py
 
+import re
 import time
 import random
 import asyncio
@@ -732,7 +733,7 @@ async def get_conviction_history(symbol: str, request: Request, date: str = None
                 "candles_above"    : row["candles_above"],
                 "seconds_above"    : row["seconds_above"],
                 "dist_from_gap_pct": row["dist_from_gap_pct"],
-                "checks"           : row["checks"] or {},
+                "checks"           : json.loads(row["checks"]) if isinstance(row["checks"], str) else (row["checks"] or {}),
             }
             for row in rows
         ]
@@ -895,30 +896,63 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
 
 _hist_symbols_cache: dict = {}  # date_str → list of {symbol, display}
 
+_MONTH_MAP = {m: i for i, m in enumerate(
+    ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'], 1
+)}
+_OPT_RE = re.compile(
+    r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+    r'(\d{2})([A-Z]{3}|\d{1}\d{2})'  # YY + (MON3 monthly | M+DD weekly)
+    r'(\d+)'                           # strike
+    r'(CE|PE)$'
+)
+
+def _parse_symbol_display(sym: str) -> tuple:
+    """Parse NSE option symbol into (expiry_date, strike, opt_type, display).
+    Returns (PyDate.max, 0, '', sym) for index/unrecognised symbols."""
+    m = _OPT_RE.match(sym)
+    if not m:
+        return (PyDate.max, 0, '', sym)
+    _, yy, date_code, strike_s, opt_type = m.groups()
+    year = 2000 + int(yy)
+    strike = float(strike_s)
+    if date_code.isalpha():                          # monthly e.g. MAR
+        month = _MONTH_MAP.get(date_code, 1)
+        expiry = PyDate(year, month, 28)             # approximate — only used for sort
+        exp_label = date_code
+    else:                                            # weekly e.g. 407 = Apr 07
+        month, day = int(date_code[0]), int(date_code[1:])
+        expiry = PyDate(year, month, day)
+        exp_label = expiry.strftime("%d %b")
+    display = f'{int(strike)} {opt_type}  [exp {exp_label}]'
+    return (expiry, strike, opt_type, display)
+
+
 @router.get("/hist-symbols")
 async def get_hist_symbols(date: str, request: Request):
-    """Returns all distinct symbols that have tick data for a given IST date (YYYY-MM-DD).
-    Historical data never changes so results are cached indefinitely after first load."""
+    """Returns all distinct symbols that have candle data for a given IST date (YYYY-MM-DD).
+    Uses candles_5s (511 MB) instead of gap_ticks (14 GB) to avoid a full-table-scan timeout.
+    Display strings are derived by parsing the NSE symbol name — no gap_ticks query needed.
+    Historical data never changes so results are cached indefinitely after first load.
+    """
     if date in _hist_symbols_cache:
         return _hist_symbols_cache[date]
 
     pool = request.app.state.pool
     date_obj = PyDate.fromisoformat(date)
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT DISTINCT symbol, strike, option_type, expiry_date
-            FROM gap_ticks
-            WHERE timestamp >= $1::date + TIME '09:15:00'
-              AND timestamp <= $1::date + TIME '15:35:00'
-            ORDER BY expiry_date, strike, option_type
+        sym_rows = await conn.fetch("""
+            SELECT DISTINCT symbol
+            FROM candles_5s
+            WHERE bucket >= EXTRACT(EPOCH FROM $1::date + TIME '09:15:00')::BIGINT
+              AND bucket <= EXTRACT(EPOCH FROM $1::date + TIME '15:35:00')::BIGINT
         """, date_obj)
-    result = [
-        {
-            "symbol": r["symbol"],
-            "display": f'{int(r["strike"])} {r["option_type"]}  [exp {r["expiry_date"].strftime("%d %b")}]'
-        }
-        for r in rows
-    ]
+
+    entries = []
+    for r in sym_rows:
+        expiry, strike, opt_type, display = _parse_symbol_display(r["symbol"])
+        entries.append((expiry, strike, opt_type, r["symbol"], display))
+    entries.sort(key=lambda x: (x[0], x[1], x[2]))
+    result = [{"symbol": e[3], "display": e[4]} for e in entries]
     _hist_symbols_cache[date] = result
     return result
 
