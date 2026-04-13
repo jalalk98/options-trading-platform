@@ -32,7 +32,9 @@ _atm_cache = {}          # keyed by index, e.g. "NIFTY" / "SENSEX"
 ATM_CACHE_TTL = 300      # 5 minutes
 
 _ltp_cache = {"data": None, "ts": 0}
-LTP_CACHE_TTL = 2        # 2 seconds — live index prices
+LTP_CACHE_TTL  = 2       # 2 seconds — live index prices
+_ltp_refreshing: bool = False
+_ltp_inflight: "asyncio.Task | None" = None
 
 
 async def _query_strikes(pool):
@@ -201,17 +203,10 @@ def _idx_entry(d):
     change_pct = round(change * 100 / prev, 2) if prev and prev != 0 else None
     return {"ltp": ltp, "change": change, "change_pct": change_pct}
 
-@router.get("/index-ltp")
-async def get_index_ltp(request: Request):
-    """Returns live LTP + change from prev close for all tracked indices."""
-    now = time.monotonic()
-    cached = _ltp_cache.get("data")
-    if cached and (now - _ltp_cache["ts"]) < _ltp_cache.get("ttl", LTP_CACHE_TTL):
-        return cached
-
-    # Run _kite.quote() in a thread so it never blocks the asyncio event loop.
-    # 2-second timeout: if Kite is unreachable (weekend/market closed) we fail
-    # fast instead of stalling for 10+ seconds.
+async def _compute_ltp(pool) -> dict:
+    """Fetch live index LTPs: Kite first (2s timeout), DB fallback.
+    Sets _ltp_cache['ttl'] as a side-effect (2s live, 60s DB fallback)."""
+    # Try Kite with 2-second timeout
     try:
         loop = asyncio.get_event_loop()
         data = await asyncio.wait_for(
@@ -229,43 +224,97 @@ async def get_index_ltp(request: Request):
             "MIDCPNIFTY": _idx_entry(data.get("NSE:NIFTY MID SELECT",   {})),
         }
         if any(v["ltp"] is not None for v in result.values()):
-            _ltp_cache["data"] = result
-            _ltp_cache["ts"]   = now
-            _ltp_cache["ttl"]  = LTP_CACHE_TTL   # live data: 2s TTL
+            _ltp_cache["ttl"] = LTP_CACHE_TTL  # 2s — live data
             return result
     except Exception:
         pass
 
-    # Fallback: read latest prices from candles_5s (fast index scan, no heap fetches)
+    # DB fallback: LATERAL forces per-symbol index lookup via
+    # idx_candles_5s_symbol_bucket_desc → 5 index seeks, 1 row each, ~7ms total
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT s.symbol, c.close AS curr_price
+            FROM (VALUES ('NIFTY'), ('SENSEX'), ('BANKNIFTY'), ('FINNIFTY'), ('MIDCPNIFTY')) AS s(symbol)
+            CROSS JOIN LATERAL (
+                SELECT close
+                FROM candles_5s
+                WHERE symbol = s.symbol
+                  AND bucket >= EXTRACT(EPOCH FROM NOW() - INTERVAL '5 days')::BIGINT
+                ORDER BY symbol, bucket DESC
+                LIMIT 1
+            ) c
+        """)
+    db_prices = {r["symbol"]: r["curr_price"] for r in rows}
+    _ltp_cache["ttl"] = 60  # 60s — DB fallback (market closed)
+    return {
+        "NIFTY":      {"ltp": db_prices.get("NIFTY"),      "change": None, "change_pct": None},
+        "SENSEX":     {"ltp": db_prices.get("SENSEX"),     "change": None, "change_pct": None},
+        "BANKNIFTY":  {"ltp": db_prices.get("BANKNIFTY"),  "change": None, "change_pct": None},
+        "FINNIFTY":   {"ltp": db_prices.get("FINNIFTY"),   "change": None, "change_pct": None},
+        "MIDCPNIFTY": {"ltp": db_prices.get("MIDCPNIFTY"), "change": None, "change_pct": None},
+    }
+
+
+async def _refresh_ltp_background(pool) -> None:
+    """Refresh LTP cache in background (stale-while-revalidate helper)."""
+    global _ltp_refreshing
     try:
-        pool = request.app.state.pool
-        async with pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT c.symbol, c.close AS curr_price
-                FROM candles_5s c
-                JOIN (
-                    SELECT symbol, MAX(bucket) AS max_bucket
-                    FROM candles_5s
-                    WHERE symbol IN ('NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY')
-                      AND bucket >= EXTRACT(EPOCH FROM NOW() - INTERVAL '5 days')::BIGINT
-                    GROUP BY symbol
-                ) latest ON c.symbol = latest.symbol AND c.bucket = latest.max_bucket
-            """)
-        db_prices = {r["symbol"]: r["curr_price"] for r in rows}
-        result = {
-            "NIFTY":      {"ltp": db_prices.get("NIFTY"),      "change": None, "change_pct": None},
-            "SENSEX":     {"ltp": db_prices.get("SENSEX"),     "change": None, "change_pct": None},
-            "BANKNIFTY":  {"ltp": db_prices.get("BANKNIFTY"),  "change": None, "change_pct": None},
-            "FINNIFTY":   {"ltp": db_prices.get("FINNIFTY"),   "change": None, "change_pct": None},
-            "MIDCPNIFTY": {"ltp": db_prices.get("MIDCPNIFTY"), "change": None, "change_pct": None},
-        }
+        result = await _compute_ltp(pool)
         _ltp_cache["data"] = result
-        _ltp_cache["ts"]   = now
-        _ltp_cache["ttl"]  = 60   # DB fallback (market closed): cache for 60s
+        _ltp_cache["ts"]   = time.monotonic()
+    except Exception as e:
+        print(f"[LTP] background refresh failed: {e}", flush=True)
+    finally:
+        _ltp_refreshing = False
+
+
+@router.get("/index-ltp")
+async def get_index_ltp(request: Request):
+    """Returns live LTP + change from prev close for all tracked indices.
+
+    Stale-while-revalidate: any cached data (even stale) is returned instantly
+    while a background task silently refreshes.  On cold start (no cache) the
+    first caller computes; concurrent callers wait on the same in-flight Task
+    instead of each spawning their own DB query.
+    """
+    global _ltp_refreshing, _ltp_inflight
+
+    max_age = _ltp_cache.get("ttl", 60)
+
+    # ── Stale-while-revalidate ─────────────────────────────────────────────
+    if _ltp_cache.get("data"):
+        age = time.monotonic() - _ltp_cache.get("ts", 0)
+        if age >= max_age and not _ltp_refreshing:
+            # Stale: trigger background refresh but return immediately
+            _ltp_refreshing = True
+            asyncio.create_task(_refresh_ltp_background(request.app.state.pool))
+        return _ltp_cache["data"]   # always instant once cache is populated
+
+    # ── Cold start: no cache yet — compute once, deduplicate concurrent callers
+    if _ltp_inflight and not _ltp_inflight.done():
+        # Another coroutine is already computing — wait for it instead of a
+        # duplicate DB query
+        try:
+            await _ltp_inflight
+            if _ltp_cache.get("data"):
+                return _ltp_cache["data"]
+        except Exception:
+            pass
+
+    # We are the first caller — create task so latecomers can join it
+    pool = request.app.state.pool
+    _ltp_inflight = asyncio.create_task(_compute_ltp(pool))
+    try:
+        result = await _ltp_inflight
+        _ltp_cache["data"] = result
+        _ltp_cache["ts"]   = time.monotonic()
         return result
     except Exception:
         empty = {"ltp": None, "change": None, "change_pct": None}
-        return {"NIFTY": empty, "SENSEX": empty, "BANKNIFTY": empty, "FINNIFTY": empty, "MIDCPNIFTY": empty}
+        return {"NIFTY": empty, "SENSEX": empty, "BANKNIFTY": empty,
+                "FINNIFTY": empty, "MIDCPNIFTY": empty}
+    finally:
+        _ltp_inflight = None
 
 
 @router.get("/resolve-symbol")
@@ -647,6 +696,7 @@ def _compute_gap_fills(history, gaps):
 
 
 _chart_cache = {}   # symbol → {"data": {...}, "ts": float, "ttl": int}
+_jump_cache:  dict = {}  # f"{symbol}_{date}" → {"data": [...], "ts": float}
 
 
 # ── Conviction scorer ──────────────────────────────────────────────────────
@@ -838,6 +888,213 @@ async def get_conviction(symbol: str, request: Request):
         }
 
 
+@router.get("/jumps/{symbol}")
+async def get_jump_history(symbol: str, request: Request, date: str = None):
+    """Returns all intraday price jumps above per-index threshold for a symbol on a given date.
+    Uses two targeted SQL queries + O(N) single-pass fill detection + TTL cache (30s live / 86400s historical).
+    Query 1 hits idx_gap_ticks_jump_lookup (partial, price_jump+curr_price as key cols) for <1s cold compute.
+    """
+    try:
+        import math as _math
+
+        def _price_filter(sym: str) -> float:
+            if sym.startswith("SENSEX"):      return 450.0
+            elif sym.startswith("BANKNIFTY"): return 300.0
+            elif sym.startswith("MIDCPNIFTY"): return 100.0
+            elif sym.startswith("FINNIFTY"):  return 250.0
+            return 250.0  # NIFTY and default
+
+        def _jump_threshold(sym: str) -> float:
+            if sym.startswith("SENSEX"):      return 15.0
+            if sym.startswith("BANKNIFTY"):   return 10.0
+            if sym.startswith("MIDCPNIFTY"):  return 3.0
+            if sym.startswith("FINNIFTY"):    return 3.0
+            return 5.0
+
+        query_date = PyDate.fromisoformat(date) if date else PyDate.today()
+        today_str  = str(PyDate.today())
+        is_today   = (str(query_date) == today_str)
+        cache_key  = f"{symbol}_{query_date}"
+        cache_ttl  = 60 if is_today else 86400
+
+        # ── Cache check ───────────────────────────────────────────────
+        cached = _jump_cache.get(cache_key)
+        if cached and (time.monotonic() - cached["ts"]) < cache_ttl:
+            return {"jumps": cached["data"], "count": len(cached["data"]), "cached": True}
+
+        price_filter = _price_filter(symbol)
+        threshold    = _jump_threshold(symbol)
+
+        pool = request.app.state.pool
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = 0")
+
+            # ── Query 1: jump candidates only (tiny result set) ───────
+            # Range predicates on timestamp are sargable with idx_gap_ticks_jump_lookup
+            # (symbol, timestamp INCLUDE curr_price, prev_price, price_jump
+            #  WHERE curr_price > 0 AND ABS(price_jump) > 3).
+            # Partial predicate means only big-jump rows are in the index — tiny scan.
+            # Lower bound moved to 09:15:03 to skip only first 2s of opening noise.
+            raw_jumps = await conn.fetch("""
+                SELECT timestamp, curr_price, prev_price, price_jump
+                FROM gap_ticks
+                WHERE symbol        = $1
+                  AND timestamp    >= $2::date + TIME '09:15:03'
+                  AND timestamp    <= $2::date + TIME '15:35:00'
+                  AND curr_price    > 0
+                  AND curr_price    < $3
+                  AND ABS(price_jump) > $4
+                ORDER BY timestamp ASC
+            """, symbol, query_date, price_filter, threshold)
+
+        if not raw_jumps:
+            _jump_cache[cache_key] = {"data": [], "ts": time.monotonic()}
+            return {"jumps": [], "count": 0, "cached": False}
+
+        # Build jump list from Query 1 — no fill info yet
+        jumps    = []
+        is_first = True
+        for row in raw_jumps:
+            ts   = row["timestamp"]
+            pj   = float(row["price_jump"] or 0)
+            curr = float(row["curr_price"])
+            prev = float(row["prev_price"] or 0)
+            epoch  = int(ts.timestamp()) + 19800
+            bucket = _math.floor(epoch / 5) * 5
+            jumps.append({
+                "bucket"       : bucket,
+                "timestamp"    : str(ts),
+                "direction"    : "UP" if pj > 0 else "DOWN",
+                "pre_price"    : prev,
+                "post_price"   : curr,
+                "jump_pts"     : round(pj, 2),
+                "is_first"     : is_first,
+                "filled"       : False,
+                "filled_bucket": None,
+            })
+            is_first = False
+
+        # ── Deduplicate by 5-second bucket (keep largest abs jump) ───
+        # Multiple ticks in the same 5s window produce the same chartTime
+        # and stack as duplicate circles on the same candle.
+        seen_buckets: dict = {}
+        for j in jumps:
+            b = j["bucket"]
+            if b not in seen_buckets or abs(j["jump_pts"]) > abs(seen_buckets[b]["jump_pts"]):
+                seen_buckets[b] = j
+        jumps = list(seen_buckets.values())
+        for i, j in enumerate(jumps):
+            j["is_first"] = (i == 0)
+
+        # ── Query 2: fill scan — all ticks from first jump onward ─────
+        # No price_filter here so fill ticks above price_filter are visible
+        # (e.g. SENSEX DOWN jump with pre_price=453 fills at 457).
+        # Only fetches ticks from the first jump timestamp forward — not the
+        # whole day — keeping the result set manageable.
+        first_jump_ts = raw_jumps[0]["timestamp"]
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = 0")
+            fill_ticks = await conn.fetch("""
+                SELECT timestamp, curr_price
+                FROM gap_ticks
+                WHERE symbol      = $1
+                  AND timestamp  >= $2
+                  AND timestamp  <= $3::date + TIME '15:35:00'
+                  AND curr_price  > 0
+                ORDER BY timestamp ASC
+            """, symbol, first_jump_ts, query_date)
+
+        # ── O(N) single-pass fill detection over fill_ticks ──────────
+        # pending_fills holds jump dicts (shared refs) awaiting fill.
+        # Updating pf in-place propagates to the jumps list automatically.
+        pending_fills = list(jumps)   # start with all jumps pending fill
+
+        for ftick in fill_ticks:
+            if not pending_fills:
+                break   # all fills found early — skip remaining ticks
+            ts   = ftick["timestamp"]
+            curr = float(ftick["curr_price"])
+            still_pending = []
+            for pf in pending_fills:
+                if pf["direction"] == "UP" and curr <= pf["pre_price"]:
+                    epoch = int(ts.timestamp()) + 19800
+                    pf["filled"]        = True
+                    pf["filled_bucket"] = _math.floor(epoch / 5) * 5
+                elif pf["direction"] == "DOWN" and curr >= pf["pre_price"]:
+                    epoch = int(ts.timestamp()) + 19800
+                    pf["filled"]        = True
+                    pf["filled_bucket"] = _math.floor(epoch / 5) * 5
+                else:
+                    still_pending.append(pf)
+            pending_fills = still_pending
+
+        # ── Write cache ───────────────────────────────────────────────
+        _jump_cache[cache_key] = {"data": jumps, "ts": time.monotonic()}
+
+        # Evict entries older than 25 hours (covers max TTL of 86400s with margin)
+        cutoff = time.monotonic() - 90000
+        for k in [k for k, v in _jump_cache.items() if v["ts"] < cutoff]:
+            _jump_cache.pop(k, None)
+
+        return {"jumps": jumps, "count": len(jumps), "cached": False}
+
+    except Exception as e:
+        return {"jumps": [], "count": 0, "error": str(e)}
+
+
+class PrefetchPayload(BaseModel):
+    symbols: list = []
+    date: str = None
+
+@router.post("/jumps/prefetch")
+async def prefetch_jumps(payload: PrefetchPayload, request: Request):
+    """Pre-warm jump cache for multiple symbols.
+    Semaphore(2) limits concurrent DB computations to prevent CPU/DB overload.
+    """
+    try:
+        import datetime, asyncio
+
+        date_str   = payload.date
+        query_date = (
+            datetime.date.fromisoformat(date_str)
+            if date_str
+            else datetime.date.today()
+        )
+
+        symbols = list(dict.fromkeys(payload.symbols))[:12]
+        if not symbols:
+            return {"prefetched": 0}
+
+        # Semaphore limits to 2 concurrent DB queries at a time
+        sem = asyncio.Semaphore(2)
+
+        async def compute_one(sym):
+            # Check cache first — no DB query needed on hit
+            cache_key = f"{sym}_{query_date}"
+            cached    = _jump_cache.get(cache_key)
+            if cached:
+                today_str = str(datetime.date.today())
+                ttl = 30 if str(query_date) == today_str else 86400
+                if (time.monotonic() - cached["ts"]) < ttl:
+                    return  # already warm
+
+            async with sem:
+                try:
+                    await get_jump_history(
+                        sym,
+                        request,
+                        str(query_date) if date_str else None
+                    )
+                except Exception:
+                    pass
+
+        await asyncio.gather(*[compute_one(s) for s in symbols])
+        return {"prefetched": len(symbols)}
+
+    except Exception as e:
+        return {"prefetched": 0, "error": str(e)}
+
+
 @router.get("/chart/{symbol}")
 async def get_chart(symbol: str, request: Request, nocache: bool = False, date: str = None):
     """Combined history + gaps endpoint with server-side gap-fill computation.
@@ -881,6 +1138,10 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
                 return Response(content=orjson.dumps(data), media_type="application/json")
 
     # Full query path: first load, nocache=true, or historical date
+    # Also evict jump cache for this symbol so next jumps call recomputes fresh.
+    if nocache:
+        today_str = str(PyDate.today())
+        _jump_cache.pop(f"{symbol}_{today_str}", None)
     # Single connection per chart keeps pool usage to 1 per panel (8 vs 16 for 8 panels).
     async with pool.acquire() as conn:
         history = await _query_history(conn, symbol, date)

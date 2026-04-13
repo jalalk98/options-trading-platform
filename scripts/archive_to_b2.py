@@ -17,6 +17,8 @@ import hashlib
 import argparse
 import asyncio
 import asyncpg
+import tempfile
+import time
 import boto3
 from botocore.client import Config
 from pathlib import Path
@@ -113,7 +115,7 @@ async def get_dates_to_archive(conn, config, specific_date=None, force=False):
     rows = await conn.fetch("""
         SELECT DISTINCT timestamp::date AS tick_date
         FROM gap_ticks
-        WHERE timestamp::date < $1
+        WHERE timestamp < $1::date
           AND timestamp::date NOT IN (
               SELECT archive_date FROM archive_log
               WHERE status = 'completed'
@@ -194,65 +196,144 @@ def _symbol_conditions(config, tick_date):
 # ── Export one table for one date to CSV.GZ ──────────────────
 async def export_table_date(conn, table_name, tick_date, config, force=False):
     """
-    Export all rows for tick_date from table_name.
-    Returns (csv_gz_bytes, row_count, md5_checksum)
+    Export all rows for tick_date from table_name using
+    cursor-based pagination (no OFFSET).
+    Streams rows directly to a gzip temp file on disk — zero RAM spike.
+    Returns (gz_bytes, row_count, md5_checksum)
     or (None, 0, None) if nothing to export.
     """
     print(f"  Exporting {table_name} for {tick_date}...")
 
     if table_name == 'gap_ticks':
         if force:
-            where = f"timestamp::date = '{tick_date}'"
+            where = (
+                f"timestamp >= '{tick_date}'::date "
+                f"AND timestamp < '{tick_date}'::date + INTERVAL '1 day'"
+            )
         else:
             conditions = _symbol_conditions(config, tick_date)
             if not conditions:
                 print(f"    Skipping {tick_date} — within retention period")
                 return None, 0, None
             where = (
-                f"timestamp::date = '{tick_date}' AND "
+                f"timestamp >= '{tick_date}'::date "
+                f"AND timestamp < '{tick_date}'::date + INTERVAL '1 day' AND "
                 f"({' OR '.join(conditions)})"
             )
-        query = f"SELECT * FROM gap_ticks WHERE {where} ORDER BY timestamp ASC"
+        order_col   = "timestamp"
+        cursor_col  = "timestamp"
+        cursor_type = "timestamptz"
 
     elif table_name == 'candles_5s':
-        query = f"""
-            SELECT * FROM candles_5s
-            WHERE bucket >= EXTRACT(EPOCH FROM '{tick_date}'::date)::BIGINT
-              AND bucket <  EXTRACT(EPOCH FROM '{tick_date}'::date
-                            + INTERVAL '1 day')::BIGINT
-            ORDER BY bucket ASC
-        """
+        where = (
+            f"bucket >= EXTRACT(EPOCH FROM '{tick_date}'::date)::BIGINT "
+            f"AND bucket < EXTRACT(EPOCH FROM '{tick_date}'::date "
+            f"             + INTERVAL '1 day')::BIGINT"
+        )
+        order_col   = "bucket"
+        cursor_col  = "bucket"
+        cursor_type = "BIGINT"
+
     elif table_name == 'gap_events':
-        query = f"""
-            SELECT * FROM gap_events
-            WHERE bucket >= EXTRACT(EPOCH FROM '{tick_date}'::date)::BIGINT
-              AND bucket <  EXTRACT(EPOCH FROM '{tick_date}'::date
-                            + INTERVAL '1 day')::BIGINT
-            ORDER BY bucket ASC
-        """
+        where = (
+            f"bucket >= EXTRACT(EPOCH FROM '{tick_date}'::date)::BIGINT "
+            f"AND bucket < EXTRACT(EPOCH FROM '{tick_date}'::date "
+            f"             + INTERVAL '1 day')::BIGINT"
+        )
+        order_col   = "bucket"
+        cursor_col  = "bucket"
+        cursor_type = "BIGINT"
+
     else:
         return None, 0, None
 
-    # Use COPY for streaming — avoids materialising millions of Python objects
-    from io import BytesIO
-    buf = BytesIO()
-    await conn.copy_from_query(query, output=buf, format='csv', header=True)
-    csv_bytes = buf.getvalue()
-    buf.close()
+    # ── Stream to temp gzip file on disk ──────────────────────
+    # No COUNT(*) — start cursor loop immediately.
+    # If first chunk is empty → nothing to export.
+    # Never accumulates in RAM — each chunk is written and freed.
+    CHUNK       = 500_000
+    done        = 0
+    writer      = None
+    fieldnames  = None
+    last_cursor = None   # cursor-based pagination — no OFFSET
+    start_time  = time.time()
 
-    # Header-only means no data rows
-    first_nl = csv_bytes.find(b'\n')
-    if first_nl == -1 or first_nl == len(csv_bytes) - 1:
-        print(f"    No rows found for {table_name} {tick_date}")
-        return None, 0, None
+    tmp = tempfile.NamedTemporaryFile(
+        suffix='.csv.gz', delete=False,
+        dir=tempfile.gettempdir()
+    )
+    tmp_path = tmp.name
 
-    # Count rows without loading into memory (count newlines minus header)
-    row_count = csv_bytes.count(b'\n') - 1  # subtract header line
-    gz_bytes  = gzip.compress(csv_bytes, compresslevel=9)
-    md5       = hashlib.md5(gz_bytes).hexdigest()
+    try:
+        with gzip.open(tmp.name, 'wt', encoding='utf-8',
+                       compresslevel=3) as gz_out:
 
-    print(f"    {row_count:,} rows → {len(gz_bytes)/1024/1024:.1f} MB compressed")
-    return gz_bytes, row_count, md5
+            while True:
+                # Build cursor WHERE clause
+                if last_cursor is None:
+                    cursor_where = where
+                else:
+                    cursor_where = (
+                        f"{where} AND {cursor_col} > "
+                        f"'{last_cursor}'::{cursor_type}"
+                    )
+
+                chunk_rows = await conn.fetch(
+                    f"SELECT * FROM {table_name} "
+                    f"WHERE {cursor_where} "
+                    f"ORDER BY {order_col} ASC "
+                    f"LIMIT {CHUNK}"
+                )
+
+                if not chunk_rows:
+                    if done == 0:
+                        print(f"    No rows found for {table_name} {tick_date}")
+                    break
+
+                if writer is None:
+                    fieldnames = list(chunk_rows[0].keys())
+                    writer = csv.DictWriter(gz_out, fieldnames=fieldnames)
+                    writer.writeheader()
+
+                for row in chunk_rows:
+                    writer.writerow(dict(row))
+
+                last_cursor  = chunk_rows[-1][cursor_col]
+                done        += len(chunk_rows)
+
+                # Progress: rows done, rate, elapsed (no total/ETA)
+                elapsed = time.time() - start_time
+                rate    = done / elapsed if elapsed > 0 else 0
+                print(
+                    f"    {done:,} rows "
+                    f"| {rate:,.0f} rows/s "
+                    f"| {elapsed/60:.1f} min elapsed      ",
+                    end='\r', flush=True
+                )
+
+                del chunk_rows   # free RAM immediately
+
+        print(f"\n    {done:,} rows exported in "
+              f"{(time.time()-start_time)/60:.1f} min")
+
+        if done == 0:
+            os.unlink(tmp_path)
+            return None, 0, None
+
+        # ── Read gz file back for upload ──────────────────────
+        gz_bytes = Path(tmp_path).read_bytes()
+        md5      = hashlib.md5(gz_bytes).hexdigest()
+
+        print(f"    {done:,} rows → "
+              f"{len(gz_bytes)/1024/1024:.1f} MB compressed")
+        return gz_bytes, done, md5
+
+    finally:
+        # Always clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 # ── Upload to Backblaze B2 ────────────────────────────────────
@@ -286,15 +367,19 @@ def update_manifest(s3_client, bucket, date_str, table_name,
 
 
 # ── Delete archived rows from PostgreSQL ──────────────────────
-async def delete_archived_rows(conn, table_name, tick_date, config):
+async def delete_archived_rows(conn, table_name, tick_date, config, force=False):
     print(f"  Deleting {table_name} rows for {tick_date}...")
 
     if table_name == 'gap_ticks':
-        conditions = _symbol_conditions(config, tick_date)
+        if force:
+            conditions = ['(1=1)']
+        else:
+            conditions = _symbol_conditions(config, tick_date)
         if not conditions:
             return 0
         where  = (
-            f"timestamp::date = '{tick_date}' AND "
+            f"timestamp >= '{tick_date}'::date "
+            f"AND timestamp < '{tick_date}'::date + INTERVAL '1 day' AND "
             f"({' OR '.join(conditions)})"
         )
         result = await conn.execute(
@@ -381,7 +466,11 @@ async def run_archive(dry_run=False, specific_date=None,
                             (archive_date, table_name, status)
                         VALUES ($1, $2, 'running')
                         ON CONFLICT (archive_date, table_name)
-                        DO UPDATE SET status='running', started_at=NOW()
+                        DO UPDATE SET
+                            status        = 'running',
+                            started_at    = NOW(),
+                            error_message = NULL,
+                            completed_at  = NULL
                     """, tick_date, table)
 
                     gz_bytes, row_count, md5 = await export_table_date(
@@ -418,7 +507,7 @@ async def run_archive(dry_run=False, specific_date=None,
                                     table, row_count, len(gz_bytes), md5)
 
                     await delete_archived_rows(
-                        conn, table, tick_date, config
+                        conn, table, tick_date, config, force=force
                     )
 
                     await conn.execute("""

@@ -1085,6 +1085,7 @@
     </svg>
 </button>
 <div id="tooltip"></div>
+<div id="jumpTooltip" style="display:none;position:fixed;z-index:1000;pointer-events:none;min-width:160px;"></div>
 <div id="undoToast"></div>
 <div id="toastContainer"></div>
 
@@ -1412,7 +1413,8 @@ function createPanel(id) {
     let _convictionData          = null;
     let _convictionFired         = false;
     let _historicalConvictions   = [];
-    let slTriggerBuffer  = 0.20;
+    let _jumpMarkers             = [];
+    let slTriggerBuffer  = 1;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
     let openPositionQty  = null; // null=unknown, 0=flat, positive=long, negative=short
     // ── Lazy history load state ───────────────────
@@ -1674,6 +1676,40 @@ function createPanel(id) {
         } else {
             tooltip.style.display = 'none';
         }
+
+        // ── Jump tooltip ──────────────────────────────────────
+        const jumpTT   = document.getElementById('jumpTooltip');
+        const jumpData = _jumpMarkers.find(j => j.chartTime === param.time);
+        if (jumpData && param.point && jumpTT) {
+            const color = jumpData.is_first
+                ? (jumpData.filled ? '#FFCC80' : '#FF9800')
+                : jumpData.direction === 'UP'
+                ? (jumpData.filled ? '#A5D6A7' : '#00C853')
+                : (jumpData.filled ? '#EF9A9A' : '#FF5252');
+            jumpTT.innerHTML = `
+              <div style="font-size:11px;color:#fff;padding:8px 10px;background:#1a1a2e;border:1px solid ${color};border-radius:4px;line-height:1.7;">
+                <div style="font-weight:bold;color:${color};margin-bottom:4px;">
+                  ${jumpData.is_first
+                      ? '🔶 First Jump'
+                      : jumpData.direction === 'UP'
+                      ? '🟢 Up Jump'
+                      : '🔴 Down Jump'}
+                  ${jumpData.filled ? '<span style="color:#607D8B;font-size:10px"> (Filled)</span>' : ''}
+                </div>
+                <div>Direction:&nbsp;<b style="color:${jumpData.direction === 'UP' ? '#00C853' : '#FF5252'}">${jumpData.direction}</b></div>
+                <div>Pre-jump:&nbsp;<b>${jumpData.pre_price}</b></div>
+                <div>Post-jump:&nbsp;<b>${jumpData.post_price}</b></div>
+                <div>Jump:&nbsp;<b style="color:${jumpData.direction === 'UP' ? '#00C853' : '#FF5252'}">${jumpData.jump_pts > 0 ? '+' : ''}${Number(jumpData.jump_pts).toFixed(1)} pts</b></div>
+                <div>${jumpData.filled
+                  ? '<span style="color:#607D8B">✅ Gap Filled</span>'
+                  : '<span style="color:#FFD600">⏳ Not Filled</span>'}</div>
+              </div>`;
+            jumpTT.style.left    = (rect.left + param.point.x + 15) + 'px';
+            jumpTT.style.top     = (rect.top  + param.point.y - 40) + 'px';
+            jumpTT.style.display = 'block';
+        } else if (jumpTT) {
+            jumpTT.style.display = 'none';
+        }
     });
 
     function updateGoToLiveBtn() {
@@ -1741,8 +1777,20 @@ function createPanel(id) {
                 });
             }
         }
-        markers.sort((a, b) => a.time - b.time);
-        candleSeries.setMarkers(markers);
+        const jumpMarks = _jumpMarkers.map(j => ({
+            time    : j.chartTime,
+            position: j.direction === 'UP' ? 'belowBar' : 'aboveBar',
+            color   : j.is_first
+                        ? (j.filled ? '#FFCC80' : '#FF9800')
+                        : j.direction === 'UP'
+                        ? (j.filled ? '#A5D6A7' : '#00C853')
+                        : (j.filled ? '#EF9A9A' : '#FF5252'),
+            shape   : 'circle',
+            text    : '',
+            size    : 1,
+        }));
+        const allMarkers = [...markers, ...jumpMarks].sort((a, b) => a.time - b.time);
+        candleSeries.setMarkers(allMarkers);
     }
 
     function checkGapFill(candle) {
@@ -1785,6 +1833,24 @@ function createPanel(id) {
         } catch (e) {
             console.warn('Conviction history fetch failed:', e);
             return [];
+        }
+    }
+
+    async function fetchJumpHistory(sym, dateStr) {
+        try {
+            const url = dateStr
+                ? `/api/jumps/${encodeURIComponent(sym)}?date=${dateStr}`
+                : `/api/jumps/${encodeURIComponent(sym)}`;
+            const res  = await fetch(url);
+            const data = await res.json();
+            _jumpMarkers = (data.jumps || []).map(j => ({
+                ...j,
+                chartTime      : j.bucket - 19800,
+                filledChartTime: j.filled_bucket ? j.filled_bucket - 19800 : null,
+            }));
+            refreshMarkers();
+        } catch(e) {
+            console.warn('fetchJumpHistory failed:', e);
         }
     }
 
@@ -1849,8 +1915,8 @@ function createPanel(id) {
             if (data.state && data.state !== 'none' && data.price) {
                 updateSLLineLocal(data.price, data.state);
                 slOrderId = data.order_id || null;
+                if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
             }
-            if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
         } catch (_) {}
     }
 
@@ -1970,6 +2036,26 @@ function createPanel(id) {
                 });
                 refreshMarkers();
             }
+            if (tick.is_jump) {
+                const chartTime = tick.bucket - 19800;
+                const exists = _jumpMarkers.some(j =>
+                    j.chartTime === chartTime && j.direction === tick.direction
+                );
+                if (!exists) {
+                    _jumpMarkers.push({
+                        chartTime      : chartTime,
+                        bucket         : tick.bucket,
+                        direction      : tick.direction,
+                        pre_price      : tick.prev_price,
+                        post_price     : tick.value,
+                        jump_pts       : tick.price_jump,
+                        is_first       : tick.is_first,
+                        filled         : false,
+                        filledChartTime: null,
+                    });
+                    refreshMarkers();
+                }
+            }
             if (!currentCandle || bucketTime > currentCandle.time) {
                 currentCandle = { time: bucketTime, open: price, high: price, low: price, close: price };
                 lastCandleTime = bucketTime;
@@ -2011,13 +2097,14 @@ function createPanel(id) {
             document.getElementById('symbolSelect').value = histDate ? sym : display;
             resetOrderBar(sym);
             if (!isSameSymbol) panelLots = 1;  // new symbol → reset this panel's saved lot count
+            if (!isSameSymbol) slTriggerBuffer = sym.startsWith('SENSEX') ? 2 : 1;
         }
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = [];
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = [];
         stopSLPoll();
         let history, gapsRaw;
         if (prefetched) {
@@ -2074,9 +2161,12 @@ function createPanel(id) {
             }
         }
         historyLoaded = true;
-        _historicalConvictions = (await fetchConvictionHistory(sym, histDate || null))
+        const jumpPromise = fetchJumpHistory(sym, histDate || null);
+        const convHist = await fetchConvictionHistory(sym, histDate || null);
+        _historicalConvictions = (convHist || [])
             .map(s => ({ ...s, bucket: s.bucket - 19800 }));
         refreshMarkers();
+        jumpPromise.catch(e => console.warn('Jump history failed:', e));
         if (savedLines.length) restoreUserLines(savedLines);
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
         if (!histDate) saveViewState();
@@ -2146,6 +2236,9 @@ function createPanel(id) {
         set panelLots(v)        { panelLots = v; },
         get openPositionQty()   { return openPositionQty; },
         get chart()             { return chart; },
+        get _jumpMarkers()    { return _jumpMarkers; },
+        set _jumpMarkers(v)   { _jumpMarkers = v; },
+        refreshMarkers,
         updateGoToLiveBtn,
         refreshPosition,
         loadSymbol: panelLoadSymbol,
@@ -2356,6 +2449,9 @@ async function onHistDateChange(date) {
     const noData = document.getElementById('histNoData');
     sel.innerHTML = '<option value="">Loading...</option>';
     noData.style.display = 'none';
+    // Pre-warm jump cache for current panel symbols on this historical date
+    const currentSyms = panels.map(p => p.symbol).filter(Boolean);
+    if (currentSyms.length) prefetchJumps(currentSyms, date);
     try {
         const res = await fetch(`/api/hist-symbols?date=${date}`);
         const symbols = await res.json();
@@ -2676,13 +2772,40 @@ async function refreshAutoPopulate() {
     }
 }
 
+// Load panels in batches of 4 to prevent DB saturation.
+async function loadPanelsBatched(panelList, sym_getter, nocache) {
+    const BATCH = 4;
+    for (let i = 0; i < panelList.length; i += BATCH) {
+        const batch = panelList.slice(i, i + BATCH);
+        await Promise.all(batch.map(p => p.loadSymbol(sym_getter(p), null, nocache)));
+    }
+}
+
+// Pre-warm jump cache for all active panels.
+// Fires with a 2s delay so panel loads finish first.
+async function prefetchJumps(symbols, date) {
+    if (!symbols || !symbols.length) return;
+    const unique = [...new Set(symbols.filter(Boolean))].slice(0, 12);
+    if (!unique.length) return;
+    const body = { symbols: unique };
+    if (date) body.date = date;
+    setTimeout(() => {
+        fetch('/api/jumps/prefetch', {
+            method : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body   : JSON.stringify(body),
+        }).catch(e => console.warn('Prefetch failed:', e));
+    }, 2000);
+}
+
 async function refreshAllPanels() {
     const btn = document.getElementById('refreshAllBtn');
     btn.classList.add('spinning');
     showLoadingBar();
     // Turn sync off before refreshing (re-enables after if it was already off)
     if (syncCharts) toggleSyncCharts();
-    await Promise.all(panels.filter(p => p.symbol).map(p => p.loadSymbol(p.symbol, null, true)));
+    const activePanels = panels.filter(p => p.symbol);
+    await loadPanelsBatched(activePanels, p => p.symbol, true);
     btn.classList.remove('spinning');
     hideLoadingBar();
 }
@@ -2828,13 +2951,13 @@ async function autoPopulatePanels(mode) {
         }
 
         const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
-        // Load all panels in parallel — fast tables (candles_5s) make DB pool stagger unnecessary
-        await Promise.all(panelSymbols.map((sym, i) => {
-            if (!sym) return Promise.resolve();
-            return panels[i].loadSymbol(sym, null, true);
-        }));
+        const activeSingle = panelSymbols
+            .map((sym, i) => sym ? panels[i] : null)
+            .filter(Boolean);
+        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true);
         hideLoadingBar();
         saveViewState();
+        prefetchJumps(panelSymbols.filter(Boolean));
         return;
     }
 
@@ -2859,13 +2982,13 @@ async function autoPopulatePanels(mode) {
         panelSymbols = [...g1Symbols, ...g2Symbols];
     }
 
-    // Load all panels in parallel — fast tables (candles_5s) make DB pool stagger unnecessary
-    await Promise.all(panelSymbols.map((sym, i) => {
-        if (!sym) return Promise.resolve();
-        return panels[i].loadSymbol(sym, null, true);
-    }));
+    const activeDual = panelSymbols
+        .map((sym, i) => sym ? panels[i] : null)
+        .filter(Boolean);
+    await loadPanelsBatched(activeDual, p => panelSymbols[panels.indexOf(p)], true);
     hideLoadingBar();
     saveViewState();
+    prefetchJumps(panelSymbols.filter(Boolean));
 }
 
 /* ======================
@@ -3829,6 +3952,39 @@ document.addEventListener('keydown', e => {
     }
 });
 
+// Jump fill-status polling — every 45s during market hours
+setInterval(async () => {
+    const now  = new Date();
+    const ist  = new Date(now.getTime() + 5.5 * 3600000);
+    const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+    if (mins < 555 || mins > 930) return;  // outside 09:15–15:30 IST
+
+    await Promise.all(
+        panels
+            .filter(p => p.symbol && (p._jumpMarkers || []).length && (p._jumpMarkers || []).some(j => !j.filled))
+            .map(async panel => {
+                try {
+                    const res  = await fetch(`/api/jumps/${encodeURIComponent(panel.symbol)}`);
+                    const data = await res.json();
+                    let changed = false;
+                    (data.jumps || []).forEach(u => {
+                        const existing = (panel._jumpMarkers || []).find(j =>
+                            j.bucket === u.bucket && j.direction === u.direction
+                        );
+                        if (existing && !existing.filled && u.filled) {
+                            existing.filled          = true;
+                            existing.filledChartTime = u.filled_bucket ? u.filled_bucket - 19800 : null;
+                            changed = true;
+                        }
+                    });
+                    if (changed) panel.refreshMarkers();
+                } catch(e) {
+                    console.warn('Jump fill poll failed:', e);
+                }
+            })
+    );
+}, 45000);
+
 // Autosave — every 30 seconds, only when a named layout is active
 setInterval(() => {
     if (!_activeLayoutId) return;
@@ -3878,12 +4034,14 @@ function saveViewState() {
         sel.value = saved.autoPopulate;
         document.title = sel.options[sel.selectedIndex]?.text || document.title;
         try { await autoPopulatePanels(saved.autoPopulate); } catch (e) {}
+        // prefetchJumps is called inside autoPopulatePanels
     } else if (saved && saved.symbols && saved.symbols.some(Boolean)) {
         const syms = saved.symbols;
-        await Promise.all(syms.map((sym, i) => {
-            if (!sym || !panels[i]) return Promise.resolve();
-            return panels[i].loadSymbol(sym, null, true);
-        }));
+        const activeSaved = syms
+            .map((sym, i) => (sym && panels[i]) ? panels[i] : null)
+            .filter(Boolean);
+        await loadPanelsBatched(activeSaved, p => syms[panels.indexOf(p)], true);
+        prefetchJumps(syms.filter(Boolean));
     }
 })();
 

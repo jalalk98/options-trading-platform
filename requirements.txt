@@ -35,6 +35,7 @@ mplfinance==0.12.10b0
 numpy==1.26.4
 openpyxl==3.1.5
 packaging==24.2
+playwright==1.58.0
 pandas==2.2.2
 pillow==12.0.0
 pyasn1==0.6.0
