@@ -898,11 +898,11 @@ async def get_jump_history(symbol: str, request: Request, date: str = None):
         import math as _math
 
         def _price_filter(sym: str) -> float:
-            if sym.startswith("SENSEX"):      return 450.0
-            elif sym.startswith("BANKNIFTY"): return 300.0
-            elif sym.startswith("MIDCPNIFTY"): return 100.0
-            elif sym.startswith("FINNIFTY"):  return 250.0
-            return 250.0  # NIFTY and default
+            if sym.startswith("SENSEX"):       return 600.0
+            elif sym.startswith("BANKNIFTY"):  return 400.0
+            elif sym.startswith("MIDCPNIFTY"): return 120.0
+            elif sym.startswith("FINNIFTY"):   return 300.0
+            return 300.0  # NIFTY and default
 
         def _jump_threshold(sym: str) -> float:
             if sym.startswith("SENSEX"):      return 15.0
@@ -1012,18 +1012,23 @@ async def get_jump_history(symbol: str, request: Request, date: str = None):
         for ftick in fill_ticks:
             if not pending_fills:
                 break   # all fills found early — skip remaining ticks
-            ts   = ftick["timestamp"]
-            curr = float(ftick["curr_price"])
+            ts          = ftick["timestamp"]
+            curr        = float(ftick["curr_price"])
+            fill_epoch  = int(ts.timestamp()) + 19800
+            fill_bucket = _math.floor(fill_epoch / 5) * 5
             still_pending = []
             for pf in pending_fills:
+                # Fill tick must be strictly after the jump's own candle —
+                # a tick before or at the jump time cannot retroactively fill it
+                if fill_bucket <= pf["bucket"]:
+                    still_pending.append(pf)
+                    continue
                 if pf["direction"] == "UP" and curr <= pf["pre_price"]:
-                    epoch = int(ts.timestamp()) + 19800
                     pf["filled"]        = True
-                    pf["filled_bucket"] = _math.floor(epoch / 5) * 5
+                    pf["filled_bucket"] = fill_bucket
                 elif pf["direction"] == "DOWN" and curr >= pf["pre_price"]:
-                    epoch = int(ts.timestamp()) + 19800
                     pf["filled"]        = True
-                    pf["filled_bucket"] = _math.floor(epoch / 5) * 5
+                    pf["filled_bucket"] = fill_bucket
                 else:
                     still_pending.append(pf)
             pending_fills = still_pending

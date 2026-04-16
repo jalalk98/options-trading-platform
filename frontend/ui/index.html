@@ -1697,12 +1697,16 @@ function createPanel(id) {
                   ${jumpData.filled ? '<span style="color:#607D8B;font-size:10px"> (Filled)</span>' : ''}
                 </div>
                 <div>Direction:&nbsp;<b style="color:${jumpData.direction === 'UP' ? '#00C853' : '#FF5252'}">${jumpData.direction}</b></div>
+                <div style="color:#888;font-size:10px;margin-bottom:4px;">Gap detected:&nbsp;<b style="color:#ccc;">${jumpData.timestamp ? jumpData.timestamp.slice(11, 19) : '—'}</b></div>
                 <div>Pre-jump:&nbsp;<b>${jumpData.pre_price}</b></div>
                 <div>Post-jump:&nbsp;<b>${jumpData.post_price}</b></div>
                 <div>Jump:&nbsp;<b style="color:${jumpData.direction === 'UP' ? '#00C853' : '#FF5252'}">${jumpData.jump_pts > 0 ? '+' : ''}${Number(jumpData.jump_pts).toFixed(1)} pts</b></div>
                 <div>${jumpData.filled
                   ? '<span style="color:#607D8B">✅ Gap Filled</span>'
                   : '<span style="color:#FFD600">⏳ Not Filled</span>'}</div>
+                ${jumpData.filled && jumpData.filledChartTime
+                  ? `<div style="color:#888;font-size:10px;margin-top:2px;">Filled at:&nbsp;<b style="color:#ccc;">${_bucketToIST(jumpData.filledChartTime)}</b></div>`
+                  : ''}
               </div>`;
             jumpTT.style.left    = (rect.left + param.point.x + 15) + 'px';
             jumpTT.style.top     = (rect.top  + param.point.y - 40) + 'px';
@@ -4331,6 +4335,19 @@ function _toIST(utcStr) {
             hour: '2-digit', minute: '2-digit', hour12: false,
         }) + ' IST';
     } catch (e) { return utcStr.slice(0, 16); }
+}
+
+function _bucketToIST(chartTime) {
+    // chartTime = fill_bucket - 19800 = (UTC_epoch + 19800) - 19800 = UTC_epoch
+    // It is already a standard UTC epoch — pass directly to Date (no +19800)
+    try {
+        const d = new Date(chartTime * 1000);
+        return d.toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false,
+        });
+    } catch(e) { return '—'; }
 }
 
 // ── Archive selection helpers ─────────────────────────────────
