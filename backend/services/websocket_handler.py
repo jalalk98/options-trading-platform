@@ -76,6 +76,9 @@ kite1.set_access_token(KITE_ACCESS_TOKEN)
 kws = MainTicker(KITE_API_KEY, KITE_ACCESS_TOKEN, None, kite1, token_to_OrderId_Mod_Dic=None, kws=None, debug=True)
 
 active_positions = {}
+# Tracks per order_id how many qty units already have an SL placed,
+# so partial-fill SL placement doesn't double-count on subsequent fill events.
+sl_covered = {}
 
 
 def _post_sl_state(symbol: str, state: str, retries: int = 3, timeout: int = 5) -> None:
@@ -139,7 +142,7 @@ def setup_websocket_events():
 
     async def handle_order_update(ws, data):
 
-        global active_positions
+        global active_positions, sl_covered
 
         try:
 
@@ -150,13 +153,15 @@ def setup_websocket_events():
                 reset_flag.unlink(missing_ok=True)
                 logger.info("active_positions cache cleared via UI reset button")
 
-            # Only process completed orders
-            if data.get("status") != "COMPLETE":
-                return {"status": "ignored"}
+            status      = data.get("status")
+            order_id    = data.get("order_id", "")
+            filled_qty  = int(data.get("filled_quantity", 0) or 0)
+            is_complete = (status == "COMPLETE")
+            is_partial  = (status == "OPEN" and filled_qty > 0)
 
             # Detect SL order completion → update position tracker + mark state as 'hit'
             if data.get("order_type") == "SL":
-                if data.get("status") == "COMPLETE":
+                if is_complete:
                     sym = data.get("tradingsymbol")
                     tx  = data.get("transaction_type")
                     qty = int(data.get("quantity", 0))
@@ -181,8 +186,16 @@ def setup_websocket_events():
                         threading.Thread(target=_hit_then_clear, daemon=True).start()
                 return {"status": "ignored"}
 
+            # CANCELLED: clean up partial-fill tracking, nothing else to do
+            if status == "CANCELLED":
+                sl_covered.pop(order_id, None)
+                return {"status": "ignored"}
+
+            # Only process entry orders that have new fills
+            if not is_complete and not is_partial:
+                return {"status": "ignored"}
+
             trade_symbol = data.get("tradingsymbol")
-            qty = int(data.get("quantity", 0))
             exchange = data.get("exchange")
             transaction_type = data.get("transaction_type")
             last_price = float(data.get("average_price", 0))
@@ -190,6 +203,27 @@ def setup_websocket_events():
             if last_price == 0:
                 logger.warning(f"Average price is zero for {trade_symbol}")
                 return {"status": "ignored"}
+
+            # How much of this order already has SL placed
+            already_covered = sl_covered.get(order_id, 0)
+            # New qty needing SL: delta between current fills and already-covered
+            new_sl_qty = filled_qty - already_covered
+            if new_sl_qty <= 0:
+                return {"status": "ignored"}
+
+            # Update coverage tracking; clean up on final fill or complete
+            sl_covered[order_id] = filled_qty
+            if is_complete:
+                sl_covered.pop(order_id, None)
+
+            # Use new_sl_qty for position tracking and SL placement
+            qty = new_sl_qty
+
+            if is_partial:
+                logger.info(
+                    f"Partial fill for {trade_symbol} order {order_id}: "
+                    f"filled={filled_qty} already_covered={already_covered} new_sl_qty={new_sl_qty}"
+                )
 
             # -----------------------------
             # Current position tracking

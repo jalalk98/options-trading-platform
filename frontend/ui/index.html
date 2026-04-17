@@ -1173,6 +1173,10 @@
         <label>Default SL</label>
         <input id="limitDefaultSlInput" class="slcfg-input" type="number" min="0.5" step="0.5" value="10">
     </div>
+    <div class="slcfg-row">
+        <label title="0 = disabled">Auto Cancel (s)</label>
+        <input id="limitAutoCancelInput" class="slcfg-input" type="number" min="0" step="1" value="3" style="width:44px">
+    </div>
     <button id="limitConfigClose" onclick="closeLimitConfig()" style="margin-top:8px;width:100%;background:#0f172a;border:1px solid #334155;color:#94a3b8;border-radius:4px;padding:3px 0;cursor:pointer;font-size:10px;">Done</button>
 </div>
 
@@ -1301,7 +1305,9 @@ let defaultSellQty = null;   // null = use orderLots * lotSize; number = fixed q
 let _savedBuyQty   = null;   // snapshot of defaultBuyQty taken at entry order — restored on square off
 let _savedSellQty  = null;   // snapshot of defaultSellQty taken at entry order — restored on square off
 let orderType      = 'L';
-let limitBuffer    = parseFloat(localStorage.getItem('limitBuffer') ?? '0.20');
+let limitBuffer        = parseFloat(localStorage.getItem('limitBuffer')        ?? '0.20');
+let limitAutoCancelSecs = localStorage.getItem('limitAutoCancelSecs') === null
+    ? 3 : parseInt(localStorage.getItem('limitAutoCancelSecs'));
 let limitDefaultSL = 10;
 let slBuffer          = 0.20;
 let slDistance        = 5;
@@ -2761,6 +2767,7 @@ async function refreshAutoPopulate() {
         btn.style.color      = '#00E676';
     }
     showLoadingBar();
+    if (syncCharts) toggleSyncCharts();
     try {
         await autoPopulatePanels(mode);
     } catch (e) {
@@ -3175,8 +3182,9 @@ function openLimitConfig(anchorEl, type) {
     document.getElementById('limitConfigTitle').textContent = isMarket ? 'Market Order Settings' : 'Limit Order Settings';
     document.getElementById('limitBufRow').style.display    = isMarket ? 'none' : '';
     const popup = document.getElementById('limitConfigPopup');
-    document.getElementById('limitBufInput').value        = limitBuffer;
+    document.getElementById('limitBufInput').value         = limitBuffer;
     document.getElementById('limitDefaultSlInput').value  = limitDefaultSL;
+    document.getElementById('limitAutoCancelInput').value = limitAutoCancelSecs;
     const rect = anchorEl.closest('.ob-type-group').getBoundingClientRect();
     popup.style.left = rect.left + 'px';
     popup.style.top  = (rect.bottom + 6) + 'px';
@@ -3185,10 +3193,12 @@ function openLimitConfig(anchorEl, type) {
     focusEl.focus(); focusEl.select();
 }
 async function closeLimitConfig() {
-    const buf   = parseFloat(document.getElementById('limitBufInput').value);
-    const defSl = parseFloat(document.getElementById('limitDefaultSlInput').value);
-    if (!isNaN(buf)   && buf   >= 0) { limitBuffer = buf; localStorage.setItem('limitBuffer', buf); }
-    if (!isNaN(defSl) && defSl >  0) {
+    const buf      = parseFloat(document.getElementById('limitBufInput').value);
+    const defSl    = parseFloat(document.getElementById('limitDefaultSlInput').value);
+    const acSecs   = parseInt(document.getElementById('limitAutoCancelInput').value);
+    if (!isNaN(buf)    && buf    >= 0) { limitBuffer        = buf;    localStorage.setItem('limitBuffer', buf); }
+    if (!isNaN(acSecs) && acSecs >= 0) { limitAutoCancelSecs = acSecs; localStorage.setItem('limitAutoCancelSecs', acSecs); }
+    if (!isNaN(defSl)  && defSl >  0) {
         limitDefaultSL = defSl;
         // Sync to backend so handle_order_update uses the new value
         fetch('/api/set-default-sl', {
@@ -3198,6 +3208,28 @@ async function closeLimitConfig() {
     }
     document.getElementById('limitConfigPopup').style.display = 'none';
 }
+// Poll net-position until qty satisfies predicate or timeout.
+// predicate: fn(net_qty) → bool. Calls refreshPosition on the panel when satisfied.
+async function pollUntilFilled(sym, panel, predicate, timeoutMs = 30000) {
+    const exchange  = sym.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    const deadline  = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1000));
+        if (panel !== activePanel || activePanel?.symbol !== sym) return; // panel switched
+        try {
+            const res  = await fetch(`/api/net-position?symbol=${encodeURIComponent(sym)}&exchange=${exchange}`);
+            const data = await res.json();
+            const qty  = typeof data.net_qty === 'number' ? data.net_qty : null;
+            if (qty !== null && predicate(qty)) {
+                panel.refreshPosition();
+                return;
+            }
+        } catch (_) {}
+    }
+    // Timed out — do a final refresh anyway so the bar isn't stale
+    if (panel === activePanel && activePanel?.symbol === sym) panel.refreshPosition();
+}
+
 async function placeOrder(side) {
     if (!activePanel || !activePanel.symbol) { toast('No symbol selected', 'warn'); return; }
     const sym = activePanel.symbol;
@@ -3248,7 +3280,9 @@ async function placeOrder(side) {
             defaultBuyQty = _savedBuyQty; defaultSellQty = _savedSellQty;
             _savedBuyQty = null; _savedSellQty = null;
             updateOrderBar(currentLTP);
-            setTimeout(() => { if (activePanel?.symbol === sym) activePanel.refreshPosition(); }, 1500);
+            // Poll until position is flat (qty ≤ 0 for long sq-off, ≥ 0 for short sq-off)
+            const panel = activePanel;
+            pollUntilFilled(sym, panel, qty => side === 'SELL' ? qty <= 0 : qty >= 0);
         }
         return;
     }
@@ -3260,17 +3294,42 @@ async function placeOrder(side) {
     });
     const data = await res.json();
     toastOrder(data, label);
-    // Refresh position after any successful order (allow 1.5s for order to register)
+    // Refresh position after order fills (poll until Kite position reflects the fill)
     if (data.status === 'success') {
+        const panel = activePanel;
         if (isSquareOff) {
             defaultBuyQty = _savedBuyQty; defaultSellQty = _savedSellQty;
             _savedBuyQty = null; _savedSellQty = null;
             updateOrderBar(currentLTP);
+            pollUntilFilled(sym, panel, qty => side === 'SELL' ? qty <= 0 : qty >= 0);
         } else {
             // Snapshot qtys at entry so square off can restore them
             _savedBuyQty = defaultBuyQty; _savedSellQty = defaultSellQty;
+            // Poll until the new position appears (qty flips to non-zero in the expected direction).
+            // If auto-cancel is active, stop polling shortly after the cancel fires — no point waiting 30s for a fill that won't come.
+            const pollTimeout = (orderType === 'L' && limitAutoCancelSecs > 0)
+                ? (limitAutoCancelSecs + 2) * 1000
+                : 30000;
+            pollUntilFilled(sym, panel, qty => side === 'BUY' ? qty > 0 : qty < 0, pollTimeout);
         }
-        setTimeout(() => { if (activePanel?.symbol === sym) activePanel.refreshPosition(); }, 1500);
+    }
+    // Auto-cancel unfilled limit order after configured seconds
+    if (orderType === 'L' && data.status === 'success' && data.order_id && limitAutoCancelSecs > 0 && !isSquareOff) {
+        const cancelOrderId = data.order_id;
+        setTimeout(async () => {
+            try {
+                const cr   = await fetch('/api/cancel-order', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ order_id: cancelOrderId }),
+                });
+                const cd = await cr.json();
+                if (cd.status === 'cancelled') {
+                    toast(`Limit order cancelled — not filled within ${limitAutoCancelSecs}s`, 'warn', 5000);
+                    if (activePanel?.symbol === sym) activePanel.refreshPosition();
+                }
+                // status === 'filled' means it already went through — no action needed
+            } catch (_) {}
+        }, limitAutoCancelSecs * 1000);
     }
     // Trigger post-fill automation for SL orders
     if (orderType === 'SL' && data.status === 'success' && data.order_id) {
@@ -4036,8 +4095,7 @@ function saveViewState() {
     if (saved && saved.autoPopulate) {
         const sel = document.getElementById('autoPopulateSelect');
         sel.value = saved.autoPopulate;
-        document.title = sel.options[sel.selectedIndex]?.text || document.title;
-        try { await autoPopulatePanels(saved.autoPopulate); } catch (e) {}
+        onAutoPopulateChange(saved.autoPopulate);
         // prefetchJumps is called inside autoPopulatePanels
     } else if (saved && saved.symbols && saved.symbols.some(Boolean)) {
         const syms = saved.symbols;
