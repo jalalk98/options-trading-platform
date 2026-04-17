@@ -1420,6 +1420,7 @@ function createPanel(id) {
     let _convictionFired         = false;
     let _historicalConvictions   = [];
     let _jumpMarkers             = [];
+    let _panelHistDate           = null;
     let slTriggerBuffer  = 1;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
     let openPositionQty  = null; // null=unknown, 0=flat, positive=long, negative=short
@@ -2031,6 +2032,31 @@ function createPanel(id) {
             if (!historyLoaded || !symbol) return;
             const tick = JSON.parse(event.data);
             if (tick.type === 'ping') return;
+
+            // Fill events arrive via broadcast_all for ANY symbol.
+            // Handle before the per-symbol filter so all panels can receive them.
+            if (tick.type === 'fill') {
+                panels.forEach(p => {
+                    if (!p.symbol || p.symbol !== tick.symbol) return;
+                    const jump = (p._jumpMarkers || []).find(j =>
+                        // Match either IST bucket (API-loaded markers) or
+                        // redis bucket (WebSocket-added markers, = ist_bucket - 19800)
+                        (j.bucket === tick.bucket || j.bucket === tick.bucket - 19800)
+                        && j.direction === tick.direction
+                        && !j.filled
+                    );
+                    if (jump) {
+                        jump.filled = true;
+                        // filled_at is ist_bucket; subtract 19800 → actual UTC epoch
+                        // for _bucketToIST() tooltip display
+                        jump.filledChartTime = tick.filled_at - 19800;
+                        p.refreshMarkers();
+                        console.log(`[fill] ${tick.symbol} ${tick.direction} @ ${tick.fill_price}`);
+                    }
+                });
+                return;
+            }
+
             if (tick.symbol && tick.symbol !== symbol) return;
             const bucketTime = getBucketTime(Math.floor(Number(tick.time)));
             const price = tick.value;
@@ -2100,7 +2126,7 @@ function createPanel(id) {
         const savedLines = isSameSymbol
             ? userLines.map(l => ({ price: l.price, colorIdx: l.colorIdx }))
             : (symbolLinesStore[sym] || []);
-        historyLoaded = false; symbol = sym;
+        historyLoaded = false; symbol = sym; _panelHistDate = histDate || null;
         const display = Object.keys(strikeMap).find(k => strikeMap[k] === sym) || sym;
         updateChartLabel(sym);
         if (panel === activePanel) {
@@ -2114,7 +2140,7 @@ function createPanel(id) {
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = [];
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _panelHistDate = null;
         stopSLPoll();
         let history, gapsRaw;
         if (prefetched) {
@@ -2248,6 +2274,7 @@ function createPanel(id) {
         get chart()             { return chart; },
         get _jumpMarkers()    { return _jumpMarkers; },
         set _jumpMarkers(v)   { _jumpMarkers = v; },
+        get _histDate()       { return _panelHistDate; },
         refreshMarkers,
         updateGoToLiveBtn,
         refreshPosition,
@@ -4016,18 +4043,25 @@ document.addEventListener('keydown', e => {
 });
 
 // Jump fill-status polling — every 45s during market hours
+// Today's panels are skipped: WebSocket fill events handle them in real-time.
+// Poll is retained only for historical-date panels (no WebSocket for past dates).
 setInterval(async () => {
     const now  = new Date();
     const ist  = new Date(now.getTime() + 5.5 * 3600000);
     const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
     if (mins < 555 || mins > 930) return;  // outside 09:15–15:30 IST
 
+    const todayStr = ist.toISOString().slice(0, 10);
+
     await Promise.all(
         panels
             .filter(p => p.symbol && (p._jumpMarkers || []).length && (p._jumpMarkers || []).some(j => !j.filled))
             .map(async panel => {
+                // Skip today's panels — WebSocket broadcast_all handles fills in real-time
+                const isHistoricalPanel = panel._histDate && panel._histDate !== todayStr;
+                if (!isHistoricalPanel) return;
                 try {
-                    const res  = await fetch(`/api/jumps/${encodeURIComponent(panel.symbol)}`);
+                    const res  = await fetch(`/api/jumps/${encodeURIComponent(panel.symbol)}?date=${panel._histDate}`);
                     const data = await res.json();
                     let changed = false;
                     (data.jumps || []).forEach(u => {

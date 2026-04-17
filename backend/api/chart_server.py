@@ -2,6 +2,7 @@
 
 import asyncio
 import asyncpg
+import datetime as _dt
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -50,12 +51,68 @@ async def shutdown():
     await app.state.pool.close()
 
 
+async def _load_pending_fills_on_startup(pool):
+    """Load today's qualifying jumps from DB into _pending_fills so fill tracking
+    survives server restarts without losing intraday context."""
+    from backend.services.redis_streamer import (
+        _pending_fills, _get_price_filter, _get_jump_threshold
+    )
+    try:
+        today = _dt.date.today()
+        async with pool.acquire() as conn:
+            await conn.execute("SET statement_timeout = 0")
+            rows = await conn.fetch("""
+                SELECT symbol,
+                       curr_price,
+                       prev_price,
+                       price_jump,
+                       floor(EXTRACT(EPOCH FROM timestamp) / 5) * 5 AS bucket_epoch
+                FROM gap_ticks
+                WHERE timestamp >= $1::date + TIME '09:15:03'
+                  AND timestamp <= $1::date + TIME '15:35:00'
+                  AND curr_price  > 0
+                  AND ABS(price_jump) > 3
+                ORDER BY timestamp ASC
+            """, today)
+
+        count = 0
+        for row in rows:
+            sym  = row['symbol']
+            pj   = float(row['price_jump'] or 0)
+            curr = float(row['curr_price'])
+            prev = float(row['prev_price'] or 0)
+
+            if curr >= _get_price_filter(sym) or abs(pj) <= _get_jump_threshold(sym):
+                continue
+
+            direction  = 'UP' if pj > 0 else 'DOWN'
+            # bucket_epoch from SQL = EXTRACT(EPOCH FROM IST-naive-as-UTC timestamp)
+            # = ts.timestamp() + 19800 on an IST server — matches strikes.py convention
+            # and the bucket stored in API-loaded _jumpMarkers on the frontend.
+            ist_bucket = int(row['bucket_epoch'])
+
+            if sym not in _pending_fills:
+                _pending_fills[sym] = []
+            _pending_fills[sym].append({
+                "bucket"   : ist_bucket,
+                "direction": direction,
+                "pre_price": prev,
+                "is_first" : False,
+            })
+            count += 1
+
+        print(f"[startup] Loaded {count} pending fills from today's DB", flush=True)
+    except Exception as e:
+        print(f"[startup] Could not load pending fills: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def startup():
     app.state.pool = await create_pool()
 
     asyncio.create_task(redis_streamer())
     await prewarm_strikes_cache(app.state.pool)  # blocking — cache must be warm before serving requests
+    asyncio.create_task(_load_pending_fills_on_startup(app.state.pool))
 
     # Ensure jump-lookup index exists (no-op if already present).
     # Partial predicate WHERE curr_price > 0 AND ABS(price_jump) > 3 means only

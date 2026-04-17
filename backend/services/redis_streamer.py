@@ -8,6 +8,11 @@ from backend.api.streaming import manager
 # Track first jump seen per symbol (reset on service restart, which is fine)
 _first_jump_seen: dict = {}
 
+# Pending gap-fills tracker: symbol → list of jump dicts awaiting price fill.
+# Uses IST-aligned buckets (ts.timestamp() + 19800, rounded to 5s) to match
+# both API-loaded and startup-loaded _jumpMarkers on the frontend.
+_pending_fills: dict = {}
+
 
 def _get_price_filter(symbol: str) -> float:
     if symbol.startswith('SENSEX'):
@@ -92,21 +97,73 @@ async def redis_streamer():
 
                 bucket = math.floor(epoch_time / 5) * 5
 
+                # IST-aligned bucket: matches strikes.py and SQL EXTRACT(EPOCH) convention.
+                # PostgreSQL stores timestamps as IST-naive (treated as UTC), so
+                # EXTRACT(EPOCH FROM ts) = ts.timestamp() + 19800 on an IST server.
+                # Using ist_bucket in _pending_fills ensures fill events carry the same
+                # bucket value as API-loaded _jumpMarkers on the frontend.
+                ist_bucket = bucket + 19800
+
+                # ── Register new jump in pending-fills tracker ────
+                if is_jump:
+                    if symbol not in _pending_fills:
+                        _pending_fills[symbol] = []
+                    _pending_fills[symbol].append({
+                        "bucket"   : ist_bucket,
+                        "direction": row["direction"],
+                        "pre_price": float(row["prev_price"] or 0),
+                        "is_first" : is_first,
+                    })
+
+                # ── Check if this tick fills any pending jump ─────
+                fill_events = []
+                if symbol in _pending_fills:
+                    still_pending = []
+                    for pf in _pending_fills[symbol]:
+                        # Tick must be strictly after the jump's candle
+                        if ist_bucket <= pf["bucket"]:
+                            still_pending.append(pf)
+                            continue
+                        filled = False
+                        if pf["direction"] == "UP" and curr_price <= pf["pre_price"]:
+                            filled = True
+                        elif pf["direction"] == "DOWN" and curr_price >= pf["pre_price"]:
+                            filled = True
+                        if filled:
+                            fill_events.append({
+                                "type"      : "fill",
+                                "symbol"    : symbol,
+                                "bucket"    : pf["bucket"],
+                                "direction" : pf["direction"],
+                                "pre_price" : pf["pre_price"],
+                                "filled_at" : ist_bucket,
+                                "fill_price": curr_price,
+                            })
+                        else:
+                            still_pending.append(pf)
+                    _pending_fills[symbol] = still_pending
+
                 # ── Broadcast ─────────────────────────────────────
                 payload = {
-                    "symbol"    : symbol,
-                    "time"      : epoch_time,
-                    "value"     : curr_price,
-                    "is_gap"    : row["is_gap"],
-                    "vol_change": row["vol_change"],
-                    "direction" : row["direction"],
-                    "prev_price": row["prev_price"],
-                    "price_jump": price_jump,
-                    "is_jump"   : is_jump,
-                    "is_first"  : is_first,
-                    "bucket"    : bucket,
+                    "symbol"      : symbol,
+                    "time"        : epoch_time,
+                    "value"       : curr_price,
+                    "is_gap"      : row["is_gap"],
+                    "vol_change"  : row["vol_change"],
+                    "direction"   : row["direction"],
+                    "prev_price"  : row["prev_price"],
+                    "price_jump"  : price_jump,
+                    "is_jump"     : is_jump,
+                    "is_first"    : is_first,
+                    "bucket"      : bucket,
+                    "fill_events" : fill_events,
                 }
 
                 await manager.broadcast(symbol, payload)
+
+                # Broadcast each fill event to ALL connected clients so panels
+                # watching other symbols also receive fill notifications instantly.
+                for fill_evt in fill_events:
+                    await manager.broadcast_all(fill_evt)
 
                 last_id = message_id
