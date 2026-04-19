@@ -18,10 +18,16 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from kiteconnect import KiteConnect
 from backend.services.websocket_handler import kite1
-from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
+from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN, DATA_SOURCE
 
-_kite = KiteConnect(api_key=KITE_API_KEY)
-_kite.set_access_token(KITE_ACCESS_TOKEN)
+# Only initialize KiteConnect if we have an API key (AWS/live mode)
+# On laptop (DATA_SOURCE=duckdb), KITE_API_KEY is empty — skip init
+if KITE_API_KEY:
+    _kite = KiteConnect(api_key=KITE_API_KEY)
+    if KITE_ACCESS_TOKEN:
+        _kite.set_access_token(KITE_ACCESS_TOKEN)
+else:
+    _kite = None  # Laptop mode — no live trading
 
 router = APIRouter()
 
@@ -55,6 +61,8 @@ async def _query_strikes(pool):
 
 
 async def prewarm_strikes_cache(pool):
+    if DATA_SOURCE == "duckdb":
+        return
     try:
         async with pool.acquire() as conn:
             await conn.execute("SET statement_timeout = '60000'")  # 60s for prewarm only
@@ -457,6 +465,9 @@ def _rows_to_candles_fast(rows):
 
 async def _get_last_trading_date(conn, symbol: str) -> PyDate | None:
     """Find the most recent trading date for a symbol using candles_5s (0.1ms index scan)."""
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import last_trading_date as _ddb_ltd
+        return await _ddb_ltd(symbol)
     last_bucket = await conn.fetchval(
         "SELECT MAX(bucket) FROM candles_5s WHERE symbol=$1", symbol)
     return PyDate.fromtimestamp(last_bucket) if last_bucket else None
@@ -464,6 +475,9 @@ async def _get_last_trading_date(conn, symbol: str) -> PyDate | None:
 
 async def _query_history_fast(conn, symbol: str, date: str = None, since_bucket: int = None):
     """Read OHLC from candles_5s — scans ~375 rows vs ~30k in gap_ticks."""
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import query_history as _ddb_hist
+        return await _ddb_hist(symbol, date, since_bucket)
     if date:
         rows = await conn.fetch(_CANDLES_Q, symbol, PyDate.fromisoformat(date))
         return _rows_to_candles_fast(rows)
@@ -484,6 +498,9 @@ async def _query_history_fast(conn, symbol: str, date: str = None, since_bucket:
 async def _query_gaps_fast(conn, symbol: str, date: str = None, since_bucket: int = None):
     """Read gap events from gap_events — scans ~10-30 rows vs ~30k in gap_ticks.
     SENSEX index uses the old gap_ticks path (non-standard filter, one symbol)."""
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import query_gaps as _ddb_gaps
+        return await _ddb_gaps(symbol, date, since_bucket)
     if symbol == "SENSEX":
         return None  # caller falls back to original _query_gaps
 
@@ -894,6 +911,11 @@ async def get_jump_history(symbol: str, request: Request, date: str = None):
     Uses two targeted SQL queries + O(N) single-pass fill detection + TTL cache (30s live / 86400s historical).
     Query 1 hits idx_gap_ticks_jump_lookup (partial, price_jump+curr_price as key cols) for <1s cold compute.
     """
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import query_jumps as _ddb_jumps
+        jumps = await _ddb_jumps(symbol, date)
+        return {"jumps": jumps, "count": len(jumps), "cached": False}
+
     try:
         import math as _math
 
@@ -1108,6 +1130,17 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
     pool = request.app.state.pool
     cache_key = f"CHART:{symbol}:{date}" if date else f"CHART:{symbol}"
 
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import query_history as _ddb_hist, query_gaps as _ddb_gaps
+        history = await _ddb_hist(symbol, date_str=date)
+        gaps    = await _ddb_gaps(symbol, date_str=date)
+        if gaps is None:
+            gaps = []
+        _compute_gap_fills(history, gaps)
+        data = {"history": history, "gaps": gaps}
+        _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": 3600 if date else 600, "last_bucket": history[-1][0] if history else None}
+        return Response(content=orjson.dumps(data), media_type="application/json")
+
     if not nocache:
         cached = _chart_cache.get(cache_key)
         if cached:
@@ -1203,6 +1236,21 @@ async def get_hist_symbols(date: str, request: Request):
     if date in _hist_symbols_cache:
         return _hist_symbols_cache[date]
 
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import query_hist_symbols as _ddb_syms
+        symbols = await _ddb_syms(date)
+        entries = []
+        for sym in symbols:
+            try:
+                expiry, strike, opt_type, display = _parse_symbol_display(sym)
+                entries.append((expiry, strike, opt_type, sym, display))
+            except Exception:
+                continue
+        entries.sort(key=lambda x: (x[0], x[1], x[2]))
+        result = [{"symbol": e[3], "display": e[4]} for e in entries]
+        _hist_symbols_cache[date] = result
+        return result
+
     pool = request.app.state.pool
     date_obj = PyDate.fromisoformat(date)
     async with pool.acquire() as conn:
@@ -1231,6 +1279,23 @@ class BatchRequest(BaseModel):
 @router.post("/batch")
 async def get_batch(body: BatchRequest, request: Request):
     """Fetch history + gaps for multiple symbols in parallel. Used by auto-populate."""
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import (
+            query_history as _ddb_hist,
+            query_gaps as _ddb_gaps,
+        )
+        result = {}
+        for sym in list(dict.fromkeys(body.symbols or [])):
+            try:
+                h = await _ddb_hist(sym, None, None)
+                g = await _ddb_gaps(sym, None, None)
+                if h is not None:
+                    _compute_gap_fills(h, g or [])
+                    result[sym] = {"history": h, "gaps": g or []}
+            except Exception as e:
+                print(f"[batch-duckdb] {sym} failed: {e}")
+        return Response(content=orjson.dumps(result), media_type="application/json")
+
     pool = request.app.state.pool
     symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
     sem = asyncio.Semaphore(20)  # limit concurrent DB pairs to pool size
@@ -1494,6 +1559,8 @@ _B2_CACHE_TTL = 300  # seconds (5 minutes)
 async def refresh_b2_cache(pool):
     """Fetch B2 manifest + per-date existence check; store in _b2_cache.
     Called by background task in chart_server.py every 5 minutes."""
+    if DATA_SOURCE == "duckdb":
+        return
     import time as _time, boto3
     from botocore.client import Config
     from pathlib import Path

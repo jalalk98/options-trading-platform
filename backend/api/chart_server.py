@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from config.credentials import (
-    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DATA_SOURCE
 )
 from backend.services.redis_streamer import redis_streamer
 from fastapi.staticfiles import StaticFiles
@@ -48,12 +48,16 @@ async def create_pool():
 
 @app.on_event("shutdown")
 async def shutdown():
+    if DATA_SOURCE == "duckdb":
+        return
     await app.state.pool.close()
 
 
 async def _load_pending_fills_on_startup(pool):
     """Load today's qualifying jumps from DB into _pending_fills so fill tracking
     survives server restarts without losing intraday context."""
+    if DATA_SOURCE == "duckdb":
+        return
     from backend.services.redis_streamer import (
         _pending_fills, _get_price_filter, _get_jump_threshold
     )
@@ -108,6 +112,11 @@ async def _load_pending_fills_on_startup(pool):
 
 @app.on_event("startup")
 async def startup():
+    if DATA_SOURCE == "duckdb":
+        print("Laptop mode: DATA_SOURCE=duckdb, skipping PG/Redis startup", flush=True)
+        app.state.pool = None
+        return
+
     app.state.pool = await create_pool()
 
     asyncio.create_task(redis_streamer())
