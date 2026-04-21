@@ -183,11 +183,11 @@ def _sync_query_jumps(symbol: str, d: PyDate) -> list:
     if not jumps_raw:
         return []
 
-    # Build jump records; bucket = floor((naive_epoch + 19800) / 5) * 5
+    # Build jump records; bucket = floor(ist_naive_epoch / 5) * 5  (matches production Postgres)
     jumps = []
     for ts, curr, prev in jumps_raw:
         epoch = calendar.timegm(ts.timetuple())
-        bucket = ((epoch + _IST_OFFSET) // 5) * 5
+        bucket = (epoch // 5) * 5  # parquet ts is already IST-naive
         jumps.append({
             'bucket': int(bucket),
             'timestamp': ts.isoformat(sep=' '),
@@ -231,7 +231,7 @@ def _sync_query_jumps(symbol: str, d: PyDate) -> list:
         if not pending:
             break
         tick_epoch = calendar.timegm(tick_ts.timetuple())
-        tick_bucket = ((tick_epoch + _IST_OFFSET) // 5) * 5
+        tick_bucket = (tick_epoch // 5) * 5  # parquet ts is already IST-naive
         still_pending = []
         for pf in pending:
             if tick_bucket <= pf['bucket']:
