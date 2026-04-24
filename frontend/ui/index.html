@@ -1414,10 +1414,12 @@ function createPanel(id) {
     let hlineDragging    = null;   // user line being dragged {id, price, colorIdx, priceLine}
     let lineUndoStack    = [];     // [{id, prevPrice}] — last 5 line moves, LIFO
     let lineRedoStack    = [];     // [{id, prevPrice}] — cleared on any new drag
-    let slPollTimer      = null;
-    let _convictionMarker        = null;
-    let _convictionData          = null;
-    let _convictionFired         = false;
+    let slPollTimer           = null;
+    let convictionPollTimer   = null;
+    let _convictionMarker     = null;
+    let _convictionData       = null;
+    let _convictionFired      = false;
+    let _markedBuckets        = new Set();
     let _historicalConvictions   = [];
     let _jumpMarkers             = [];
     let _panelHistDate           = null;
@@ -1431,6 +1433,9 @@ function createPanel(id) {
     let noMoreHistory    = false;
     // Tracks unfilled gap count — checkGapFill returns immediately when 0
     let _unfilledGapCount = 0;
+    let _wsIsReconnect  = false;  // true after first onopen — gap-fill on subsequent opens only
+    let _lastMsgAt      = 0;      // ms timestamp of last received WS message — used by watchdog
+    let _watchdogTimer  = null;   // setInterval ID for 35s silence watchdog
 
     // ── Open position refresh ─────────────────────
     async function refreshPosition() {
@@ -1869,19 +1874,8 @@ function createPanel(id) {
         try {
             const res  = await fetch(`/api/conviction/${sym}`);
             const data = await res.json();
-            if (!data.go_long) {
-                // Gap failed — reset so next gap can fire fresh
-                if (_convictionMarker) {
-                    _convictionMarker = null;
-                    _convictionData   = null;
-                    refreshMarkers();
-                }
-                _convictionFired = false;
-                return;
-            }
-            // go_long = true
-            if (_convictionFired) return;  // already locked — marker stays fixed
-            // First fire: lock marker at this bucket (adjusted for chart time offset)
+            if (!data.go_long) return;                    // append-only: never erase
+            if (_markedBuckets.has(data.bucket)) return;  // this bucket already marked
             const chartTime = data.bucket - 19800;
             _convictionMarker = {
                 time    : chartTime,
@@ -1891,30 +1885,37 @@ function createPanel(id) {
                 text    : `▲ ${data.score}/6`,
                 size    : 2,
             };
-            _convictionData  = data;
-            _convictionFired = true;
+            _convictionData = data;
+            _markedBuckets.add(data.bucket);
             refreshMarkers();
         } catch (e) {
             console.warn('Conviction fetch failed:', e);
         }
     }
 
+    function stopConvictionPoll() { if (convictionPollTimer) { clearInterval(convictionPollTimer); convictionPollTimer = null; } }
+    function startConvictionPoll(sym) {
+        stopConvictionPoll();
+        convictionPollTimer = setInterval(() => { if (sym) fetchConviction(sym); }, 2000);
+    }
+
     function startSLPoll(sym) {
         stopSLPoll();
         slPollTimer = setInterval(async () => {
             if (!sym) return;
-            const res = await fetch(`/api/sl/${sym}`);
-            const data = await res.json();
-            if (data.state && data.state !== 'none') {
-                const price = data.price || slPrice;
-                if (data.state !== slLineState || price !== slPrice) {
-                    updateSLLineLocal(price, data.state);
-                    slOrderId = data.order_id || null;
+            try {
+                const res  = await fetch(`/api/sl/${sym}`);
+                const data = await res.json();
+                if (data.state && data.state !== 'none') {
+                    const price = data.price || slPrice;
+                    if (data.state !== slLineState || price !== slPrice) {
+                        updateSLLineLocal(price, data.state);
+                        slOrderId = data.order_id || null;
+                    }
+                    if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
+                    if (data.state === 'hit') setTimeout(() => updateSLLineLocal(null, 'none'), 2000);
                 }
-                if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
-                if (data.state === 'hit') setTimeout(() => updateSLLineLocal(null, 'none'), 2000);
-            }
-            fetchConviction(sym);
+            } catch (e) { console.warn('SL poll failed:', e); }
         }, 2000);
     }
 
@@ -2027,8 +2028,45 @@ function createPanel(id) {
     function connectWebSocket(sym) {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         socket = new WebSocket(`${proto}//${window.location.host}/ws/${sym}`);
-        socket.onopen = () => console.log(`[P${id}] Connected:`, sym);
+        socket.onopen = async () => {
+            console.log(`[P${id}] Connected:`, sym);
+            _lastMsgAt = Date.now();
+
+            // 35s silence watchdog — reconnects if no message received
+            if (_watchdogTimer) clearInterval(_watchdogTimer);
+            _watchdogTimer = setInterval(() => {
+                if (symbol && socket && socket.readyState === WebSocket.OPEN) {
+                    if (Date.now() - _lastMsgAt > 35000) {
+                        console.warn(`[P${id}] Silence watchdog: no message for 35s — reconnecting`);
+                        socket.close();
+                    }
+                }
+            }, 10000);
+
+            if (!_wsIsReconnect) {
+                _wsIsReconnect = true;
+                return;  // First open: panelLoadSymbol already loaded history, skip gap-fill
+            }
+            // Reconnect path: fill any candles that arrived during the disconnection window
+            if (!lastCandleTime) return;
+            try {
+                const res = await fetch(`/api/chart/${encodeURIComponent(sym)}?nocache=true`);
+                if (!res.ok) return;
+                const payload = await res.json();
+                const fresh = (payload.history || []).map(c => ({
+                    time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4]
+                }));
+                const missed = fresh.filter(c => c.time > lastCandleTime);
+                if (missed.length) {
+                    missed.forEach(c => { allCandles.push(c); candleSeries.update(c); });
+                    lastCandleTime = missed[missed.length - 1].time;
+                    currentCandle  = { ...missed[missed.length - 1] };
+                    console.log(`[P${id}] Gap-filled ${missed.length} candle(s) after reconnect`);
+                }
+            } catch(e) { /* non-fatal — live ticks will resume normally */ }
+        };
         socket.onmessage = event => {
+            _lastMsgAt = Date.now();
             if (!historyLoaded || !symbol) return;
             const tick = JSON.parse(event.data);
             if (tick.type === 'ping') return;
@@ -2110,10 +2148,11 @@ function createPanel(id) {
             checkGapFill(currentCandle);
         };
         socket.onclose = event => {
+            if (_watchdogTimer) { clearInterval(_watchdogTimer); _watchdogTimer = null; }
             if (event.target._intentionalClose || !symbol) return;
             reconnectTimeout = setTimeout(() => connectWebSocket(symbol), 3000);
         };
-        socket.onerror = () => socket.close();
+        socket.onerror = () => { if (socket) socket.close(); };
     }
 
     // ── Load symbol ───────────────────────────────
@@ -2135,13 +2174,13 @@ function createPanel(id) {
             if (!isSameSymbol) panelLots = 1;  // new symbol → reset this panel's saved lot count
             if (!isSameSymbol) slTriggerBuffer = sym.startsWith('SENSEX') ? 2 : 1;
         }
-        if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
+        if (socket) { socket._intentionalClose = true; socket.close(); socket = null; _wsIsReconnect = false; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _panelHistDate = null;
-        stopSLPoll();
+        stopSLPoll(); stopConvictionPoll();
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _panelHistDate = null; _markedBuckets.clear();
         let history, gapsRaw;
         if (prefetched) {
             history  = prefetched.history;
@@ -2199,8 +2238,9 @@ function createPanel(id) {
         historyLoaded = true;
         const jumpPromise = fetchJumpHistory(sym, histDate || null);
         const convHist = await fetchConvictionHistory(sym, histDate || null);
-        _historicalConvictions = (convHist || [])
-            .map(s => ({ ...s, bucket: s.bucket - 19800 }));
+        const signals = convHist || [];
+        _historicalConvictions = signals.map(s => ({ ...s, bucket: s.bucket - 19800 }));
+        if (!histDate) signals.forEach(s => _markedBuckets.add(s.bucket));
         refreshMarkers();
         jumpPromise.catch(e => console.warn('Jump history failed:', e));
         if (savedLines.length) restoreUserLines(savedLines);
@@ -2210,6 +2250,7 @@ function createPanel(id) {
         if (!histDate) {
             loadSLStateLocal(sym);
             startSLPoll(sym);
+            startConvictionPoll(sym);
             connectWebSocket(sym);
             refreshPosition();
         }
@@ -2238,6 +2279,7 @@ function createPanel(id) {
     // ── Destroy ───────────────────────────────────
     function destroy() {
         stopSLPoll();
+        stopConvictionPoll();
         if (socket) { socket._intentionalClose = true; socket.close(); }
         if (reconnectTimeout) clearTimeout(reconnectTimeout);
         chart.remove();
@@ -3340,22 +3382,28 @@ async function placeOrder(side) {
             pollUntilFilled(sym, panel, qty => side === 'BUY' ? qty > 0 : qty < 0, pollTimeout);
         }
     }
-    // Auto-cancel unfilled limit order after configured seconds
+    // Auto-cancel unfilled limit order after configured seconds.
+    // Cancels ALL sliced order IDs (large orders are split into multiple slices by the backend).
     if (orderType === 'L' && data.status === 'success' && data.order_id && limitAutoCancelSecs > 0 && !isSquareOff) {
-        const cancelOrderId = data.order_id;
+        const cancelIds = Array.isArray(data.order_ids) && data.order_ids.length > 0
+            ? data.order_ids
+            : [data.order_id];
         setTimeout(async () => {
-            try {
-                const cr   = await fetch('/api/cancel-order', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ order_id: cancelOrderId }),
-                });
-                const cd = await cr.json();
-                if (cd.status === 'cancelled') {
-                    toast(`Limit order cancelled — not filled within ${limitAutoCancelSecs}s`, 'warn', 5000);
-                    if (activePanel?.symbol === sym) activePanel.refreshPosition();
-                }
-                // status === 'filled' means it already went through — no action needed
-            } catch (_) {}
+            let anyCancelled = false;
+            for (const oid of cancelIds) {
+                try {
+                    const cr = await fetch('/api/cancel-order', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ order_id: oid }),
+                    });
+                    const cd = await cr.json();
+                    if (cd.status === 'cancelled') anyCancelled = true;
+                } catch (_) {}
+            }
+            if (anyCancelled) {
+                toast(`Limit order cancelled — not filled within ${limitAutoCancelSecs}s`, 'warn', 5000);
+                if (activePanel?.symbol === sym) activePanel.refreshPosition();
+            }
         }, limitAutoCancelSecs * 1000);
     }
     // Trigger post-fill automation for SL orders
@@ -4929,6 +4977,9 @@ async function cleanupRestore(tableName) {
     } catch (e) { alert('❌ Error: ' + e.message); }
 }
 
+// TODO(Bug B): getElementById('archiveModal') returns null here when the modal
+// element hasn't rendered by script execution time — causes uncaught TypeError
+// on addEventListener. Fix: move to DOMContentLoaded or confirm element exists first.
 document.getElementById('archiveModal').addEventListener('click', function(e) {
     if (e.target === this) closeArchiveModal();
 });

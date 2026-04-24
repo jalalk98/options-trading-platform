@@ -186,10 +186,20 @@ def setup_websocket_events():
                         threading.Thread(target=_hit_then_clear, daemon=True).start()
                 return {"status": "ignored"}
 
-            # CANCELLED: clean up partial-fill tracking, nothing else to do
+            # CANCELLED: if partially filled before cancel, still place SL for the filled qty
             if status == "CANCELLED":
-                sl_covered.pop(order_id, None)
-                return {"status": "ignored"}
+                already_covered = sl_covered.pop(order_id, 0)
+                unfilled_qty = filled_qty - already_covered
+                if unfilled_qty <= 0:
+                    return {"status": "ignored"}
+                # Fall through with unfilled_qty as the qty needing SL coverage
+                logger.info(
+                    f"Cancelled order {order_id} had partial fill: "
+                    f"filled={filled_qty} already_covered={already_covered} — placing SL for {unfilled_qty}"
+                )
+                is_partial  = True   # treat remainder as a partial fill for SL logic below
+                is_complete = True   # ensures sl_covered is cleaned up (no more fills coming)
+                filled_qty  = unfilled_qty
 
             # Only process entry orders that have new fills
             if not is_complete and not is_partial:

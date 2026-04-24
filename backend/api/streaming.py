@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 
 class ConnectionManager:
@@ -12,30 +13,30 @@ class ConnectionManager:
         if websocket in self.active_connections[symbol]:
             self.active_connections[symbol].remove(websocket)
 
+    async def _safe_send(self, ws, message):
+        try:
+            await asyncio.wait_for(ws.send_json(message), timeout=0.5)
+            return None
+        except Exception:
+            return ws
+
     async def broadcast(self, symbol, message):
-        dead_connections = []
-
-        for connection in self.active_connections[symbol]:
-            try:
-                await connection.send_json(message)
-            except:
-                dead_connections.append(connection)
-
-        for conn in dead_connections:
-            self.disconnect(symbol, conn)
+        connections = list(self.active_connections[symbol])
+        if not connections:
+            return
+        results = await asyncio.gather(*[self._safe_send(c, message) for c in connections])
+        for dead in results:
+            if dead is not None:
+                self.disconnect(symbol, dead)
 
     async def broadcast_all(self, data: dict) -> None:
         """Broadcast to ALL connected WebSocket clients regardless of symbol.
         Used for fill events so any panel receives fills for any symbol."""
-        dead = []
         for sym, connections in list(self.active_connections.items()):
-            for ws in connections:
-                try:
-                    await ws.send_json(data)
-                except Exception:
-                    dead.append((sym, ws))
-        for sym, ws in dead:
-            self.disconnect(sym, ws)
+            results = await asyncio.gather(*[self._safe_send(ws, data) for ws in list(connections)])
+            for dead in results:
+                if dead is not None:
+                    self.disconnect(sym, dead)
 
 
 manager = ConnectionManager()
