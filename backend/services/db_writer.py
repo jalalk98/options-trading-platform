@@ -605,57 +605,60 @@ async def flush(pool, buffer):
     candle_records, gap_records = _build_fast_records(buffer)
 
     async with pool.acquire() as conn:
+        async with conn.transaction():
 
-        # ── CRITICAL: gap_ticks INSERT ────────────────────────
-        # If this fails → alert immediately
-        # Do not clear buffer so Redis retries on restart
-        try:
-            await conn.executemany(INSERT_QUERY, records)
-            _reset_alert_count()  # clear error state on success
-        except Exception as e:
-            _maybe_alert(e, context=f"gap_ticks INSERT "
-                f"({len(records)} rows, "
-                f"first symbol: {buffer[0].get('symbol','?')})")
-            raise  # re-raise so buffer is NOT cleared
+            # ── gap_ticks ─────────────────────────────────────────
+            try:
+                await conn.executemany(INSERT_QUERY, records)
+            except Exception as e:
+                _maybe_alert(e, context=f"gap_ticks INSERT "
+                    f"({len(records)} rows, "
+                    f"first symbol: {buffer[0].get('symbol','?')})")
+                raise
 
-        # ── NON-CRITICAL: tracked_symbols ─────────────────────
-        # Failure here does not affect tick data
-        try:
-            unique_symbols = {
-                (r["symbol"], r["strike"],
-                 r["option_type"], r["expiry_date"])
-                for r in buffer
-            }
-            await conn.executemany("""
-                INSERT INTO tracked_symbols
-                    (symbol, strike, option_type, expiry_date)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (symbol) DO NOTHING
-            """, list(unique_symbols))
-        except Exception as e:
-            print(f"tracked_symbols upsert failed "
-                  f"(non-critical): {e}")
+            # ── tracked_symbols ───────────────────────────────────
+            try:
+                unique_symbols = {
+                    (r["symbol"], r["strike"],
+                     r["option_type"], r["expiry_date"])
+                    for r in buffer
+                }
+                await conn.executemany("""
+                    INSERT INTO tracked_symbols
+                        (symbol, strike, option_type, expiry_date)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (symbol) DO NOTHING
+                """, list(unique_symbols))
+            except Exception as e:
+                _maybe_alert(e, context=f"tracked_symbols INSERT "
+                    f"({len(buffer)} rows, "
+                    f"first symbol: {buffer[0].get('symbol','?')})")
+                raise
 
-        # ── NON-CRITICAL: candles_5s ──────────────────────────
-        # Failure here does not affect tick data
-        try:
-            if candle_records:
-                await conn.executemany(
-                    _CANDLE_UPSERT, candle_records
-                )
-        except Exception as e:
-            print(f"candles_5s upsert failed "
-                  f"(non-critical): {e}")
+            # ── candles_5s ────────────────────────────────────────
+            try:
+                if candle_records:
+                    await conn.executemany(
+                        _CANDLE_UPSERT, candle_records
+                    )
+            except Exception as e:
+                _maybe_alert(e, context=f"candles_5s UPSERT "
+                    f"({len(candle_records)} rows, "
+                    f"first symbol: {buffer[0].get('symbol','?')})")
+                raise
 
-        # ── NON-CRITICAL: gap_events ──────────────────────────
-        # Failure here does not affect tick data
-        try:
-            if gap_records:
-                await conn.executemany(
-                    _GAP_EVENT_INSERT, gap_records
-                )
-        except Exception as e:
-            print(f"gap_events insert failed "
-                  f"(non-critical): {e}")
+            # ── gap_events ────────────────────────────────────────
+            try:
+                if gap_records:
+                    await conn.executemany(
+                        _GAP_EVENT_INSERT, gap_records
+                    )
+            except Exception as e:
+                _maybe_alert(e, context=f"gap_events INSERT "
+                    f"({len(gap_records)} rows, "
+                    f"first symbol: {buffer[0].get('symbol','?')})")
+                raise
+
+            _reset_alert_count()  # all four writes succeeded
 
     logger.info(f"Inserted {len(records)} rows into DB")

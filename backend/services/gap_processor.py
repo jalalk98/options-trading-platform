@@ -76,14 +76,14 @@ def process_tick(tick: dict):
     timestamp = tick.get("exchange_timestamp")
     depth = tick.get("depth", {})
 
-    last_quantity   = tick.get("last_quantity")
-    average_price   = tick.get("average_price")
+    last_quantity   = tick.get("last_traded_quantity")
+    average_price   = tick.get("average_traded_price")
     last_trade_time = tick.get("last_trade_time")
     oi              = tick.get("oi")
     oi_day_high     = tick.get("oi_day_high")
     oi_day_low      = tick.get("oi_day_low")
-    buy_quantity    = tick.get("buy_quantity")
-    sell_quantity   = tick.get("sell_quantity")
+    buy_quantity    = tick.get("total_buy_quantity")
+    sell_quantity   = tick.get("total_sell_quantity")
 
     # Compute depth derived fields
     buy_levels      = depth.get("buy", [])  if depth else []

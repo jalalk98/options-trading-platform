@@ -976,7 +976,8 @@
                 const now = new Date();
                 const ist = new Date(now.toLocaleString('en-US', {timeZone:'Asia/Kolkata'}));
                 const mins = ist.getHours() * 60 + ist.getMinutes();
-                if (mins >= 9*60+15 && mins < 15*60+30) {
+                const day = ist.getDay();
+                if (day !== 0 && day !== 6 && mins >= 9*60+15 && mins < 15*60+30) {
                     const btn = document.getElementById('archiveBtn');
                     btn.style.background  = '#0a0f1a';
                     btn.style.color       = '#1a3a5c';
@@ -4198,8 +4199,9 @@ let _archiveTab = 'retention';
 function _isMarketHours() {
     const now = new Date();
     const ist = new Date(now.toLocaleString('en-US', {timeZone: 'Asia/Kolkata'}));
-    const h = ist.getHours(), m = ist.getMinutes();
-    const mins = h * 60 + m;
+    const day = ist.getDay();
+    if (day === 0 || day === 6) return false;  // weekends: archive always available
+    const mins = ist.getHours() * 60 + ist.getMinutes();
     return mins >= 9 * 60 + 15 && mins < 15 * 60 + 30;
 }
 
