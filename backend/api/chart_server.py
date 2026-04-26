@@ -114,6 +114,36 @@ async def startup():
     await prewarm_strikes_cache(app.state.pool)  # blocking — cache must be warm before serving requests
     asyncio.create_task(_load_pending_fills_on_startup(app.state.pool))
 
+    # ── _pending_fills size monitor (runs every 30s, logs per-symbol count) ──
+    # Phase 1: instrumentation only — no eviction.
+    # After one trading day, review [FILL_AGE] log lines in chart_server logs
+    # to pick the eviction TTL, then uncomment the prune block below.
+    async def _monitor_pending_fills():
+        from backend.services.redis_streamer import _pending_fills
+        import logging as _logging
+        _log = _logging.getLogger("redis_streamer")
+        while True:
+            await asyncio.sleep(30)
+            if _pending_fills:
+                summary = {sym: len(entries) for sym, entries in _pending_fills.items() if entries}
+                total = sum(summary.values())
+                top = sorted(summary.items(), key=lambda x: -x[1])[:5]
+                _log.info("[PENDING_FILLS] total=%d symbols=%d top=%s", total, len(summary), top)
+            # ── Prune block (DISABLED — enable after TTL is chosen from FILL_AGE data) ──
+            # import time as _time
+            # TTL_SECONDS = ???   # set from FILL_AGE log analysis
+            # now = _time.monotonic()
+            # for sym in list(_pending_fills):
+            #     before = len(_pending_fills[sym])
+            #     _pending_fills[sym] = [
+            #         pf for pf in _pending_fills[sym]
+            #         if now - pf.get("registered_at", now) < TTL_SECONDS
+            #     ]
+            #     evicted = before - len(_pending_fills[sym])
+            #     if evicted:
+            #         _log.info("[PRUNE] %s evicted=%d remaining=%d", sym, evicted, len(_pending_fills[sym]))
+    asyncio.create_task(_monitor_pending_fills())
+
     # Ensure jump-lookup index exists (no-op if already present).
     # Partial predicate WHERE curr_price > 0 AND ABS(price_jump) > 3 means only
     # big-jump rows are indexed — tiny index, fast scan for Query 1 in get_jump_history().

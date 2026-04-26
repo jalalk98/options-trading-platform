@@ -1,9 +1,13 @@
 import asyncio
 import json
 import math
+import time
+import logging
 import datetime
 from backend.core.redis_client import redis_client
 from backend.api.streaming import manager
+
+logger = logging.getLogger(__name__)
 
 # Track first jump seen per symbol (reset on service restart, which is fine)
 _first_jump_seen: dict = {}
@@ -109,10 +113,11 @@ async def redis_streamer():
                     if symbol not in _pending_fills:
                         _pending_fills[symbol] = []
                     _pending_fills[symbol].append({
-                        "bucket"   : ist_bucket,
-                        "direction": row["direction"],
-                        "pre_price": float(row["prev_price"] or 0),
-                        "is_first" : is_first,
+                        "bucket"      : ist_bucket,
+                        "direction"   : row["direction"],
+                        "pre_price"   : float(row["prev_price"] or 0),
+                        "is_first"    : is_first,
+                        "registered_at": time.monotonic(),
                     })
 
                 # ── Check if this tick fills any pending jump ─────
@@ -130,6 +135,11 @@ async def redis_streamer():
                         elif pf["direction"] == "DOWN" and curr_price >= pf["pre_price"]:
                             filled = True
                         if filled:
+                            age_secs = time.monotonic() - pf.get("registered_at", time.monotonic())
+                            logger.info(
+                                "[FILL_AGE] symbol=%s dir=%s age_secs=%.0f bucket_diff=%d",
+                                symbol, pf["direction"], age_secs, ist_bucket - pf["bucket"]
+                            )
                             fill_events.append({
                                 "type"      : "fill",
                                 "symbol"    : symbol,

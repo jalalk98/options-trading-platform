@@ -126,11 +126,24 @@ async def health_monitor(pool):
                 continue
 
             async with pool.acquire() as conn:
-                last_tick = await conn.fetchval("""
-                    SELECT MAX(timestamp)
-                    FROM gap_ticks
-                    WHERE timestamp > NOW() - INTERVAL '2 minutes'
-                """)
+                # Query today's partition directly — avoids the 40ms planning overhead
+                # of scanning all 66 partition descriptors.  Falls back to the parent
+                # table if today's partition doesn't exist (e.g., cron failed overnight).
+                # No midnight-rollover risk: health_monitor only runs 09:15-15:30 IST.
+                today_partition = (
+                    "gap_ticks_"
+                    + datetime.now(_IST).date().strftime("%Y_%m_%d")
+                )
+                try:
+                    last_tick = await conn.fetchval(
+                        f"SELECT MAX(timestamp) FROM {today_partition}"   # nosec: date-only f-string
+                        " WHERE timestamp > NOW() - INTERVAL '2 minutes'"
+                    )
+                except Exception:
+                    last_tick = await conn.fetchval(
+                        "SELECT MAX(timestamp) FROM gap_ticks"
+                        " WHERE timestamp > NOW() - INTERVAL '2 minutes'"
+                    )
 
             if last_tick is None:
                 if not _health_alert_sent:
