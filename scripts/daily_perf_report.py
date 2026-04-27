@@ -252,6 +252,98 @@ def section_fill_age(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+# ── Section 5a: Conviction query stats (from pg_stat_statements) ─────────────
+
+def section_conviction_stats() -> str:
+    sql = """
+        SELECT
+            calls,
+            round(mean_exec_time::numeric, 1)           AS mean_ms,
+            round(total_exec_time::numeric, 0)          AS total_ms,
+            round((total_exec_time / NULLIF(
+                (SELECT SUM(total_exec_time) FROM pg_stat_statements), 0) * 100)::numeric, 1
+            )                                           AS pct_total
+        FROM pg_stat_statements
+        WHERE query ILIKE '%candles_above_gap >= 3%'
+          AND query ILIKE '%candles_5s%'
+        ORDER BY total_exec_time DESC
+        LIMIT 1;
+    """
+    raw = _run_sql(sql)
+    out = ["## 5a. Conviction Query Performance\n"]
+    out.append("_Target post-Fix-1: mean_ms < 2ms, pct_total < 2%_\n")
+    if raw.startswith("ERROR") or not raw.strip():
+        out.append("_No data — pg_stat_statements may not have captured this query yet._")
+        return "\n".join(out)
+    parts = raw.strip().split("\t")
+    if len(parts) < 4:
+        out.append(f"_Unexpected result: {raw}_")
+        return "\n".join(out)
+    out.append(f"- **calls**: {parts[0]}")
+    out.append(f"- **mean_ms**: {parts[1]} ms")
+    out.append(f"- **total_ms**: {parts[2]} ms")
+    out.append(f"- **% of total DB time**: {parts[3]}%")
+    explain_before = Path.home() / "perf_reports" / "conviction_explain_before.txt"
+    explain_after  = Path.home() / "perf_reports" / "conviction_explain_after.txt"
+    out.append("")
+    out.append(f"_EXPLAIN baseline (before index): `{explain_before}`_")
+    if explain_after.exists():
+        out.append(f"_EXPLAIN after index: `{explain_after}`_")
+    return "\n".join(out)
+
+
+# ── Section 5b: Pool acquire-wait distribution ────────────────────────────────
+
+def section_pool_wait(lines: list[str]) -> str:
+    pat = re.compile(r"\[POOL_WAIT\] ts=(\S+) sym=\S+ wait_ms=([\d.]+) query_ms=([\d.]+)")
+    all_wait  = []
+    all_query = []
+    wait_1500  = []
+    wait_1525  = []
+
+    for line in lines:
+        m = pat.search(line)
+        if not m:
+            continue
+        ts, wait_ms, query_ms = m.group(1), float(m.group(2)), float(m.group(3))
+        all_wait.append(wait_ms)
+        all_query.append(query_ms)
+        label = _bucket_label(ts)
+        if label == "15:25":
+            wait_1525.append(wait_ms)
+        elif label == "15:00":
+            wait_1500.append(wait_ms)
+
+    out = ["## 5b. Pool Acquire-Wait (`/api/conviction/{symbol}`)\n"]
+    out.append("_Pool contention target post-Fix-1: p99 wait_ms < 5ms at all windows_\n")
+    if not all_wait:
+        out.append("_No [POOL_WAIT] lines found — instrumentation active from next restart._")
+        return "\n".join(out)
+
+    out.append(f"**Full day** — samples={len(all_wait)}")
+    out.append(
+        f"  wait: p50={_fmt(_pct(all_wait,50))} p95={_fmt(_pct(all_wait,95))} "
+        f"p99={_fmt(_pct(all_wait,99))} max={_fmt(max(all_wait))}"
+    )
+    out.append(
+        f"  query: p50={_fmt(_pct(all_query,50))} p95={_fmt(_pct(all_query,95))} "
+        f"p99={_fmt(_pct(all_query,99))} max={_fmt(max(all_query))}"
+    )
+    if wait_1500:
+        out.append(f"\n**≥15:00 window** — samples={len(wait_1500)}")
+        out.append(
+            f"  wait: p50={_fmt(_pct(wait_1500,50))} p95={_fmt(_pct(wait_1500,95))} "
+            f"p99={_fmt(_pct(wait_1500,99))} max={_fmt(max(wait_1500))}"
+        )
+    if wait_1525:
+        out.append(f"\n**≥15:25 window** — samples={len(wait_1525)}")
+        out.append(
+            f"  wait: p50={_fmt(_pct(wait_1525,50))} p95={_fmt(_pct(wait_1525,95))} "
+            f"p99={_fmt(_pct(wait_1525,99))} max={_fmt(max(wait_1525))}"
+        )
+    return "\n".join(out)
+
+
 # ── Section 5: pg_stat_statements top 10 ────────────────────────────────────
 
 def section_pg_stat_statements() -> str:
@@ -386,6 +478,10 @@ def main():
         f"# Daily Performance Report — {today}\n",
         f"Generated: {now_ist}  |  Log lines scanned: {len(lines)}\n",
         "---\n",
+        section_conviction_stats(),
+        "",
+        section_pool_wait(lines),
+        "",
         section_chart_latency(lines),
         "",
         section_hist_latency(lines),
@@ -401,7 +497,13 @@ def main():
         section_heap_correlation(),
         "",
         "---",
-        f"_Report complete. Phase 2 authorization checklist:_",
+        f"_Report complete. Fix-1 measurement gate:_",
+        f"- [ ] Conviction mean_ms < 2ms (was 11.3ms)?",
+        f"- [ ] Conviction pct_total < 2% (was 41.3%)?",
+        f"- [ ] Chart p99 at ≥15:25 < 500ms (was 5,792ms)?",
+        f"- [ ] Pool wait p99 at ≥15:25 < 5ms?",
+        f"",
+        f"_Phase 2 authorization checklist:_",
         f"- [ ] Chart p99 at 14:30+ acceptable (target <400ms)?",
         f"- [ ] FILL_AGE p99 known → TTL_SECONDS can be set?",
         f"- [ ] Dead tuple ratio stable (autovacuum keeping up)?",

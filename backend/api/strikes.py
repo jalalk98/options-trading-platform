@@ -802,8 +802,14 @@ async def get_conviction(symbol: str, request: Request):
     """
     try:
         pool = request.app.state.pool
+        _t_acquire = time.monotonic()
         async with pool.acquire() as conn:
+            _wait_ms = (time.monotonic() - _t_acquire) * 1000
+            _t_query = time.monotonic()
             row = await conn.fetchrow(_CONVICTION_Q, symbol)
+            _query_ms = (time.monotonic() - _t_query) * 1000
+            logger.info("[POOL_WAIT] ts=%s sym=%s wait_ms=%.1f query_ms=%.1f",
+                        _ist_hms(), symbol, _wait_ms, _query_ms)
 
             if row is None:
                 return {
