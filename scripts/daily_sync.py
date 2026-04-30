@@ -93,16 +93,41 @@ def list_b2_dates(s3) -> set:
 
 
 def list_local_dates() -> set:
-    """Return set of YYYY-MM-DD dates already on laptop."""
-    dates = set()
+    """
+    Return set of YYYY-MM-DD dates that are fully synced to laptop.
+
+    A date counts only if candles_5s AND at least one raw_ticks symbol_group
+    both have a non-empty parquet file. This prevents a partially-failed
+    download (which leaves behind a handful of small raw_ticks files) from
+    being counted as complete and silently skipped on the next run.
+    """
     root = Path(LOCAL_PARQUET_PATH)
     if not root.exists():
-        return dates
-    for parquet in root.rglob('*.parquet'):
-        m = re.search(r'year=(\d{4})/month=(\d{2})/day=(\d{2})', parquet.as_posix())
-        if m:
-            dates.add(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
-    return dates
+        return set()
+
+    candles_root = root / 'candles_5s'
+    raw_ticks_root = root / 'raw_ticks'
+
+    # Gather dates that have a non-empty candles_5s file
+    candles_dates = set()
+    if candles_root.exists():
+        for f in candles_root.rglob('*.parquet'):
+            if f.is_file() and f.stat().st_size > 0:
+                m = re.search(r'year=(\d{4})/month=(\d{2})/day=(\d{2})', f.as_posix())
+                if m:
+                    candles_dates.add(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+
+    # Gather dates that have at least one non-empty raw_ticks file
+    raw_dates = set()
+    if raw_ticks_root.exists():
+        for f in raw_ticks_root.rglob('*.parquet'):
+            if f.is_file() and f.stat().st_size > 0:
+                m = re.search(r'year=(\d{4})/month=(\d{2})/day=(\d{2})', f.as_posix())
+                if m:
+                    raw_dates.add(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+
+    # Only dates present in both are considered fully synced
+    return candles_dates & raw_dates
 
 
 def estimate_size_mb(s3, dates: list) -> float:
