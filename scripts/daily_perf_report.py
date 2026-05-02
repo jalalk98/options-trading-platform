@@ -264,7 +264,7 @@ def section_conviction_stats() -> str:
                 (SELECT SUM(total_exec_time) FROM pg_stat_statements), 0) * 100)::numeric, 1
             )                                           AS pct_total
         FROM pg_stat_statements
-        WHERE query ILIKE '%candles_above_gap >= 3%'
+        WHERE query ILIKE '%candles_above_gap >=%'
           AND query ILIKE '%candles_5s%'
         ORDER BY total_exec_time DESC
         LIMIT 1;
@@ -414,57 +414,6 @@ def section_table_stats() -> str:
     return "\n".join(out)
 
 
-# ── Section 7: Heap correlation intraday ────────────────────────────────────
-
-def section_heap_correlation() -> str:
-    out = ["## 7. `candles_5s` Heap Correlation — Intraday Decay\n"]
-
-    # Read today's snapshots from corr_snapshots.log
-    today = _today_str()
-    snapshots = []
-    if CORR_LOG.exists():
-        for line in CORR_LOG.read_text().splitlines():
-            if line.startswith(today):
-                parts = line.split("\t")
-                if len(parts) == 3:
-                    ts_str = parts[0].split(" ")[1]   # HH:MM:SS
-                    sym_c  = parts[1].replace("symbol=", "")
-                    bkt_c  = parts[2].replace("bucket=", "").strip()
-                    snapshots.append((ts_str, sym_c, bkt_c))
-
-    if not snapshots:
-        out.append("_No correlation snapshots for today — snap_heap_corr.py cron has not run yet._")
-        out.append("_(Expected on a weekend dry-run; will populate on a trading day.)_")
-    else:
-        out.append("| Time (IST) | symbol corr | bucket corr |")
-        out.append("|------------|-------------|-------------|")
-        for ts_str, sym_c, bkt_c in snapshots:
-            out.append(f"| {ts_str} | {sym_c} | {bkt_c} |")
-        out.append("")
-        out.append(
-            "> **Interpretation**: correlation near ±1 = rows physically ordered by this column "
-            "(fast index scans). Near 0 = scattered (slow). CLUSTER after last trading day "
-            "restores correlation to ~0.95 at open; watch how fast it decays."
-        )
-
-    # Also show current EOD correlation
-    sql = """
-        SELECT attname, round(correlation::numeric, 4)
-        FROM pg_stats
-        WHERE tablename = 'candles_5s' AND attname IN ('symbol','bucket')
-        ORDER BY attname;
-    """
-    raw = _run_sql(sql)
-    out.append("\n**Current (EOD) correlation from pg_stats:**")
-    if not raw.startswith("ERROR"):
-        for line in raw.splitlines():
-            parts = line.split("\t")
-            if len(parts) == 2:
-                out.append(f"- {parts[0]}: {parts[1]}")
-    else:
-        out.append(f"_{raw}_")
-
-    return "\n".join(out)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -494,20 +443,13 @@ def main():
         "",
         section_table_stats(),
         "",
-        section_heap_correlation(),
-        "",
         "---",
         f"_Report complete. Fix-1 measurement gate:_",
         f"- [ ] Conviction mean_ms < 2ms (was 11.3ms)?",
         f"- [ ] Conviction pct_total < 2% (was 41.3%)?",
-        f"- [ ] Chart p99 at ≥15:25 < 500ms (was 5,792ms)?",
-        f"- [ ] Pool wait p99 at ≥15:25 < 5ms?",
-        f"",
-        f"_Phase 2 authorization checklist:_",
-        f"- [ ] Chart p99 at 14:30+ acceptable (target <400ms)?",
-        f"- [ ] FILL_AGE p99 known → TTL_SECONDS can be set?",
-        f"- [ ] Dead tuple ratio stable (autovacuum keeping up)?",
-        f"- [ ] Correlation still above 0.5 at 15:00 (CLUSTER helping)?",
+        f"- [ ] Chart p99 at ≥14:00 < 500ms (target)?",
+        f"- [ ] Pool wait p99 at ≥15:00 < 5ms?",
+        f"- [ ] Jump-history mean < 700ms (was 1,342ms)?",
     ]
 
     report = "\n".join(sections)

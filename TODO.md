@@ -1,46 +1,52 @@
 # TODO
 
+## Status after Apr 28–30 reports
+
+Fix 1 (conviction index): **confirmed working** — conviction gone from pg_stat_statements top 10 on all three days. Pool wait p99 = 0.1ms.
+
+Chart slowness: **not resolved**. New primary bottleneck is the chart query itself (`candles_5s` full-day scan). Chart query mean: 52ms (Apr 27, baseline) → 253ms (Apr 28) → 1,221ms (Apr 29) → 163ms (Apr 30). Cause of Apr 29 spike: dead tuple bloat (autovacuum hadn't run) + heap scatter. Autovacuum caught up Apr 29 overnight; Apr 30 recovered but still elevated.
+
+---
+
+## Open: candles_5s chart query slowness (new primary bottleneck)
+
+Chart query (`AND bucket >= EXTRACT` in pg_stat_statements) is now #1–2 by DB time on every day. Mean 163–1,221ms depending on day and table state. Was hidden behind conviction's 41% load.
+
+**Root cause**: candles_5s heap scatter worsens through the day as new candles insert into random heap positions (HOT updates go to existing pages but new symbols scatter). By 13:00–15:00, bucket correlation drops to 0.1–0.4, forcing random I/O per chart query.
+
+**Requires investigation before any fix is proposed.** Need to understand:
+- Why Apr 29 was 1,221ms mean but Apr 30 (worse correlation) was only 163ms
+- What the `WHERE symbol` query in top 10 is (new entry, 300–479ms, 9–15% of DB time)
+- Whether CLUSTER/pg_repack on candles_5s is the right intervention or if a covering index solves it cheaper
+
+Do not propose a fix until the cause is fully explained by data.
+
+---
+
 ## Fix 3 — get_jump_history Query 2 rewrite (deferred)
 
 Rewrite `get_jump_history` Query 2 to source fill state from `_pending_fills`
 rather than replaying all ticks from the first jump timestamp.
 
-**Current cost after Fix 2** (visibility map VACUUM): ~500ms × 742 calls = ~6 min DB time/day.
-Worth doing in a maintenance week — not blocking anything now.
+**Current cost (after Fix 2 vacuum)**: ~786ms mean × ~420 calls = ~5.5 min DB time/day (Apr 30).
+Improving gradually. Still worth doing in a maintenance week but not blocking.
 
 **Constraints:**
 - `_pending_fills` is populated server-side in real-time but wiped on restart
 - The replay path must remain as fallback for cold-start (server restart wipes `_pending_fills`)
 - Full equivalence testing required: run both paths in parallel for one day, diff outputs
-- Fill detection logic (`pre_price` crossing) is the same in both paths — no semantic change needed
-
-**Implementation sketch:**
-1. In `get_jump_history`, check if `_pending_fills[symbol]` has an entry for each jump bucket
-2. If yes: use stored `filled` / `filled_bucket` from `_pending_fills` — skip Query 2 entirely
-3. If no (cold start or symbol not yet tracked): fall back to current replay scan
-4. Add `[FILL_SKIP]` log line when the fill scan is skipped to confirm the fast path is used
-
-**Acceptance criteria:** `[FILL_SKIP]` appears for all warmed symbols; fill display identical to current in UI.
 
 ---
 
-## Pool contention re-check (deferred — revisit after Tuesday's report)
+## Pool size — closed
 
-After Fix 1 (conviction index), check Tuesday's daily report:
-- Pool wait p99 at ≥15:25 < 5ms? → no action needed
-- If p99 still high → investigate whether conviction is no longer the cause
-
-Do not increase `max_size` until data shows it's necessary.
+Pool contention solved by Fix 1. p99 wait = 0.1ms. max_size=8 is sufficient.
+Do not change pool config.
 
 ---
 
 ## TTL for `_pending_fills` (deferred)
 
-p99 fill age on Apr 27 was 8,335s (~138 min). p95 was 3,425s (~57 min).
-
-Revisit once conviction + jump-history fixes have landed. If TTL becomes relevant:
-- Target ~10,002s (p99 × 1.2 safety margin)
-- Shadow mode first: log evictions without deleting for one full trading day
-- Activate only after shadow mode confirms no false evictions at p99+
-
-Do not set TTL until post-Fix-3 data is available.
+p99 fill age across observed days: Apr 27=8,335s, Apr 28=5,212s, Apr 29=534s, Apr 30=16,823s.
+High variance across days — not stable enough to set a TTL yet. Revisit after chart query
+slowness is resolved and the system is in steady state.
