@@ -209,43 +209,45 @@ def _sync_query_jumps(symbol: str, d: PyDate) -> list:
     for i, j in enumerate(dedup_jumps):
         j['is_first'] = (i == 0)
 
-    # Query 2: all ticks from first jump to 15:35:00 for fill detection
-    first_jump_ts = datetime.fromisoformat(dedup_jumps[0]['timestamp'])
-    all_ticks = _db.execute("""
-        SELECT timestamp, curr_price
-        FROM read_parquet(?)
-        WHERE symbol = ?
-          AND timestamp >= ?
-          AND timestamp <= ?
-          AND curr_price > 0
-        ORDER BY timestamp ASC
-    """, [str(path), symbol, first_jump_ts, time_end]).fetchall()
+    # Fill detection via candles_5s (reliable even on days where raw_ticks is sparse).
+    # candles_5s high/low capture intra-candle extremes; raw_ticks on Apr 21/22/24
+    # was missing ~65-80% of ticks, causing fills to be silently missed.
+    candles_path = _date_path(_CANDLES_ROOT, d)
+    end_bucket = calendar.timegm(time_end.timetuple())
 
-    # O(N) fill detection -- identical logic to production
     for j in dedup_jumps:
         j['filled'] = False
         j['filled_bucket'] = None
 
-    pending = list(dedup_jumps)
-    for tick_ts, tick_price in all_ticks:
-        if not pending:
-            break
-        tick_epoch = calendar.timegm(tick_ts.timetuple())
-        tick_bucket = (tick_epoch // 5) * 5  # parquet ts is already IST-naive
-        still_pending = []
-        for pf in pending:
-            if tick_bucket <= pf['bucket']:
-                still_pending.append(pf)
-                continue
-            if pf['direction'] == 'UP' and tick_price <= pf['pre_price']:
-                pf['filled'] = True
-                pf['filled_bucket'] = int(tick_bucket)
-            elif pf['direction'] == 'DOWN' and tick_price >= pf['pre_price']:
-                pf['filled'] = True
-                pf['filled_bucket'] = int(tick_bucket)
+    if candles_path.exists():
+        for j in dedup_jumps:
+            if j['direction'] == 'UP':
+                # UP filled when any subsequent candle LOW <= pre_price
+                row = _db.execute("""
+                    SELECT bucket FROM read_parquet(?)
+                    WHERE symbol = ?
+                      AND bucket > ?
+                      AND bucket <= ?
+                      AND low <= ?
+                    ORDER BY bucket ASC
+                    LIMIT 1
+                """, [str(candles_path), symbol,
+                      j['bucket'], end_bucket, j['pre_price']]).fetchone()
             else:
-                still_pending.append(pf)
-        pending = still_pending
+                # DOWN filled when any subsequent candle HIGH >= pre_price
+                row = _db.execute("""
+                    SELECT bucket FROM read_parquet(?)
+                    WHERE symbol = ?
+                      AND bucket > ?
+                      AND bucket <= ?
+                      AND high >= ?
+                    ORDER BY bucket ASC
+                    LIMIT 1
+                """, [str(candles_path), symbol,
+                      j['bucket'], end_bucket, j['pre_price']]).fetchone()
+            if row:
+                j['filled'] = True
+                j['filled_bucket'] = int(row[0])
 
     return dedup_jumps
 
