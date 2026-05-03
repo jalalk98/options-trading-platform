@@ -115,6 +115,9 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
         page.goto(login_url, wait_until="networkidle", timeout=30_000)
 
         # ── Step 1: user ID + password ────────────────────────────────────
+        # Wait for fields to be interactive (React may still be mounting after networkidle)
+        page.wait_for_selector('input[type="text"]',     state="visible", timeout=10_000)
+        page.wait_for_selector('input[type="password"]', state="visible", timeout=10_000)
         page.fill('input[type="text"]',     user_id)
         page.fill('input[type="password"]', password)
         page.click('button[type="submit"]')
@@ -123,7 +126,7 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
         # ── Step 2: TOTP ──────────────────────────────────────────────────
         # Wait for TOTP input to appear
         try:
-            page.wait_for_selector('input[type="number"]', timeout=15_000)
+            page.wait_for_selector('input[type="number"]', timeout=30_000)
         except PWTimeout:
             page.screenshot(path=str(Path.home() / "kite_login_debug.png"))
             raise RuntimeError("TOTP input did not appear — check credentials or screenshot ~/kite_login_debug.png")
@@ -170,25 +173,49 @@ def get_request_token(api_key: str, user_id: str, password: str, totp_secret: st
 
 
 def exchange_for_access_token(api_key: str, api_secret: str, request_token: str) -> str:
-    """Exchange request_token for an access_token via the Kite API."""
+    """Exchange request_token for an access_token via the Kite API.
+
+    Retries up to 3 times with increasing delays on transient 5xx errors,
+    so a brief Zerodha API hiccup doesn't force a full browser re-login.
+    """
     import hashlib
 
     checksum = hashlib.sha256(f"{api_key}{request_token}{api_secret}".encode()).hexdigest()
-    resp = requests.post(
-        "https://api.kite.trade/session/token",
-        data={
-            "api_key":       api_key,
-            "request_token": request_token,
-            "checksum":      checksum,
-        },
-        headers={"X-Kite-Version": "3"},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    access_token = data["data"]["access_token"]
-    log.info(f"Access token received: {access_token[:8]}…")
-    return access_token
+    last_exc: Exception | None = None
+    for api_attempt in range(1, 4):
+        try:
+            resp = requests.post(
+                "https://api.kite.trade/session/token",
+                data={
+                    "api_key":       api_key,
+                    "request_token": request_token,
+                    "checksum":      checksum,
+                },
+                headers={"X-Kite-Version": "3"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            access_token = data["data"]["access_token"]
+            log.info(f"Access token received: {access_token[:8]}…")
+            return access_token
+        except requests.HTTPError as e:
+            last_exc = e
+            status = e.response.status_code if e.response is not None else 0
+            if status >= 500 and api_attempt < 3:
+                wait = 20 * api_attempt  # 20s, then 40s
+                log.warning(f"Zerodha API returned {status} (attempt {api_attempt}/3) — retrying in {wait}s …")
+                time.sleep(wait)
+            else:
+                raise
+        except requests.RequestException as e:
+            last_exc = e
+            if api_attempt < 3:
+                log.warning(f"Token exchange network error (attempt {api_attempt}/3): {e} — retrying in 20s …")
+                time.sleep(20)
+            else:
+                raise
+    raise last_exc  # unreachable but satisfies type checkers
 
 
 LOG_FILE = Path.home() / "token_refresh.log"
@@ -286,8 +313,8 @@ def main():
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             if attempt > 1:
-                log.info(f"Retrying in 60 seconds (attempt {attempt}/{MAX_ATTEMPTS}) …")
-                time.sleep(60)
+                log.info(f"Retrying in 120 seconds (attempt {attempt}/{MAX_ATTEMPTS}) …")
+                time.sleep(120)
 
             request_token = get_request_token(
                 api_key     = env["api_key"],

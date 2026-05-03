@@ -22,6 +22,21 @@ from config.credentials import (
 BATCH_SIZE = 5
 FLUSH_INTERVAL = 0.07  # seconds
 
+_STREAM   = "ticks_stream"
+_GROUP    = "db_writer_group"
+_CONSUMER = "db_writer_1"
+
+_REQUIRED_FIELDS = [
+    "instrument_token", "symbol", "timestamp", "curr_price",
+    "expiry_date", "strike", "option_type",
+]
+
+# Epoch-zero guard: Kite SDK emits datetime(1970,1,1,5,30) when a tick's
+# timestamp bytes are zero (expired/stale contract). Checked on `timestamp`
+# only — expiry_date uses INDEX_SENTINEL_EXPIRY=datetime(1970,1,1) for all
+# five index instruments, so that field must NOT be range-checked here.
+MIN_VALID_DATE = datetime(2026, 1, 1)
+
 # ── Resilience: rate limited Telegram alerting ────────────────
 _db_error_count    = 0
 _db_last_alert_at  = 0.0
@@ -487,15 +502,105 @@ INSERT INTO gap_ticks (
     spread_pct,
     only_gap,
     gap_with_spread,
-    is_gap
+    is_gap,
+    stream_id
 )
 VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
     $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
     $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
-    $31,$32,$33
+    $31,$32,$33,$34
 )
+ON CONFLICT DO NOTHING
 """
+
+
+async def _ensure_consumer_group() -> None:
+    """Idempotent: creates consumer group at current stream tail if absent."""
+    try:
+        await redis_client.xgroup_create(
+            _STREAM, _GROUP, id="$", mkstream=True
+        )
+        logger.info(f"Consumer group '{_GROUP}' created")
+    except Exception as e:
+        if "BUSYGROUP" in str(e):
+            logger.info(f"Consumer group '{_GROUP}' already exists — ok")
+        else:
+            raise
+
+
+def _ingest_messages(streams, buffer: list) -> None:
+    """Parse XREADGROUP response into buffer rows.
+
+    Structural failures (bad JSON, missing required fields) are marked
+    _poison so flush() XACKs them immediately without DB involvement.
+    """
+    for _stream_name, messages in streams:
+        for message_id, data in messages:
+
+            # ── JSON parse ─────────────────────────────────────────────
+            try:
+                row = json.loads(data["data"])
+            except Exception as e:
+                logger.warning(f"Poison message {message_id}: bad JSON — {e}")
+                buffer.append({"stream_id": message_id, "_poison": "bad_json"})
+                continue
+
+            # ── Required-field check ───────────────────────────────────
+            missing = [f for f in _REQUIRED_FIELDS
+                       if f not in row or row[f] is None]
+            if missing:
+                logger.warning(
+                    f"Poison message {message_id}: missing fields {missing}"
+                )
+                buffer.append({"stream_id": message_id,
+                               "_poison": f"missing_{missing}"})
+                continue
+
+            # ── Datetime conversions ───────────────────────────────────
+            if isinstance(row.get("timestamp"), str):
+                row["timestamp"] = datetime.fromisoformat(row["timestamp"])
+
+            # ── Timestamp sanity check ─────────────────────────────────
+            # Kite SDK emits epoch-zero (1970-01-01 05:30 IST) for ticks
+            # from expired/stale contracts; those bytes are 0 but parse
+            # successfully — datetime.fromisoformat raises no error.
+            # expiry_date and last_trade_time are NOT checked: INDEX_SENTINEL
+            # intentionally uses datetime(1970,1,1) for the five index instruments.
+            ts = row.get("timestamp")
+            if isinstance(ts, datetime) and ts < MIN_VALID_DATE:
+                logger.warning(
+                    f"Poison message {message_id}: "
+                    f"timestamp_out_of_range — {ts}"
+                )
+                buffer.append({"stream_id": message_id,
+                               "_poison": "timestamp_out_of_range"})
+                continue
+
+            if isinstance(row.get("expiry_date"), str):
+                row["expiry_date"] = datetime.fromisoformat(row["expiry_date"])
+            if isinstance(row.get("last_trade_time"), str):
+                row["last_trade_time"] = datetime.fromisoformat(
+                    row["last_trade_time"]
+                )
+
+            row["stream_id"] = message_id  # flows into INSERT $34
+            buffer.append(row)
+
+
+def _split_buffer(buffer: list) -> tuple:
+    """Separate valid rows from poison rows.
+
+    Returns (valid_rows, poison_ids).
+    Poison rows are XACKed immediately; valid rows enter the transaction.
+    """
+    valid, poison_ids = [], []
+    for row in buffer:
+        if row.get("_poison"):
+            poison_ids.append(row["stream_id"])
+        else:
+            valid.append(row)
+    return valid, poison_ids
 
 
 async def db_writer():
@@ -505,43 +610,52 @@ async def db_writer():
     # Start health monitor as background task
     asyncio.create_task(health_monitor(pool))
 
-    buffer = []
+    await _ensure_consumer_group()
 
-    last_id = "$"  # Redis stream pointer
+    buffer = []
 
     try:
 
+        # ── Phase 1: drain pending messages from prior run ────────────────
+        # XREADGROUP "0" returns messages delivered to _CONSUMER but not yet
+        # ACKed — left over from a crash or unclean shutdown. Always flush
+        # after each call so poison rows don't loop back as re-delivered.
+        # NOTE: when the PEL is empty, Redis returns [[stream, []]] (truthy),
+        # not None — check the inner messages list, not the outer structure.
+        while True:
+            pending = await redis_client.xreadgroup(
+                _GROUP, _CONSUMER,
+                {_STREAM: "0"},
+                count=BATCH_SIZE,
+            )
+            if not pending or not any(msgs for _, msgs in pending):
+                break
+            _ingest_messages(pending, buffer)
+            if buffer:
+                await flush(pool, buffer)
+                buffer.clear()
+
+        # Final flush for any sub-BATCH_SIZE remainder (safety net)
+        if buffer:
+            await flush(pool, buffer)
+            buffer.clear()
+
+        # ── Phase 2: normal live read loop ────────────────────────────────
         while True:
 
             try:
 
-                streams = await redis_client.xread(
-                    {"ticks_stream": last_id},
+                streams = await redis_client.xreadgroup(
+                    _GROUP, _CONSUMER,
+                    {_STREAM: ">"},
                     count=BATCH_SIZE,
-                    block=100
+                    block=100,
                 )
 
                 if not streams:
                     continue
 
-                for stream_name, messages in streams:
-
-                    for message_id, data in messages:
-
-                        row = json.loads(data["data"])
-
-                        # Convert timestamp strings back to datetime
-                        if isinstance(row.get("timestamp"), str):
-                            row["timestamp"] = datetime.fromisoformat(row["timestamp"])
-
-                        if isinstance(row.get("expiry_date"), str):
-                            row["expiry_date"] = datetime.fromisoformat(row["expiry_date"])
-
-                        if isinstance(row.get("last_trade_time"), str):
-                            row["last_trade_time"] = datetime.fromisoformat(row["last_trade_time"])
-
-                        buffer.append(row)
-                        last_id = message_id
+                _ingest_messages(streams, buffer)
 
                 if len(buffer) >= BATCH_SIZE:
                     await flush(pool, buffer)
@@ -554,6 +668,7 @@ async def db_writer():
 
         if buffer:
             await flush(pool, buffer)
+            buffer.clear()
 
         await pool.close()
 
@@ -566,14 +681,23 @@ async def db_writer():
         await pool.close()
 
 
-async def flush(pool, buffer):
+async def flush(pool, buffer: list) -> None:
 
     if not buffer:
         return
 
+    # ── Poison split ──────────────────────────────────────────────────────────
+    # Structural failures marked at ingest time are XACKed immediately.
+    # Valid rows continue into the transaction.
+    valid_buffer, poison_ids = _split_buffer(buffer)
+    if poison_ids:
+        await redis_client.xack(_STREAM, _GROUP, *poison_ids)
+    if not valid_buffer:
+        return
+
     records = []
 
-    for row in buffer:
+    for row in valid_buffer:
         try:
             records.append((
                 row["instrument_token"],
@@ -610,12 +734,13 @@ async def flush(pool, buffer):
                 row.get("only_gap"),
                 row.get("gap_with_spread"),
                 row.get("is_gap"),
+                row.get("stream_id"),           # $34
             ))
         except Exception as e:
             print(f"Row build error (skipping row): {e}")
             continue
 
-    candle_records, gap_records = _build_fast_records(buffer)
+    candle_records, gap_records = _build_fast_records(valid_buffer)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -626,7 +751,7 @@ async def flush(pool, buffer):
             except Exception as e:
                 _maybe_alert(e, context=f"gap_ticks INSERT "
                     f"({len(records)} rows, "
-                    f"first symbol: {buffer[0].get('symbol','?')})")
+                    f"first symbol: {valid_buffer[0].get('symbol','?')})")
                 raise
 
             # ── tracked_symbols ───────────────────────────────────
@@ -634,7 +759,7 @@ async def flush(pool, buffer):
                 unique_symbols = {
                     (r["symbol"], r["strike"],
                      r["option_type"], r["expiry_date"])
-                    for r in buffer
+                    for r in valid_buffer
                 }
                 await conn.executemany("""
                     INSERT INTO tracked_symbols
@@ -644,8 +769,8 @@ async def flush(pool, buffer):
                 """, list(unique_symbols))
             except Exception as e:
                 _maybe_alert(e, context=f"tracked_symbols INSERT "
-                    f"({len(buffer)} rows, "
-                    f"first symbol: {buffer[0].get('symbol','?')})")
+                    f"({len(valid_buffer)} rows, "
+                    f"first symbol: {valid_buffer[0].get('symbol','?')})")
                 raise
 
             # ── candles_5s ────────────────────────────────────────
@@ -657,7 +782,7 @@ async def flush(pool, buffer):
             except Exception as e:
                 _maybe_alert(e, context=f"candles_5s UPSERT "
                     f"({len(candle_records)} rows, "
-                    f"first symbol: {buffer[0].get('symbol','?')})")
+                    f"first symbol: {valid_buffer[0].get('symbol','?')})")
                 raise
 
             # ── gap_events ────────────────────────────────────────
@@ -669,9 +794,14 @@ async def flush(pool, buffer):
             except Exception as e:
                 _maybe_alert(e, context=f"gap_events INSERT "
                     f"({len(gap_records)} rows, "
-                    f"first symbol: {buffer[0].get('symbol','?')})")
+                    f"first symbol: {valid_buffer[0].get('symbol','?')})")
                 raise
 
             _reset_alert_count()  # all four writes succeeded
+
+    # ── XACK valid messages only after transaction commits ────────────────────
+    valid_ids = [r["stream_id"] for r in valid_buffer if r.get("stream_id")]
+    if valid_ids:
+        await redis_client.xack(_STREAM, _GROUP, *valid_ids)
 
     logger.info(f"Inserted {len(records)} rows into DB")

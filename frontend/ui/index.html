@@ -1412,6 +1412,9 @@ function createPanel(id) {
     let slLineState      = 'none';
     let slOrderId        = null;
     let slDragging       = false;
+    let slSettling       = false;  // true while awaiting /api/sl/set after drop — gates the poll
+    let slPreDragPrice   = null;   // price saved on pointerdown, used to revert on API failure
+    let slPreDragState   = 'none';
     let hlineDragging    = null;   // user line being dragged {id, price, colorIdx, priceLine}
     let lineUndoStack    = [];     // [{id, prevPrice}] — last 5 line moves, LIFO
     let lineRedoStack    = [];     // [{id, prevPrice}] — cleared on any new drag
@@ -1904,6 +1907,9 @@ function createPanel(id) {
         stopSLPoll();
         slPollTimer = setInterval(async () => {
             if (!sym) return;
+            // Never overwrite the line while the user is dragging or while the
+            // post-drop /api/sl/set request is still in-flight (race condition fix).
+            if (slDragging || slSettling) return;
             try {
                 const res  = await fetch(`/api/sl/${sym}`);
                 const data = await res.json();
@@ -1939,7 +1945,7 @@ function createPanel(id) {
         const y = clientY - rect.top;
         for (const l of userLines) {
             const ly = candleSeries.priceToCoordinate(l.price);
-            if (ly !== null && Math.abs(y - ly) < 8) return l;
+            if (ly !== null && Math.abs(y - ly) < 10) return l;
         }
         return null;
     }
@@ -1949,12 +1955,12 @@ function createPanel(id) {
         if (!slPrice) return false;
         const rect = chartAreaEl.getBoundingClientRect();
         const slY  = candleSeries.priceToCoordinate(slPrice);
-        return slY !== null && Math.abs((clientY - rect.top) - slY) < 8;
+        return slY !== null && Math.abs((clientY - rect.top) - slY) < 10;
     }
     function disableScroll() { chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false } }); }
     function enableScroll()  { chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: true,  horzTouchDrag: true,  vertTouchDrag: true  } }); }
 
-    chartAreaEl.addEventListener('mousemove', e => {
+    chartAreaEl.addEventListener('pointermove', e => {
         const y = e.clientY - chartAreaEl.getBoundingClientRect().top;
         if (hlineDragging) {
             const p = candleSeries.coordinateToPrice(y);
@@ -1965,21 +1971,32 @@ function createPanel(id) {
             }
             return;
         }
-        if (isNearSL(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
-        else if (userLines.length && getNearUserLine(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
-        else if (!slDragging)    { chartAreaEl.style.cursor = 'default';   enableScroll();  }
+        // Hover cursor — only when not actively dragging the SL
+        if (!slDragging) {
+            if (isNearSL(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
+            else if (userLines.length && getNearUserLine(e.clientY)) { chartAreaEl.style.cursor = 'ns-resize'; disableScroll(); }
+            else { chartAreaEl.style.cursor = 'default'; enableScroll(); }
+        }
         if (slDragging) {
             const p = candleSeries.coordinateToPrice(y);
             if (p !== null) updateSLLineLocal(Math.round(p * 20) / 20, slLineState === 'none' ? 'pending' : slLineState);
         }
     });
 
-    chartAreaEl.addEventListener('mousedown', e => {
-        if (slPrice && isNearSL(e.clientY)) { slDragging = true; disableScroll(); e.stopPropagation(); return; }
+    chartAreaEl.addEventListener('pointerdown', e => {
+        if (slPrice && isNearSL(e.clientY)) {
+            slPreDragPrice = slPrice;
+            slPreDragState = slLineState;
+            slDragging = true;
+            chartAreaEl.setPointerCapture(e.pointerId); // ensures move/up fire even outside element
+            disableScroll();
+            e.stopPropagation();
+            console.debug('[SL drag] down — pre-drag price:', slPreDragPrice);
+            return;
+        }
         if (userLines.length && !drawHlineMode) {
             const nearLine = getNearUserLine(e.clientY);
             if (nearLine) {
-                // Record position before drag for undo; new drag clears redo history
                 lineUndoStack.push({ type: 'move', id: nearLine.id, prevPrice: nearLine.price });
                 if (lineUndoStack.length > 5) lineUndoStack.shift();
                 lineRedoStack = [];
@@ -1988,7 +2005,7 @@ function createPanel(id) {
         }
     });
 
-    chartAreaEl.addEventListener('mouseup', async () => {
+    chartAreaEl.addEventListener('pointerup', async e => {
         if (hlineDragging) {
             hlineDragging = null; chartAreaEl.style.cursor = 'default'; enableScroll();
             _syncLinesToStore();
@@ -1996,9 +2013,28 @@ function createPanel(id) {
             return;
         }
         if (!slDragging) return;
-        slDragging = false; chartAreaEl.style.cursor = 'default'; enableScroll();
-        if (!slPrice || !symbol) return;
-        await fetch('/api/sl/set', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, price: slPrice }) });
+        chartAreaEl.releasePointerCapture(e.pointerId);
+        const droppedPrice = slPrice; // capture optimistic position before any async
+        slDragging  = false;
+        slSettling  = true;  // hold poll gate until the SET request lands
+        chartAreaEl.style.cursor = 'default'; enableScroll();
+        console.debug('[SL drag] up — dropped price:', droppedPrice);
+        if (!droppedPrice || !symbol) { slSettling = false; return; }
+        try {
+            const res = await fetch('/api/sl/set', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ symbol, price: droppedPrice }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            console.debug('[SL drag] confirmed — price accepted by backend');
+        } catch (err) {
+            // Backend rejected — revert line to where it was before the drag
+            console.warn('[SL drag] failed — reverting to', slPreDragPrice, err);
+            updateSLLineLocal(slPreDragPrice, slPreDragState);
+            toast('SL update failed — reverted', 'error', 4000);
+        } finally {
+            slSettling = false;
+        }
     });
 
     chartAreaEl.addEventListener('dblclick', async () => {

@@ -8,18 +8,26 @@ Chart slowness: **not resolved**. New primary bottleneck is the chart query itse
 
 ---
 
-## Open: candles_5s chart query slowness (new primary bottleneck)
+## candles_5s chart query slowness — fix deployed
 
-Chart query (`AND bucket >= EXTRACT` in pg_stat_statements) is now #1–2 by DB time on every day. Mean 163–1,221ms depending on day and table state. Was hidden behind conviction's 41% load.
+**Root cause confirmed**: Statistics freshness, not heap scatter or plan choice.
+- Apr 29 (no autovacuum all session, stale stats): 1,221ms mean
+- Apr 30 (autoanalyze at 09:34 UTC pre-open, fresh stats): 163ms mean
+- Same dead-tuple ratio (~6–7%) both days — bloat not the driver
+- EXPLAIN: Bitmap Heap Scan on candles_5s_pkey, 143ms for 4501 rows (BANKNIFTY). Plan is correct.
 
-**Root cause**: candles_5s heap scatter worsens through the day as new candles insert into random heap positions (HOT updates go to existing pages but new symbols scatter). By 13:00–15:00, bucket correlation drops to 0.1–0.4, forcing random I/O per chart query.
+**Fix deployed (May 2)**: Scheduled ANALYZE candles_5s (no VACUUM) via cron:
+- 09:00 IST Mon–Fri — pre-open fresh stats guarantee
+- 12:00 IST Mon–Fri — mid-session refresh
+- Logs to `~/perf_reports/manual_analyze.log`
 
-**Requires investigation before any fix is proposed.** Need to understand:
-- Why Apr 29 was 1,221ms mean but Apr 30 (worse correlation) was only 163ms
-- What the `WHERE symbol` query in top 10 is (new entry, 300–479ms, 9–15% of DB time)
-- Whether CLUSTER/pg_repack on candles_5s is the right intervention or if a covering index solves it cheaper
+**Verification (Monday EOD)**:
+- Section 7 (stats freshness): 09:30 n_mod_pct ~0%, 11:58 shows accumulated %, 12:02 ~0% (post-ANALYZE), 15:25 final state
+- Chart query mean should land 150–250ms (matching Apr 30). If >400ms despite cron firing, diagnosis is incomplete.
 
-Do not propose a fix until the cause is fully explained by data.
+**NOT doing**: pg_repack/CLUSTER, autovacuum tuning, covering index. 163ms at fresh-stats baseline is within SLO.
+
+**`WHERE symbol` mystery (Apr 28–30 reports)**: Identified as EXISTS subquery inside `get_hist_symbols()` (strikes.py:1234). Runs once per tracked symbol (~1100 executions) per uncached hist-symbols call. Not a bottleneck — fires once per restart per historical date, cached after first hit.
 
 ---
 

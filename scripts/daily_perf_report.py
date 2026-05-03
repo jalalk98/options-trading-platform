@@ -416,6 +416,64 @@ def section_table_stats() -> str:
 
 
 
+# ── Section 7: candles_5s stats freshness — intraday snapshots ───────────────
+
+_FRESHNESS_LOG = Path.home() / "perf_reports" / "stats_freshness.log"
+
+def section_stats_freshness() -> str:
+    """Read intraday n_mod_since_analyze and vacuum-age snapshots.
+    Written by snap_stats_freshness.py at 09:30/12:00/15:25 IST."""
+    today = _today_str()
+    out = ["## 7. `candles_5s` Stats Freshness — Intraday\n"]
+
+    if not _FRESHNESS_LOG.exists():
+        out.append("_No freshness log found — snap_stats_freshness.py may not have run yet._")
+        return "\n".join(out)
+
+    rows = []
+    for line in _FRESHNESS_LOG.read_text().splitlines():
+        if not line.startswith(today):
+            continue
+        fields = dict(f.split("=", 1) for f in line.split("\t")[1:] if "=" in f)
+        ts = line.split("\t")[0]
+        rows.append((ts, fields))
+
+    if not rows:
+        out.append(f"_No snapshots logged for {today}._")
+        return "\n".join(out)
+
+    out.append("| Time (IST) | n_mod_since_analyze | n_mod_pct% | n_live | n_dead | hrs_since_autovac | hrs_since_analyze |")
+    out.append("|------------|--------------------|-----------|---------|---------|--------------------|-------------------|")
+    for ts, f in rows:
+        time_part = ts.split(" ")[1][:5]
+        n_mod     = f.get("n_mod",      "—")
+        n_mod_pct = f.get("n_mod_pct",  "—")
+        n_live    = f.get("n_live",     "—")
+        n_dead    = f.get("n_dead",     "—")
+        hrs_vac   = f.get("hrs_autovac","—")
+        hrs_ana   = f.get("hrs_analyze","—")
+        try:
+            hrs_vac = f"{float(hrs_vac):.1f}h"
+        except (ValueError, TypeError):
+            pass
+        try:
+            hrs_ana = f"{float(hrs_ana):.1f}h"
+        except (ValueError, TypeError):
+            pass
+        out.append(f"| {time_part} | {n_mod} | {n_mod_pct}% | {n_live} | {n_dead} | {hrs_vac} | {hrs_ana} |")
+
+    out.append("")
+    out.append(
+        "> **Interpretation**: n_mod_pct% = n_mod_since_analyze / n_live × 100. "
+        "PostgreSQL autovacuum triggers ANALYZE at ~10% (autovacuum_analyze_scale_factor default). "
+        "The 09:00 and 12:00 IST scheduled ANALYZE should reset n_mod_pct to ~0% — "
+        "if Monday's 09:30 snapshot shows n_mod_pct near 0% and 12:02 snapshot shows ~0% after "
+        "the midday ANALYZE, the fix is confirmed working. "
+        "hrs_since_autovac > 20h at 09:30 signals autovacuum missed the overnight window."
+    )
+    return "\n".join(out)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -442,6 +500,8 @@ def main():
         section_pg_stat_statements(),
         "",
         section_table_stats(),
+        "",
+        section_stats_freshness(),
         "",
         "---",
         f"_Report complete. Fix-1 measurement gate:_",

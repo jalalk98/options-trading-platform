@@ -506,6 +506,11 @@ async def run_archive(dates=None, dry_run=False, force=False):
         total_rows = 0
         total_size = 0
         archived_dates = []
+        table_totals = {
+            'gap_ticks':  {'rows': 0, 'size': 0},
+            'candles_5s': {'rows': 0, 'size': 0},
+            'gap_events': {'rows': 0, 'size': 0},
+        }
 
         for tick_date in dates:
             print(f"\n━━━ Archiving {tick_date} ━━━")
@@ -558,6 +563,8 @@ async def run_archive(dates=None, dry_run=False, force=False):
 
                         total_g_rows = sum(e['rows'] for e in entries)
                         total_g_size = sum(e['size_bytes'] for e in entries)
+                        table_totals['gap_ticks']['rows'] += total_g_rows
+                        table_totals['gap_ticks']['size'] += total_g_size
 
                         await delete_rows_batched(conn, 'gap_ticks', tick_date)
 
@@ -628,6 +635,8 @@ async def run_archive(dates=None, dry_run=False, force=False):
 
                         date_rows += rows
                         date_size += size
+                        table_totals[tbl]['rows'] += rows
+                        table_totals[tbl]['size'] += size
 
                         await delete_rows_batched(conn, tbl, tick_date)
 
@@ -659,11 +668,25 @@ async def run_archive(dates=None, dry_run=False, force=False):
                   f"{date_size/1024/1024:.1f} MB")
 
         if archived_dates:
+            tbl_lines = []
+            tbl_labels = {
+                'gap_ticks':  'gap_ticks ',
+                'candles_5s': 'candles_5s',
+                'gap_events': 'gap_events',
+            }
+            for tbl_name, stats in table_totals.items():
+                if stats['rows'] > 0:
+                    tbl_lines.append(
+                        f"  {tbl_labels[tbl_name]}: "
+                        f"{stats['rows']:,} rows  "
+                        f"({stats['size']/1024/1024:.1f} MB)"
+                    )
             send_telegram(
                 f"✅ Archive v2 completed\n"
                 f"Dates: {', '.join(archived_dates)}\n"
-                f"Rows: {total_rows:,}\n"
-                f"Size: {total_size/1024/1024:.1f} MB",
+                + '\n'.join(tbl_lines) + '\n'
+                f"Total: {total_rows:,} rows  "
+                f"({total_size/1024/1024:.1f} MB)",
                 secrets,
             )
 

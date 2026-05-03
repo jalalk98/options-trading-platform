@@ -75,6 +75,13 @@ async def ensure_partition(conn, target_date: date):
         PARTITION OF gap_ticks
         FOR VALUES FROM ('{target_date}') TO ('{next_date}')
     """)
+
+    await conn.execute(f"""
+        CREATE UNIQUE INDEX {partition_name}_stream_id_idx
+        ON {partition_name} (stream_id)
+        WHERE stream_id IS NOT NULL
+    """)
+
     return True
 
 

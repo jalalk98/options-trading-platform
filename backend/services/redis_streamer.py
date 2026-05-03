@@ -9,6 +9,8 @@ from backend.api.streaming import manager
 
 logger = logging.getLogger(__name__)
 
+_STREAM = "ticks_stream"
+
 # Track first jump seen per symbol (reset on service restart, which is fine)
 _first_jump_seen: dict = {}
 
@@ -49,7 +51,7 @@ async def redis_streamer():
     while True:
 
         streams = await redis_client.xread(
-            {"ticks_stream": last_id},
+            {_STREAM: last_id},
             block=100,
             count=50
         )
@@ -61,119 +63,127 @@ async def redis_streamer():
 
             for message_id, data in messages:
 
-                row = json.loads(data["data"])
+                try:
 
-                ts = row["timestamp"]
+                    row = json.loads(data["data"])
 
-                if isinstance(ts, str):
-                    ts = datetime.datetime.fromisoformat(ts)
+                    ts = row["timestamp"]
 
-                epoch_time = ts.timestamp()
+                    if isinstance(ts, str):
+                        ts = datetime.datetime.fromisoformat(ts)
 
-                symbol     = row["symbol"]
-                curr_price = float(row["curr_price"])
-                price_jump = float(row.get("price_jump") or 0)
+                    epoch_time = ts.timestamp()
 
-                # ── Jump detection ────────────────────────────────
-                price_filter  = _get_price_filter(symbol)
-                threshold     = _get_jump_threshold(symbol)
+                    symbol     = row["symbol"]
+                    curr_price = float(row["curr_price"])
+                    price_jump = float(row.get("price_jump") or 0)
 
-                # Opening noise window: 09:15:00–09:15:15 IST
-                # Stored as IST wall-clock, so UTC hours match IST hours
-                tick_dt  = datetime.datetime.utcfromtimestamp(epoch_time)
-                utc_secs = (tick_dt.hour * 3600
-                            + tick_dt.minute * 60
-                            + tick_dt.second)
-                opening_noise = 33300 <= utc_secs <= 33302  # 09:15:00–09:15:02 IST
+                    # ── Jump detection ────────────────────────────────
+                    price_filter  = _get_price_filter(symbol)
+                    threshold     = _get_jump_threshold(symbol)
 
-                is_jump = (
-                    abs(price_jump) > threshold
-                    and curr_price > 0
-                    and curr_price < price_filter
-                    and not opening_noise
-                )
+                    # Opening noise window: 09:15:00–09:15:15 IST
+                    # Stored as IST wall-clock, so UTC hours match IST hours
+                    tick_dt  = datetime.datetime.utcfromtimestamp(epoch_time)
+                    utc_secs = (tick_dt.hour * 3600
+                                + tick_dt.minute * 60
+                                + tick_dt.second)
+                    opening_noise = 33300 <= utc_secs <= 33302  # 09:15:00–09:15:02 IST
 
-                is_first = False
-                if is_jump:
-                    is_first = symbol not in _first_jump_seen
-                    if is_first:
-                        _first_jump_seen[symbol] = True
+                    is_jump = (
+                        abs(price_jump) > threshold
+                        and curr_price > 0
+                        and curr_price < price_filter
+                        and not opening_noise
+                    )
 
-                bucket = math.floor(epoch_time / 5) * 5
+                    is_first = False
+                    if is_jump:
+                        is_first = symbol not in _first_jump_seen
+                        if is_first:
+                            _first_jump_seen[symbol] = True
 
-                # IST-aligned bucket: matches strikes.py and SQL EXTRACT(EPOCH) convention.
-                # PostgreSQL stores timestamps as IST-naive (treated as UTC), so
-                # EXTRACT(EPOCH FROM ts) = ts.timestamp() + 19800 on an IST server.
-                # Using ist_bucket in _pending_fills ensures fill events carry the same
-                # bucket value as API-loaded _jumpMarkers on the frontend.
-                ist_bucket = bucket + 19800
+                    bucket = math.floor(epoch_time / 5) * 5
 
-                # ── Register new jump in pending-fills tracker ────
-                if is_jump:
-                    if symbol not in _pending_fills:
-                        _pending_fills[symbol] = []
-                    _pending_fills[symbol].append({
-                        "bucket"      : ist_bucket,
+                    # IST-aligned bucket: matches strikes.py and SQL EXTRACT(EPOCH) convention.
+                    # PostgreSQL stores timestamps as IST-naive (treated as UTC), so
+                    # EXTRACT(EPOCH FROM ts) = ts.timestamp() + 19800 on an IST server.
+                    # Using ist_bucket in _pending_fills ensures fill events carry the same
+                    # bucket value as API-loaded _jumpMarkers on the frontend.
+                    ist_bucket = bucket + 19800
+
+                    # ── Register new jump in pending-fills tracker ────
+                    if is_jump:
+                        if symbol not in _pending_fills:
+                            _pending_fills[symbol] = []
+                        _pending_fills[symbol].append({
+                            "bucket"      : ist_bucket,
+                            "direction"   : row["direction"],
+                            "pre_price"   : float(row["prev_price"] or 0),
+                            "is_first"    : is_first,
+                            "registered_at": time.monotonic(),
+                        })
+
+                    # ── Check if this tick fills any pending jump ─────
+                    fill_events = []
+                    if symbol in _pending_fills:
+                        still_pending = []
+                        for pf in _pending_fills[symbol]:
+                            # Tick must be strictly after the jump's candle
+                            if ist_bucket <= pf["bucket"]:
+                                still_pending.append(pf)
+                                continue
+                            filled = False
+                            if pf["direction"] == "UP" and curr_price <= pf["pre_price"]:
+                                filled = True
+                            elif pf["direction"] == "DOWN" and curr_price >= pf["pre_price"]:
+                                filled = True
+                            if filled:
+                                age_secs = time.monotonic() - pf.get("registered_at", time.monotonic())
+                                logger.info(
+                                    "[FILL_AGE] symbol=%s dir=%s age_secs=%.0f bucket_diff=%d",
+                                    symbol, pf["direction"], age_secs, ist_bucket - pf["bucket"]
+                                )
+                                fill_events.append({
+                                    "type"      : "fill",
+                                    "symbol"    : symbol,
+                                    "bucket"    : pf["bucket"],
+                                    "direction" : pf["direction"],
+                                    "pre_price" : pf["pre_price"],
+                                    "filled_at" : ist_bucket,
+                                    "fill_price": curr_price,
+                                })
+                            else:
+                                still_pending.append(pf)
+                        _pending_fills[symbol] = still_pending
+
+                    # ── Broadcast ─────────────────────────────────────
+                    payload = {
+                        "symbol"      : symbol,
+                        "time"        : epoch_time,
+                        "value"       : curr_price,
+                        "is_gap"      : row["is_gap"],
+                        "vol_change"  : row["vol_change"],
                         "direction"   : row["direction"],
-                        "pre_price"   : float(row["prev_price"] or 0),
+                        "prev_price"  : row["prev_price"],
+                        "price_jump"  : price_jump,
+                        "is_jump"     : is_jump,
                         "is_first"    : is_first,
-                        "registered_at": time.monotonic(),
-                    })
+                        "bucket"      : bucket,
+                        "fill_events" : fill_events,
+                    }
 
-                # ── Check if this tick fills any pending jump ─────
-                fill_events = []
-                if symbol in _pending_fills:
-                    still_pending = []
-                    for pf in _pending_fills[symbol]:
-                        # Tick must be strictly after the jump's candle
-                        if ist_bucket <= pf["bucket"]:
-                            still_pending.append(pf)
-                            continue
-                        filled = False
-                        if pf["direction"] == "UP" and curr_price <= pf["pre_price"]:
-                            filled = True
-                        elif pf["direction"] == "DOWN" and curr_price >= pf["pre_price"]:
-                            filled = True
-                        if filled:
-                            age_secs = time.monotonic() - pf.get("registered_at", time.monotonic())
-                            logger.info(
-                                "[FILL_AGE] symbol=%s dir=%s age_secs=%.0f bucket_diff=%d",
-                                symbol, pf["direction"], age_secs, ist_bucket - pf["bucket"]
-                            )
-                            fill_events.append({
-                                "type"      : "fill",
-                                "symbol"    : symbol,
-                                "bucket"    : pf["bucket"],
-                                "direction" : pf["direction"],
-                                "pre_price" : pf["pre_price"],
-                                "filled_at" : ist_bucket,
-                                "fill_price": curr_price,
-                            })
-                        else:
-                            still_pending.append(pf)
-                    _pending_fills[symbol] = still_pending
+                    await manager.broadcast(symbol, payload)
 
-                # ── Broadcast ─────────────────────────────────────
-                payload = {
-                    "symbol"      : symbol,
-                    "time"        : epoch_time,
-                    "value"       : curr_price,
-                    "is_gap"      : row["is_gap"],
-                    "vol_change"  : row["vol_change"],
-                    "direction"   : row["direction"],
-                    "prev_price"  : row["prev_price"],
-                    "price_jump"  : price_jump,
-                    "is_jump"     : is_jump,
-                    "is_first"    : is_first,
-                    "bucket"      : bucket,
-                    "fill_events" : fill_events,
-                }
+                    # Broadcast each fill event to ALL connected clients so panels
+                    # watching other symbols also receive fill notifications instantly.
+                    for fill_evt in fill_events:
+                        await manager.broadcast_all(fill_evt)
 
-                await manager.broadcast(symbol, payload)
+                except Exception as e:
+                    logger.warning(
+                        "redis_streamer: skipping message %s — %s: %s",
+                        message_id, type(e).__name__, e,
+                    )
 
-                # Broadcast each fill event to ALL connected clients so panels
-                # watching other symbols also receive fill notifications instantly.
-                for fill_evt in fill_events:
-                    await manager.broadcast_all(fill_evt)
-
-                last_id = message_id
+                last_id = message_id  # unconditional — always advance past this message

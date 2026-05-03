@@ -11,6 +11,7 @@ from config.logging_config import logger
 from backend.core.redis_client import redis_client
 from backend.services.gap_processor import process_tick
 from backend.state import app_config
+from backend.services import tick_metrics
 
 
 def _is_market_hours() -> bool:
@@ -108,6 +109,7 @@ def setup_websocket_events():
     async def on_ticks(ws, ticks):
         # print("Received ticks:", len(ticks))
         try:
+            tick_metrics.record_batch(ticks)
             pipe = redis_client.pipeline()
 
             for tick in ticks:
@@ -433,6 +435,7 @@ def setup_websocket_events():
         """
         Triggered when WebSocket connects successfully.
         """
+        tick_metrics.start()
         main_ticker = ws.ws_instance
         if kws.first_connect:
             logging.info("First connection: subscribing to tokens.")
