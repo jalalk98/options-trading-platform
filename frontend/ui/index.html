@@ -357,12 +357,12 @@
             background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-left: 4px;
         }
         #histClearBtn:hover { background: #b45309; }
-        #histBtn, #syncBtn, #savedLayoutsBtn {
+        #histBtn, #syncBtn, #savedLayoutsBtn, #globalGapBtn {
             background: none; border: 1px solid #ccc; border-radius: 4px;
             cursor: pointer; padding: 2px 5px; display: flex; align-items: center;
             justify-content: center; color: #555; height: 22px; font-size: 13px;
         }
-        #histBtn:hover, #syncBtn:hover, #savedLayoutsBtn:hover, #drawHlineBtn:hover { background: #e4e4e4; }
+        #histBtn:hover, #syncBtn:hover, #savedLayoutsBtn:hover, #drawHlineBtn:hover, #globalGapBtn:hover { background: #e4e4e4; }
         #savedLayoutsBtn { gap: 4px; padding: 2px 7px; max-width: 160px; }
         #savedLayoutsBtn.has-layout { border-color: #3b82f6; color: #2563eb; background: #eff6ff; }
         #savedLayoutsBtn.has-layout:hover { background: #dbeafe; }
@@ -372,6 +372,8 @@
         #syncBtn.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; }
         #drawHlineBtn { background: none; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; padding: 2px 5px; display: flex; align-items: center; justify-content: center; color: #555; height: 22px; font-size: 13px; }
         #drawHlineBtn.active { background: #fef9c3; border-color: #ca8a04; color: #92400e; }
+        #globalGapBtn { font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
+        #globalGapBtn.active { background: #dcfce7; border-color: #16a34a; color: #15803d; }
 
         /* ── Layout picker ── */
         #layoutBtn {
@@ -718,6 +720,28 @@
             line-height: 1;
         }
         .panel-scroll-btn:hover { opacity: 1; }
+        .panel-gap-btn {
+            pointer-events: all;
+            height: 20px;
+            padding: 0 7px;
+            border-radius: 10px;
+            border: 2px solid #fff;
+            background: #0f172a;
+            color: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s;
+            font-size: 9px;
+            font-weight: 600;
+            font-family: Arial, sans-serif;
+            white-space: nowrap;
+            line-height: 1;
+        }
+        .panel-gap-btn:hover { opacity: 1; }
+        .panel-gap-btn.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; opacity: 1; }
 
         /* ── Saved Layouts modal ── */
         #layoutsOverlay {
@@ -961,6 +985,7 @@
         <button id="syncBtn" title="Sync chart axes" onclick="toggleSyncCharts()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         </button>
+        <button id="globalGapBtn" title="Lock right gap to 20 candles — all panels" onclick="toggleGlobalLockRightGap()">⊐20</button>
         <button id="drawHlineBtn" title="Draw horizontal line (H) — click chart to place, right-click line to delete" onclick="toggleDrawHline()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="6" x2="6" y2="6" stroke-width="1.2" opacity="0.4"/><line x1="2" y1="18" x2="6" y2="18" stroke-width="1.2" opacity="0.4"/></svg>
         </button>
@@ -1276,7 +1301,8 @@ const symbolLinesStore = {}; // symbol → [{price, colorIdx}] — global, persi
 let activePanel  = null;
 let activeLayout = '1';
 let isMaximized  = false;
-let syncCharts   = false;
+let syncCharts          = false;
+let globalLockRightGap  = false;
 let _syncLock    = false;
 let drawHlineMode = false;
 
@@ -1350,6 +1376,11 @@ function createPanel(id) {
     scrollLeftBtn.title = 'Scroll left 200 candles';
     scrollLeftBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>`;
     bottomBarEl.appendChild(scrollLeftBtn);
+    const rightGapBtn = document.createElement('button');
+    rightGapBtn.className = 'panel-gap-btn';
+    rightGapBtn.title = 'Lock right gap to 20 candles';
+    rightGapBtn.textContent = '⊐ 20';
+    bottomBarEl.appendChild(rightGapBtn);
     chartAreaEl.appendChild(bottomBarEl);
 
     panelEl.appendChild(chartAreaEl);
@@ -1374,6 +1405,19 @@ function createPanel(id) {
             finally { _syncLock = false; }
         } else {
             applyShift(panel);
+        }
+    });
+
+    // ── Right-gap lock button ─────────────────────
+    rightGapBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        lockRightGap = !lockRightGap;
+        rightGapBtn.classList.toggle('active', lockRightGap);
+        if (lockRightGap) {
+            chart.timeScale().applyOptions({ rightOffset: 20 });
+            chart.timeScale().scrollToRealTime();
+        } else {
+            chart.timeScale().applyOptions({ rightOffset: 0 });
         }
     });
 
@@ -1407,6 +1451,7 @@ function createPanel(id) {
     let lastCandleTime = null;
     let crosshairPrice = null;
     let livePriceLine    = null;
+    let lockRightGap     = false;
     let slPriceLine      = null;
     let slPrice          = null;
     let slLineState      = 'none';
@@ -2098,6 +2143,10 @@ function createPanel(id) {
                     missed.forEach(c => { allCandles.push(c); candleSeries.update(c); });
                     lastCandleTime = missed[missed.length - 1].time;
                     currentCandle  = { ...missed[missed.length - 1] };
+                    if (lockRightGap) {
+                        chart.timeScale().applyOptions({ rightOffset: 20 });
+                        chart.timeScale().scrollToRealTime();
+                    }
                     console.log(`[P${id}] Gap-filled ${missed.length} candle(s) after reconnect`);
                 }
             } catch(e) { /* non-fatal — live ticks will resume normally */ }
@@ -2167,7 +2216,8 @@ function createPanel(id) {
                     refreshMarkers();
                 }
             }
-            if (!currentCandle || bucketTime > currentCandle.time) {
+            const isNewCandle = !currentCandle || bucketTime > currentCandle.time;
+            if (isNewCandle) {
                 currentCandle = { time: bucketTime, open: price, high: price, low: price, close: price };
                 lastCandleTime = bucketTime;
                 updateGoToLiveBtn();
@@ -2178,6 +2228,10 @@ function createPanel(id) {
             } else return;
             if (panel === activePanel) updateOrderBar(price);
             if (currentCandle && !isNaN(currentCandle.open)) candleSeries.update(currentCandle);
+            if (lockRightGap) {
+                chart.timeScale().applyOptions({ rightOffset: 20 });
+                if (isNewCandle) chart.timeScale().scrollToRealTime();
+            }
             if (livePriceLine) livePriceLine.applyOptions({
                 price,
                 color: price >= currentCandle.open ? '#22c55e' : '#ef4444'
@@ -2386,6 +2440,16 @@ function createPanel(id) {
                 return 'Undo: Line restored';
             }
         },
+        setLockRightGap(v) {
+            lockRightGap = v;
+            rightGapBtn.classList.toggle('active', lockRightGap);
+            if (lockRightGap) {
+                chart.timeScale().applyOptions({ rightOffset: 20 });
+                chart.timeScale().scrollToRealTime();
+            } else {
+                chart.timeScale().applyOptions({ rightOffset: 0 });
+            }
+        },
         redoLastAction() {
             if (!lineRedoStack.length) return 'Nothing to redo';
             const entry = lineRedoStack.pop();
@@ -2520,6 +2584,18 @@ document.addEventListener('click', (e) => {
    STRIKE MAP & TOPBAR
 ====================== */
 // ── Chart axis sync ───────────────────────────────────────────────────────
+function toggleGlobalLockRightGap() {
+    globalLockRightGap = !globalLockRightGap;
+    document.getElementById('globalGapBtn').classList.toggle('active', globalLockRightGap);
+    panels.forEach(p => p.setLockRightGap(globalLockRightGap));
+}
+
+function _disableAllLockRightGap() {
+    globalLockRightGap = false;
+    document.getElementById('globalGapBtn').classList.remove('active');
+    panels.forEach(p => p.setLockRightGap(false));
+}
+
 function toggleSyncCharts() {
     syncCharts = !syncCharts;
     const btn = document.getElementById('syncBtn');
@@ -2550,6 +2626,7 @@ let _histDate = null;
 
 function toggleHistMode() {
     if (_histMode) { clearHistMode(); return; }
+    _disableAllLockRightGap();
     _histMode = true;
     document.getElementById('histBar').classList.add('active');
     document.getElementById('histBtn').classList.add('active');
@@ -2806,6 +2883,7 @@ function toggleMaximize() {
     const btn  = document.getElementById('maximizeBtn');
     if (!isMaximized) {
         if (syncCharts) toggleSyncCharts();
+        _disableAllLockRightGap();
         isMaximized = true;
         panels.forEach(p => { if (p !== activePanel) p.el.style.display = 'none'; });
         grid.style.gridTemplateColumns = '1fr';

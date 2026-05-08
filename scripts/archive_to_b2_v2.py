@@ -128,8 +128,8 @@ async def export_gap_ticks(conn, tick_date, tmp_dir):
         f"AND timestamp < '{tick_date}'::date + INTERVAL '1 day'"
     )
 
-    CHUNK = 500_000
-    last_cursor = None
+    CHUNK = 250_000
+    last_cursor = None  # (timestamp, instrument_token) composite cursor
     total_done = 0
     start = time.time()
 
@@ -144,14 +144,17 @@ async def export_gap_ticks(conn, tick_date, tmp_dir):
                 cursor_where = where
             else:
                 cursor_where = (
-                    f"{where} AND timestamp > "
-                    f"'{last_cursor}'::timestamp"
+
+                    f"{where} AND (timestamp, instrument_token) > "
+
+                    f"('{last_cursor[0]}'::timestamp, {last_cursor[1]})"
+
                 )
 
             chunk_rows = await conn.fetch(
                 f"SELECT {cols} FROM gap_ticks "
                 f"WHERE {cursor_where} "
-                f"ORDER BY timestamp ASC "
+                f"ORDER BY timestamp, instrument_token ASC "
                 f"LIMIT {CHUNK}"
             )
 
@@ -189,7 +192,7 @@ async def export_gap_ticks(conn, tick_date, tmp_dir):
                 writers[grp].write_table(grp_table)
                 counts[grp] += grp_table.num_rows
 
-            last_cursor = chunk_rows[-1]['timestamp']
+            last_cursor = (chunk_rows[-1]['timestamp'], chunk_rows[-1]['instrument_token'])
             total_done += len(chunk_rows)
 
             elapsed = time.time() - start
@@ -233,7 +236,7 @@ async def export_simple_table(conn, table_name, tick_date, tmp_dir, cols):
         f"             + INTERVAL '1 day')::BIGINT"
     )
 
-    CHUNK = 500_000
+    CHUNK = 250_000
     last_cursor = 0
     total_done = 0
     start = time.time()
@@ -461,6 +464,7 @@ async def drop_archived_partition(tick_date, secrets):
             send_telegram(f"⚠️ Archive WARN: {msg}", secrets)
             return False
 
+        await drop_conn.execute("SET statement_timeout = 0")
         await drop_conn.execute(
             f"ALTER TABLE gap_ticks DETACH PARTITION {partition_name}"
         )
@@ -577,9 +581,6 @@ async def run_archive(dates=None, dry_run=False, force=False):
                             WHERE archive_date=$1 AND table_name='gap_ticks'
                         """, tick_date, total_g_rows, total_g_size)
 
-                        # Drop the now-empty partition to reclaim disk space
-                        await drop_archived_partition(tick_date, secrets)
-
                 except Exception as e:
                     print(f"  ❌ gap_ticks failed: {e}")
                     await conn.execute("""
@@ -660,6 +661,9 @@ async def run_archive(dates=None, dry_run=False, force=False):
                                 completed_at=NOW()
                             WHERE archive_date=$1 AND table_name=$2
                         """, tick_date, tbl, str(e))
+
+            # Drop now-empty partition (after all tables for this date are done)
+            await drop_archived_partition(tick_date, secrets)
 
             archived_dates.append(str(tick_date))
             total_rows += date_rows
