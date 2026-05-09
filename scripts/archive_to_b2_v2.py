@@ -410,14 +410,14 @@ async def get_dates_to_archive(conn, config, force=False):
         rows = await conn.fetch("""
             SELECT DISTINCT timestamp::date AS tick_date
             FROM gap_ticks
-            WHERE timestamp::date < $1
+            WHERE timestamp::date <= $1
             ORDER BY tick_date ASC
         """, earliest_possible)
     else:
         rows = await conn.fetch("""
             SELECT DISTINCT timestamp::date AS tick_date
             FROM gap_ticks
-            WHERE timestamp::date < $1
+            WHERE timestamp::date <= $1
               AND timestamp::date NOT IN (
                   SELECT archive_date FROM archive_log
                   WHERE status = 'completed'
