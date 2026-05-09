@@ -139,26 +139,25 @@ async def convert_to_limit(req: ConvertRequest):
     if not order_ids:
         return {"status": "error", "message": "No active SL order for this symbol"}
 
-    price   = _round(req.price)
-    results = []
-    for oid in order_ids:
+    price = _round(req.price)
+
+    async def _modify_one(oid):
         try:
             result = await kite1.hard_code_modify_limit_type(
-                order_id=oid,
-                price=price,
-                trig_price=price,
-                access_token=KITE_ACCESS_TOKEN,
-                api_key=KITE_API_KEY,
-                type="LIMIT"
+                order_id=oid, price=price, trig_price=price,
+                access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
+                type="LIMIT",
             )
             logger.info(f"SL→LIMIT for {req.symbol} order {oid} @ {price}: {result}")
-            results.append(result)
+            return result
         except Exception as e:
             logger.error(f"convert-to-limit error for {oid}: {e}")
-            results.append({"error": str(e)})
+            return {"error": str(e)}
+
+    results = await asyncio.gather(*[_modify_one(oid) for oid in order_ids])
     sl_state[req.symbol]["price"] = price
     sl_state[req.symbol]["state"] = "placed"
-    return {"status": "ok", "price": price, "results": results}
+    return {"status": "ok", "price": price, "results": list(results)}
 
 
 # ─────────────────────────────────────────────

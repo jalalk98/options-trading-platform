@@ -4018,12 +4018,7 @@ window.addEventListener("keydown", async e => {
         toastOrder(data, `SL→LIMIT @ ${price}`);
         if (data.status === "ok") activePanel.updateSLLine(price, 'placed');
     }
-    if ((key === "s" || key === "S") && !e.shiftKey) {
-        toast(`⏳ Converting SL → MARKET…`, 'info', 2000);
-        const res = await fetch("/api/sl/convert-to-market", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym }) });
-        toastOrder(await res.json(), `SL→MARKET ${sym}`);
-    }
-    if (key === "M" && e.shiftKey) {
+if (key === "M" && e.shiftKey) {
         closeAllPositions();
     }
 });
