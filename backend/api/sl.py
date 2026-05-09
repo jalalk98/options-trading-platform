@@ -57,6 +57,7 @@ async def set_sl(req: SetSLRequest):
             "trigger_buffer": new_buffer,
             "order_id":       None,
             "order_ids":      [],
+            "sl_orders":      [],
             "side":           None,
             "qty":            None,
             "exchange":       None,
@@ -79,11 +80,20 @@ async def set_sl(req: SetSLRequest):
     else:
         new_qty = req.qty if req.qty is not None else existing.get("qty")
 
+    # Build sl_orders list: {order_id, qty} per placed SL order
+    existing_sl_orders = existing.get("sl_orders", [])
+    existing_sl_ids    = {o["order_id"] for o in existing_sl_orders}
+    if req.order_id and req.qty is not None and req.order_id not in existing_sl_ids:
+        new_sl_orders = existing_sl_orders + [{"order_id": req.order_id, "qty": req.qty}]
+    else:
+        new_sl_orders = existing_sl_orders
+
     sl_state[req.symbol] = {
         "price":          new_price,
         "trigger_buffer": new_buffer,
         "order_id":       new_ids[0] if new_ids else None,   # backward compat
         "order_ids":      new_ids,
+        "sl_orders":      new_sl_orders,
         "side":           req.side     if req.side     is not None else existing.get("side"),
         "qty":            new_qty,
         "exchange":       req.exchange if req.exchange is not None else existing.get("exchange"),
@@ -377,13 +387,13 @@ async def close_all_positions():
     logs    = []
     results = {}   # symbol → {"closed": bool}
 
-    # ── Step 1: Fetch all open positions + all orders ────────────────────
+    # ── Step 1: Fetch open positions from Kite ───────────────────────────
+    # SL order IDs come from the sl_orders cache (populated at placement time).
+    # The Kite orders list is only fetched lazily as a fallback if the cache is empty.
     try:
-        positions  = await _fetch_all_open_positions()
-        orders_res = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
-        all_orders = orders_res.get("data", []) if isinstance(orders_res, dict) else []
+        positions = await _fetch_all_open_positions()
     except Exception as e:
-        return {"status": "error", "message": f"Failed to fetch positions/orders: {e}", "results": {}, "logs": []}
+        return {"status": "error", "message": f"Failed to fetch positions: {e}", "results": {}, "logs": []}
 
     if not positions:
         return {"status": "ok", "message": "No open positions found", "results": {}, "logs": []}
@@ -393,42 +403,69 @@ async def close_all_positions():
     for p in positions:
         results[p["symbol"]] = {"closed": False}
 
+    # Lazy fallback: only fetch all Kite orders if a symbol has no cached SL orders
+    _kite_orders_cache = None
+    async def _get_kite_orders():
+        nonlocal _kite_orders_cache
+        if _kite_orders_cache is None:
+            orders_res       = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
+            _kite_orders_cache = orders_res.get("data", []) if isinstance(orders_res, dict) else []
+            logs.append("Fetched orders from Kite (cache miss — sl_orders was empty)")
+        return _kite_orders_cache
+
     # ── Step 2: Per symbol — SL convert + MARKET exit ───────────────────
     async def _exit_symbol(symbol, net_qty, exchange):
         sym_logs = []
         tx        = "SELL" if net_qty > 0 else "BUY"
         abs_qty   = abs(net_qty)
 
-        # SL orders for this symbol that are still pending trigger
-        sl_orders = [
-            o for o in all_orders
-            if o.get("tradingsymbol") == symbol
-            and o.get("order_type") == "SL"
-            and o.get("status") == "TRIGGER PENDING"
-        ]
-        sl_total = sum(int(o.get("quantity", 0)) for o in sl_orders)
+        # Fast path: use sl_orders populated at SL placement time
+        cached_sl = sl_state.get(symbol, {}).get("sl_orders", [])
 
-        if sl_orders:
-            # Convert all SL orders → MARKET
-            for o in sl_orders:
+        if cached_sl:
+            sl_total = sum(o["qty"] for o in cached_sl)
+            sym_logs.append(f"Using {len(cached_sl)} cached SL order(s) (total qty {sl_total})")
+            for o in cached_sl:
                 try:
                     res = await kite1.hard_code_modify_limit_type(
                         order_id=o["order_id"], price=0, trig_price=0,
                         access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
                         type="MARKET",
                     )
-                    sym_logs.append(f"SL {o['order_id']} ({o['quantity']} qty) → MARKET: {res}")
+                    sym_logs.append(f"[cache] SL {o['order_id']} ({o['qty']} qty) → MARKET: {res}")
                 except Exception as e:
-                    sym_logs.append(f"SL {o['order_id']} convert error: {e}")
-
-            remainder = abs_qty - sl_total
-            if remainder <= 0:
-                sym_logs.append(f"SL qty {sl_total} covers full position {abs_qty} — no extra MARKET order needed")
-                return sym_logs
-            sym_logs.append(f"SL qty {sl_total} covers partial position {abs_qty} — placing MARKET for remaining {remainder}")
+                    sym_logs.append(f"[cache] SL {o['order_id']} convert error: {e}")
         else:
-            remainder = abs_qty
-            sym_logs.append(f"No SL orders found — placing MARKET {tx} for {remainder}")
+            # Fallback: fetch live orders from Kite (e.g. after server restart)
+            sym_logs.append("No cached SL orders — falling back to Kite orders fetch")
+            all_orders = await _get_kite_orders()
+            kite_sl    = [
+                o for o in all_orders
+                if o.get("tradingsymbol") == symbol
+                and o.get("order_type") == "SL"
+                and o.get("status") == "TRIGGER PENDING"
+            ]
+            sl_total = sum(int(o.get("quantity", 0)) for o in kite_sl)
+            for o in kite_sl:
+                try:
+                    res = await kite1.hard_code_modify_limit_type(
+                        order_id=o["order_id"], price=0, trig_price=0,
+                        access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
+                        type="MARKET",
+                    )
+                    sym_logs.append(f"[kite] SL {o['order_id']} ({o.get('quantity')} qty) → MARKET: {res}")
+                except Exception as e:
+                    sym_logs.append(f"[kite] SL {o['order_id']} convert error: {e}")
+
+        remainder = abs_qty - sl_total
+        if remainder <= 0:
+            sym_logs.append(f"SL qty {sl_total} covers full position {abs_qty} — no extra MARKET order needed")
+            return sym_logs
+
+        if sl_total > 0:
+            sym_logs.append(f"SL qty {sl_total} partial — placing MARKET {tx} for remaining {remainder}")
+        else:
+            sym_logs.append(f"No SL orders — placing MARKET {tx} for {remainder}")
 
         # Place MARKET exit in freeze-qty chunks for the remainder
         freeze    = _freeze_qty(symbol)
@@ -691,6 +728,16 @@ async def place_sl_exact(req: PlaceSlExactReq):
             return {"status": "error", "message": msg}
         order_id = (result.get("data") or {}).get("order_id")
         logger.info(f"place-sl-exact {req.side} {req.qty} {req.symbol} trigger={trigger} limit={limit} → {order_id}")
+        # Cache the order in sl_orders so close-all can use it without a Kite fetch
+        if order_id:
+            existing      = sl_state.get(req.symbol, {})
+            existing_sl   = existing.get("sl_orders", [])
+            existing_ids  = {o["order_id"] for o in existing_sl}
+            if order_id not in existing_ids:
+                sl_state[req.symbol] = {
+                    **existing,
+                    "sl_orders": existing_sl + [{"order_id": order_id, "qty": req.qty}],
+                }
         return {"status": "success", "order_id": order_id}
     except Exception as e:
         logger.error(f"place-sl-exact error: {e}")
