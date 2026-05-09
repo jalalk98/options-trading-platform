@@ -7,6 +7,7 @@ from typing import Optional, List
 from backend.state import sl_state, app_config
 from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -187,13 +188,17 @@ async def convert_to_market(req: SymbolRequest):
 
 # Freeze qty limits per exchange/index
 FREEZE_QTY = {
-    "NIFTY":  1755,
-    "SENSEX": 1000,
+    "BANKNIFTY":   600,
+    "MIDCPNIFTY": 2800,
+    "FINNIFTY":   1200,
+    "SENSEX":     1000,
+    "NIFTY":      1755,
 }
 
 def _freeze_qty(symbol: str) -> int:
-    if symbol.startswith("SENSEX"):
-        return FREEZE_QTY["SENSEX"]
+    for prefix, qty in FREEZE_QTY.items():
+        if symbol.startswith(prefix):
+            return qty
     return FREEZE_QTY["NIFTY"]
 
 
@@ -327,6 +332,201 @@ async def close_position(req: SymbolRequest):
     sl_state.pop(symbol, None)
 
     return {"status": "ok", "logs": logs}
+
+
+# ─────────────────────────────────────────────
+# Helper: fetch all symbols with non-zero net qty
+# ─────────────────────────────────────────────
+async def _fetch_all_open_positions() -> list:
+    headers = {
+        "X-Kite-Version": "3",
+        "Authorization": f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    r = await kite1.reqsession.get(
+        "https://api.kite.trade/portfolio/positions",
+        headers=headers,
+        timeout=7,
+    )
+    r.raise_for_status()
+    data = r.json()
+    return [
+        {
+            "symbol":   p["tradingsymbol"],
+            "qty":      int(p.get("quantity", 0)),
+            "exchange": p.get("exchange", "NFO"),
+        }
+        for p in data.get("data", {}).get("net", [])
+        if int(p.get("quantity", 0)) != 0
+    ]
+
+
+# ─────────────────────────────────────────────
+# POST /api/sl/close-all
+# Close every open position on the account:
+#   1. Fetch all positions + orders once
+#   2. Per symbol: convert matched SL → MARKET,
+#      then place MARKET exit for any remainder
+#   3. Wait ~3 s for fills
+#   4–5. Re-fetch + retry up to MAX_RETRIES times
+#   6. Verify net == 0 and no orphan pending orders
+# ─────────────────────────────────────────────
+MAX_RETRIES = 3
+
+@router.post("/sl/close-all")
+async def close_all_positions():
+    logs    = []
+    results = {}   # symbol → {"closed": bool}
+
+    # ── Step 1: Fetch all open positions + all orders ────────────────────
+    try:
+        positions  = await _fetch_all_open_positions()
+        orders_res = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
+        all_orders = orders_res.get("data", []) if isinstance(orders_res, dict) else []
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to fetch positions/orders: {e}", "results": {}, "logs": []}
+
+    if not positions:
+        return {"status": "ok", "message": "No open positions found", "results": {}, "logs": []}
+
+    symbols_found = [p["symbol"] for p in positions]
+    logs.append(f"Found {len(positions)} open position(s): {symbols_found}")
+    for p in positions:
+        results[p["symbol"]] = {"closed": False}
+
+    # ── Step 2: Per symbol — SL convert + MARKET exit ───────────────────
+    async def _exit_symbol(symbol, net_qty, exchange):
+        sym_logs = []
+        tx        = "SELL" if net_qty > 0 else "BUY"
+        abs_qty   = abs(net_qty)
+
+        # SL orders for this symbol that are still pending trigger
+        sl_orders = [
+            o for o in all_orders
+            if o.get("tradingsymbol") == symbol
+            and o.get("order_type") == "SL"
+            and o.get("status") == "TRIGGER PENDING"
+        ]
+        sl_total = sum(int(o.get("quantity", 0)) for o in sl_orders)
+
+        if sl_orders:
+            # Convert all SL orders → MARKET
+            for o in sl_orders:
+                try:
+                    res = await kite1.hard_code_modify_limit_type(
+                        order_id=o["order_id"], price=0, trig_price=0,
+                        access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
+                        type="MARKET",
+                    )
+                    sym_logs.append(f"SL {o['order_id']} ({o['quantity']} qty) → MARKET: {res}")
+                except Exception as e:
+                    sym_logs.append(f"SL {o['order_id']} convert error: {e}")
+
+            remainder = abs_qty - sl_total
+            if remainder <= 0:
+                sym_logs.append(f"SL qty {sl_total} covers full position {abs_qty} — no extra MARKET order needed")
+                return sym_logs
+            sym_logs.append(f"SL qty {sl_total} covers partial position {abs_qty} — placing MARKET for remaining {remainder}")
+        else:
+            remainder = abs_qty
+            sym_logs.append(f"No SL orders found — placing MARKET {tx} for {remainder}")
+
+        # Place MARKET exit in freeze-qty chunks for the remainder
+        freeze    = _freeze_qty(symbol)
+        order_num = 0
+        try:
+            while remainder > 0:
+                chunk     = min(remainder, freeze)
+                res       = await _place_market_order(exchange, symbol, tx, chunk)
+                order_num += 1
+                sym_logs.append(f"MARKET order {order_num}: {tx} {chunk} → {res}")
+                remainder -= chunk
+            sym_logs.append(f"Placed {order_num} MARKET order(s) to exit {abs_qty} units")
+        except Exception as e:
+            sym_logs.append(f"MARKET order error: {e}")
+
+        return sym_logs
+
+    for pos in positions:
+        sym_logs = await _exit_symbol(pos["symbol"], pos["qty"], pos["exchange"])
+        for line in sym_logs:
+            logs.append(f"[{pos['symbol']}] {line}")
+
+    # ── Step 3: Wait for MARKET fills (~1–2 s on Zerodha) ───────────────
+    await asyncio.sleep(3)
+
+    # ── Steps 4–5: Re-fetch + retry remaining ───────────────────────────
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            remaining_pos = await _fetch_all_open_positions()
+        except Exception as e:
+            logs.append(f"Re-fetch attempt {attempt} error: {e}")
+            break
+
+        still_open = {p["symbol"]: p for p in remaining_pos if p["symbol"] in results}
+        if not still_open:
+            break
+
+        logs.append(f"Retry {attempt}: {len(still_open)} symbol(s) still open — {list(still_open.keys())}")
+        for symbol, pos in still_open.items():
+            sym_logs = await _exit_symbol(symbol, pos["qty"], pos["exchange"])
+            for line in sym_logs:
+                logs.append(f"[{symbol}] Retry {attempt}: {line}")
+
+        if attempt < MAX_RETRIES:
+            await asyncio.sleep(3)
+
+    # ── Step 6: Final verification ───────────────────────────────────────
+    symbols_remaining = []
+    orphan_orders     = []
+    try:
+        final_pos = await _fetch_all_open_positions()
+        final_map = {p["symbol"]: p["qty"] for p in final_pos}
+
+        for symbol in results:
+            if symbol not in final_map:
+                results[symbol]["closed"] = True
+                sl_state.pop(symbol, None)
+            else:
+                results[symbol]["closed"] = False
+                symbols_remaining.append({"symbol": symbol, "qty": final_map[symbol]})
+
+        # Check for orphan pending orders on any of the original symbols
+        try:
+            orders_res2 = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
+            all_orders2 = orders_res2.get("data", []) if isinstance(orders_res2, dict) else []
+            orphan_orders = [
+                {"symbol": o["tradingsymbol"], "order_id": o["order_id"], "status": o["status"]}
+                for o in all_orders2
+                if o.get("tradingsymbol") in results
+                and o.get("status") in ("TRIGGER PENDING", "OPEN")
+            ]
+        except Exception as e:
+            logs.append(f"Orphan-order check error: {e}")
+
+        if symbols_remaining:
+            logs.append(f"⚠️ {len(symbols_remaining)} position(s) still open after retries: "
+                        f"{[(r['symbol'], r['qty']) for r in symbols_remaining]}")
+        else:
+            logs.append("✅ All positions confirmed closed (net == 0)")
+
+        if orphan_orders:
+            logs.append(f"⚠️ {len(orphan_orders)} orphan pending order(s): "
+                        f"{[(o['symbol'], o['order_id']) for o in orphan_orders]}")
+        else:
+            logs.append("✅ No orphan pending orders")
+
+    except Exception as e:
+        logs.append(f"Verification error: {e}")
+
+    all_closed = not symbols_remaining
+    return {
+        "status":            "ok" if all_closed else "partial",
+        "message":           "All positions closed" if all_closed else f"{len(symbols_remaining)} position(s) still open",
+        "symbols_closed":    [s for s, r in results.items() if r["closed"]],
+        "symbols_remaining": symbols_remaining,
+        "orphan_orders":     orphan_orders,
+        "logs":              logs,
+    }
 
 
 # ─────────────────────────────────────────────
