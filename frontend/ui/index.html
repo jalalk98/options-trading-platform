@@ -1412,7 +1412,7 @@ function createPanel(id) {
 
     // ── Chart ─────────────────────────────────────
     const chart = LightweightCharts.createChart(chartAreaEl, makeChartOptions(400, 300));
-    const candleSeries = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444', thinBars: true, lastValueVisible: false });
+    const candleSeries = chart.addBarSeries({ upColor: '#089981', downColor: '#F23645', thinBars: true, lastValueVisible: false });
 
     // ── Scroll-left button ────────────────────────
     scrollLeftBtn.addEventListener('click', e => {
@@ -2258,7 +2258,7 @@ function createPanel(id) {
             }
             if (livePriceLine) livePriceLine.applyOptions({
                 price,
-                color: price >= currentCandle.open ? '#22c55e' : '#ef4444'
+                color: price >= currentCandle.open ? '#089981' : '#F23645'
             });
             checkGapFill(currentCandle);
         };
@@ -2346,7 +2346,7 @@ function createPanel(id) {
             if (!histDate) {
                 livePriceLine = candleSeries.createPriceLine({
                     price: currentCandle.close,
-                    color: currentCandle.close >= currentCandle.open ? '#22c55e' : '#ef4444',
+                    color: currentCandle.close >= currentCandle.open ? '#089981' : '#F23645',
                     lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: ''
                 });
             }
