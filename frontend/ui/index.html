@@ -95,21 +95,6 @@
             color: #2563eb;
         }
 
-        #slBadge {
-            padding: 3px 7px;
-            border-radius: 4px;
-            font-size: 10px;
-            font-weight: bold;
-            background: #333;
-            color: #aaa;
-            cursor: default;
-            user-select: none;
-            min-width: 90px;
-            text-align: center;
-        }
-        #slBadge.pending  { background: #06b6d4; color: #fff; }
-        #slBadge.placed   { background: #fb923c; color: #fff; }
-        #slBadge.hit      { background: #6b7280; color: #fff; }
 
         #slContextMenu {
             display: none;
@@ -933,7 +918,7 @@
     <span>Symbol:</span>
     <input list="symbolList" id="symbolSelect" placeholder="Search strike...">
     <datalist id="symbolList"></datalist>
-    <span id="slBadge">SL: —</span>
+
 
     <div id="indexTicker">
         <!-- Group 1: NIFTY / FINNIFTY / MIDCPNIFTY -->
@@ -3257,15 +3242,7 @@ async function autoPopulatePanels(mode) {
 /* ======================
    SL BADGE
 ====================== */
-function updateSLBadge() {
-    const badge = document.getElementById('slBadge');
-    const slP = activePanel ? activePanel.slPrice : null;
-    const slS = activePanel ? activePanel.slLineState : 'none';
-    if (!slP || slS === 'none') { badge.textContent = 'SL: —'; badge.className = ''; return; }
-    const labels = { pending: 'SET', placed: 'PLACED', hit: 'HIT' };
-    badge.textContent = `SL ${slP} [${labels[slS] || slS}]`;
-    badge.className   = slS;
-}
+function updateSLBadge() {}
 
 /* ======================
    SL CONTEXT MENU
