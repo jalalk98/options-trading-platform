@@ -361,9 +361,10 @@ async def _fetch_all_open_positions() -> list:
     data = r.json()
     return [
         {
-            "symbol":   p["tradingsymbol"],
-            "qty":      int(p.get("quantity", 0)),
-            "exchange": p.get("exchange", "NFO"),
+            "symbol":     p["tradingsymbol"],
+            "qty":        int(p.get("quantity", 0)),
+            "exchange":   p.get("exchange", "NFO"),
+            "last_price": float(p.get("last_price", 0) or 0),
         }
         for p in data.get("data", {}).get("net", [])
         if int(p.get("quantity", 0)) != 0
@@ -742,6 +743,149 @@ async def place_sl_exact(req: PlaceSlExactReq):
     except Exception as e:
         logger.error(f"place-sl-exact error: {e}")
         return {"status": "error", "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# POST /api/sl/check-sl-orders
+# Reconciles cached sl_orders against live Kite
+# positions. Places any missing SL orders and
+# updates the sl_orders cache.
+# Price priority: cached SL price → SL line →
+#                 default_sl_dist from LTP.
+# ─────────────────────────────────────────────
+@router.post("/sl/check-sl-orders")
+async def check_sl_orders():
+    try:
+        positions = await _fetch_all_open_positions()
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to fetch positions: {e}", "results": []}
+
+    if not positions:
+        return {"status": "ok", "message": "No open positions found", "results": []}
+
+    default_sl_dist = app_config.get("default_sl_dist", 10.0)
+    used_fallback   = False
+    results         = []
+
+    headers = {
+        "X-Kite-Version": "3",
+        "User-Agent":      "Kiteconnect-python/5.0.1",
+        "Authorization":   f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+
+    for pos in positions:
+        symbol   = pos["symbol"]
+        net_qty  = pos["qty"]
+        exchange = pos["exchange"]
+        ltp      = pos["last_price"]
+        abs_qty  = abs(net_qty)
+        side     = "SELL" if net_qty > 0 else "BUY"
+
+        sym_state    = sl_state.get(symbol, {})
+        cached_sl    = sym_state.get("sl_orders", [])
+        cached_qty   = sum(o["qty"] for o in cached_sl)
+        missing_qty  = abs_qty - cached_qty
+
+        if missing_qty <= 0:
+            results.append({
+                "symbol":       symbol,
+                "status":       "covered",
+                "position_qty": abs_qty,
+                "cached_qty":   cached_qty,
+                "placed_qty":   0,
+                "price_source": None,
+            })
+            continue
+
+        # Determine SL price — priority: existing sl_state price → default dist fallback
+        sl_price       = sym_state.get("price")
+        trigger_buffer = sym_state.get("trigger_buffer", 0.20)
+
+        if sl_price is not None and cached_sl:
+            price_source = "cache"
+        elif sl_price is not None:
+            price_source = "SL line"
+        else:
+            sl_price     = _round(ltp - default_sl_dist) if side == "SELL" else _round(ltp + default_sl_dist)
+            price_source = "default dist"
+            used_fallback = True
+
+        if side == "SELL":
+            trigger = _round(sl_price + trigger_buffer)
+            limit   = sl_price
+        else:
+            trigger = _round(sl_price - trigger_buffer)
+            limit   = sl_price
+
+        freeze     = _freeze_qty(symbol)
+        remaining  = missing_qty
+        placed_ids = []
+        errors     = []
+
+        while remaining > 0:
+            chunk = min(remaining, freeze)
+            data  = {
+                "variety":          "regular",
+                "exchange":         exchange,
+                "tradingsymbol":    symbol,
+                "transaction_type": side,
+                "quantity":         str(chunk),
+                "product":          "NRML",
+                "order_type":       "SL",
+                "validity":         "DAY",
+                "trigger_price":    str(trigger),
+                "price":            str(limit),
+            }
+            try:
+                r      = await kite1.reqsession.post(
+                    "https://api.kite.trade/orders/regular",
+                    data=data, headers=headers, timeout=7,
+                )
+                result = r.json()
+                if r.status_code == 200:
+                    order_id = (result.get("data") or {}).get("order_id")
+                    if order_id:
+                        placed_ids.append({"order_id": order_id, "qty": chunk})
+                        existing     = sl_state.get(symbol, {})
+                        existing_sl  = existing.get("sl_orders", [])
+                        existing_ids = {o["order_id"] for o in existing_sl}
+                        if order_id not in existing_ids:
+                            sl_state[symbol] = {
+                                **existing,
+                                "sl_orders":      existing_sl + [{"order_id": order_id, "qty": chunk}],
+                                "price":          existing.get("price") or sl_price,
+                                "side":           existing.get("side") or side,
+                                "exchange":       existing.get("exchange") or exchange,
+                                "trigger_buffer": trigger_buffer,
+                                "state":          existing.get("state", "placed"),
+                            }
+                        logger.info(f"check-sl-orders: placed {side} {chunk} SL for {symbol} @ {trigger}/{limit} → {order_id}")
+                else:
+                    msg = result.get("message") or f"HTTP {r.status_code}"
+                    logger.error(f"check-sl-orders broker error for {symbol}: {msg}")
+                    errors.append(f"chunk {chunk}: {msg}")
+            except Exception as e:
+                logger.error(f"check-sl-orders error for {symbol}: {e}")
+                errors.append(f"chunk {chunk}: {str(e)}")
+            remaining -= chunk
+
+        placed_qty = sum(o["qty"] for o in placed_ids)
+        results.append({
+            "symbol":       symbol,
+            "status":       "placed" if placed_ids else "error",
+            "position_qty": abs_qty,
+            "cached_qty":   cached_qty,
+            "placed_qty":   placed_qty,
+            "price":        sl_price,
+            "price_source": price_source,
+            "errors":       errors,
+        })
+
+    return {
+        "status":       "ok",
+        "used_fallback": used_fallback,
+        "results":      results,
+    }
 
 
 # ─────────────────────────────────────────────
