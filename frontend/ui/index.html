@@ -4024,13 +4024,7 @@ window.addEventListener("keydown", async e => {
         toastOrder(await res.json(), `SL→MARKET ${sym}`);
     }
     if (key === "M" && e.shiftKey) {
-        toast(`⏳ Closing full position for ${sym}…`, 'info', 3000);
-        const res  = await fetch("/api/sl/close-position", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym }) });
-        const data = await res.json();
-        if (data.status === 'ok') {
-            toast(`✅ Position closed\n${data.logs ? data.logs[data.logs.length - 1] : 'done'}`, 'success', 6000);
-        } else { toast(`❌ Close position failed`, 'error', 6000); }
-        activePanel.updateSLLine(null, 'none');
+        closeAllPositions();
     }
 });
 
