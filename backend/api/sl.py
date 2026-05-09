@@ -135,7 +135,7 @@ async def convert_to_limit(req: ConvertRequest):
     state = sl_state.get(req.symbol)
     if not state:
         return {"status": "error", "message": "No active SL order for this symbol"}
-    order_ids = state.get("order_ids") or ([state["order_id"]] if state.get("order_id") else [])
+    order_ids = [o["order_id"] for o in state.get("sl_orders", [])]
     if not order_ids:
         return {"status": "error", "message": "No active SL order for this symbol"}
 
