@@ -951,7 +951,7 @@
     <div id="topbarRight">
         <div id="loadingBar"></div>
         <!-- Layout picker button -->
-        <button id="closeAllBtn" title="Close ALL open positions on the account" onclick="closeAllPositions()" style="font-size:11px;padding:3px 7px;background:#7f1d1d;border:1px solid #ef4444;border-radius:4px;cursor:pointer;color:#fca5a5;font-weight:bold;">⬛ Close All</button>
+        <button id="closeAllBtn" title="Close ALL open positions on the account" onclick="closeAllPositions()" style="font-size:11px;padding:3px 7px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#ffffff;">⬛ Close All</button>
         <button id="resetPositionsBtn" title="Reset position cache — use before placing order from mobile" onclick="resetPositionCache()" style="font-size:11px;padding:3px 7px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#ffffff;">Reset Cache</button>
         <button id="refreshAutoPopBtn"
             onclick="refreshAutoPopulate()"
@@ -2957,15 +2957,13 @@ async function resetPositionCache() {
 }
 
 async function closeAllPositions() {
-    if (!confirm('⚠️ Close ALL open positions on the account?\n\nThis will place MARKET exit orders for every open position. This cannot be undone.')) return;
-
     const btn  = document.getElementById('closeAllBtn');
     const orig = btn.innerHTML;
     btn.innerHTML = '⏳ Closing...';
     btn.disabled  = true;
-    btn.style.background  = '#451a03';
-    btn.style.borderColor = '#b45309';
-    btn.style.color       = '#fbbf24';
+    btn.style.background  = '#1f2937';
+    btn.style.borderColor = '#374151';
+    btn.style.color       = '#9ca3af';
 
     try {
         const res  = await fetch('/api/sl/close-all', { method: 'POST' });
@@ -3002,9 +3000,9 @@ async function closeAllPositions() {
 
     setTimeout(() => {
         btn.innerHTML = orig;
-        btn.style.background  = '#7f1d1d';
-        btn.style.borderColor = '#ef4444';
-        btn.style.color       = '#fca5a5';
+        btn.style.background  = '#1f2937';
+        btn.style.borderColor = '#374151';
+        btn.style.color       = '#ffffff';
         btn.disabled = false;
     }, 5000);
 }
