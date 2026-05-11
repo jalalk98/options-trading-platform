@@ -809,12 +809,14 @@ class KiteConnect_custom(object):
 
 
     async def hard_code_modify_limit_type(self, order_id, price, trig_price, access_token, api_key, type, max_retries=2):
-        data = {'variety': 'regular', 
+        data = {'variety': 'regular',
                 'order_id': f'{order_id}',
                 'trigger_price':f'{trig_price}',
                 'price':f'{price}',
                 'order_type':f'{type}'
                 }
+        if type == "MARKET":
+            data['market_protection'] = '-1'
         headers = {'X-Kite-Version': '3',
                 'User-Agent': 'Kiteconnect-python/5.0.1',
                 'Authorization': f'token {api_key}:{access_token}'}
