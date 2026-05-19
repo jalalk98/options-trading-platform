@@ -1,0 +1,21 @@
+[Unit]
+Description=Fyers WebSocket tick collector
+After=network.target redis.service postgresql.service
+Wants=redis.service postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/options-trading-platform
+EnvironmentFile=/home/ubuntu/projects/options-trading-platform/.env.fyers
+ExecStart=/home/ubuntu/projects/options-trading-platform/venv/bin/python \
+    -m backend.services.fyers_collector.fyers_collector
+Restart=always
+RestartSec=30
+RestartPreventExitStatus=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fyers-collector
+
+[Install]
+WantedBy=multi-user.target

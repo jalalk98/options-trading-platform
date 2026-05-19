@@ -10,10 +10,12 @@ from config.credentials import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 )
 from backend.services.redis_streamer import redis_streamer
+from backend.services.fyers_collector.fyers_streamer import fyers_streamer
 from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router, prewarm_strikes_cache, refresh_b2_cache
 from backend.api.sl import router as sl_router
+from backend.api.hedge import router as hedge_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
 
@@ -22,6 +24,7 @@ app = FastAPI()
 
 app.include_router(strikes_router, prefix="/api")
 app.include_router(sl_router, prefix="/api")
+app.include_router(hedge_router, prefix="/api")
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
@@ -111,6 +114,7 @@ async def startup():
     app.state.pool = await create_pool()
 
     asyncio.create_task(redis_streamer())
+    asyncio.create_task(fyers_streamer())
     await prewarm_strikes_cache(app.state.pool)  # blocking — cache must be warm before serving requests
     asyncio.create_task(_load_pending_fills_on_startup(app.state.pool))
 
@@ -158,6 +162,35 @@ async def startup():
                 WHERE curr_price > 0 AND ABS(price_jump) > 3
             """)
     asyncio.create_task(_ensure_jump_index())
+
+    async def _ensure_hedge_pairs_table():
+        async with app.state.pool.acquire() as _conn:
+            await _conn.execute("""
+                CREATE TABLE IF NOT EXISTS hedge_pairs (
+                    id               SERIAL PRIMARY KEY,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    hedge_order_ids  TEXT[]      NOT NULL DEFAULT '{}',
+                    hedge_symbol     VARCHAR(50) NOT NULL,
+                    hedge_qty        INTEGER     NOT NULL,
+                    avg_hedge_price  NUMERIC(10,2),
+                    sell_symbol      VARCHAR(50) NOT NULL,
+                    sell_qty         INTEGER,
+                    sell_order_id    VARCHAR(50),
+                    avg_sell_price   NUMERIC(10,2),
+                    unwind_order_ids TEXT[]      NOT NULL DEFAULT '{}',
+                    status           VARCHAR(30) NOT NULL,
+                    notes            TEXT
+                )
+            """)
+            await _conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hedge_pairs_created_at "
+                "ON hedge_pairs (created_at DESC)"
+            )
+            await _conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hedge_pairs_status "
+                "ON hedge_pairs (status)"
+            )
+    asyncio.create_task(_ensure_hedge_pairs_table())
 
     # B2 manifest is slow (blocking S3 call) — skip during market hours to
     # avoid stalling the event loop while charts are actively being used.

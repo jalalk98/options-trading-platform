@@ -1,0 +1,19 @@
+[Unit]
+Description=Fyers DB writer (Redis stream consumer → PostgreSQL)
+After=network.target redis.service postgresql.service
+Wants=redis.service postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/options-trading-platform
+ExecStart=/home/ubuntu/projects/options-trading-platform/venv/bin/python \
+    -m backend.services.fyers_collector.fyers_db_writer
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fyers-db-writer
+
+[Install]
+WantedBy=multi-user.target

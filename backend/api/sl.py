@@ -101,24 +101,27 @@ async def set_sl(req: SetSLRequest):
     }
 
     # If dragging (state already "placed" and price changed), modify ALL orders on Kite
+    modified_count = 0
+    trigger_price  = None
     if existing.get("state") == "placed" and new_ids and req.price is not None and not req.order_id:
-        side = existing.get("side")
+        side          = existing.get("side")
+        trigger_price = _round(new_price + new_buffer) if side == "SELL" else _round(new_price - new_buffer)
         for oid in new_ids:
             try:
-                trigger = _round(new_price + new_buffer) if side == "SELL" else _round(new_price - new_buffer)
                 result = await kite1.hard_code_regular_modify_order(
                     order_id=oid,
                     price=new_price,
-                    trig_price=trigger,
+                    trig_price=trigger_price,
                     access_token=KITE_ACCESS_TOKEN,
                     api_key=KITE_API_KEY
                 )
-                logger.info(f"SL order {oid} modified to {new_price} for {req.symbol}: {result}")
+                logger.info(f"SL order {oid} modified to {new_price} (trigger {trigger_price}) for {req.symbol}: {result}")
+                modified_count += 1
             except Exception as e:
                 logger.error(f"Failed to modify SL order {oid}: {e}")
         sl_state[req.symbol]["state"] = "placed"
 
-    return {"status": "ok", "symbol": req.symbol, "price": new_price}
+    return {"status": "ok", "symbol": req.symbol, "price": new_price, "trigger_price": trigger_price, "modified_count": modified_count}
 
 
 # ─────────────────────────────────────────────
@@ -251,14 +254,15 @@ async def _place_market_order(exchange: str, symbol: str, tx: str, qty: int) -> 
         "Authorization": f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
     }
     data = {
-        "variety":          "regular",
-        "exchange":         exchange,
-        "tradingsymbol":    symbol,
-        "transaction_type": tx,
-        "quantity":         str(qty),
-        "product":          "NRML",
-        "order_type":       "MARKET",
-        "validity":         "DAY",
+        "variety":            "regular",
+        "exchange":           exchange,
+        "tradingsymbol":      symbol,
+        "transaction_type":   tx,
+        "quantity":           str(qty),
+        "product":            "NRML",
+        "order_type":         "MARKET",
+        "validity":           "DAY",
+        "market_protection":  "-1",
     }
     r = await kite1.reqsession.post(
         "https://api.kite.trade/orders/regular",
@@ -266,8 +270,50 @@ async def _place_market_order(exchange: str, symbol: str, tx: str, qty: int) -> 
         headers=headers,
         timeout=7
     )
-    r.raise_for_status()
-    return r.json()
+    body = r.json()
+    if r.status_code != 200:
+        msg = body.get("message") or body.get("error") or f"HTTP {r.status_code}"
+        raise ValueError(msg)
+    return body
+
+
+class _ChunkedOrderError(Exception):
+    """Raised when a mid-chunk market order placement fails.
+    `.placed` holds the orders successfully placed before the failure,
+    so the caller can unwind them if needed.
+    """
+    def __init__(self, message: str, placed: list):
+        super().__init__(message)
+        self.placed: list = placed  # [{"order_id": str, "qty": int}, ...]
+
+
+async def _place_market_order_chunked(exchange: str, symbol: str, tx: str, qty: int) -> list:
+    """Place MARKET orders in freeze-qty slices.
+
+    Returns [{"order_id": str, "qty": int}, ...] covering the full qty on success.
+    Raises _ChunkedOrderError on any chunk failure; .placed carries the already-placed
+    slices so the caller can attempt an unwind of the partial fill.
+    """
+    freeze     = _freeze_qty(symbol)
+    remaining  = qty
+    placed: list = []
+    while remaining > 0:
+        chunk = min(remaining, freeze)
+        try:
+            result = await _place_market_order(exchange, symbol, tx, chunk)
+        except Exception as exc:
+            raise _ChunkedOrderError(
+                f"MARKET {tx} chunk {chunk}/{qty} {symbol} network error: {exc}", placed
+            ) from exc
+        order_id = (result.get("data") or {}).get("order_id")
+        if not order_id:
+            msg = result.get("message") or result.get("error") or "no order_id returned"
+            raise _ChunkedOrderError(
+                f"MARKET {tx} chunk {chunk}/{qty} {symbol} rejected: {msg}", placed
+            )
+        placed.append({"order_id": order_id, "qty": chunk})
+        remaining -= chunk
+    return placed
 
 
 # ─────────────────────────────────────────────
@@ -792,6 +838,7 @@ async def check_sl_orders():
                 "position_qty": abs_qty,
                 "cached_qty":   cached_qty,
                 "placed_qty":   0,
+                "order_count":  len(cached_sl),
                 "price_source": None,
             })
             continue
@@ -875,6 +922,7 @@ async def check_sl_orders():
             "position_qty": abs_qty,
             "cached_qty":   cached_qty,
             "placed_qty":   placed_qty,
+            "order_count":  len(cached_sl) + len(placed_ids),
             "price":        sl_price,
             "price_source": price_source,
             "errors":       errors,

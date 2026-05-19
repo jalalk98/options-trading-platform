@@ -499,7 +499,36 @@ class KiteConnect_custom(object):
         except Exception as e:
             logger.exception(f"Error while querying orders: {str(e)}")
             return {"status": "error", "message": "Error while querying orders"}
-        
+
+    async def get_order_status(self, order_id: str, api_key: str, access_token: str) -> dict:
+        """Fetch the latest status snapshot for a single order via GET /orders/{order_id}.
+
+        Kite returns a history list; the last element is the most recent state.
+        Returns a dict with at minimum a 'status' key, e.g.:
+          {"status": "COMPLETE", "filled_quantity": 75, "average_price": 150.50, ...}
+        On network/parse failure returns {"status": "ERROR", "message": "..."}.
+        """
+        headers = {
+            'X-Kite-Version': '3',
+            'User-Agent': 'Kiteconnect-python/5.0.1',
+            'Authorization': f'token {api_key}:{access_token}',
+        }
+        try:
+            r = await self.reqsession.get(
+                f'https://api.kite.trade/orders/{order_id}',
+                headers=headers,
+                timeout=7,
+            )
+            r.raise_for_status()
+            data = r.json()
+            history = data.get('data') or []
+            if not history:
+                return {'status': 'UNKNOWN'}
+            return history[-1]  # latest update is the last element
+        except Exception as e:
+            logger.error(f"get_order_status {order_id}: {e}")
+            return {'status': 'ERROR', 'message': str(e)}
+
     async def hardcode_gtt_orders(self,api_key, access_token):
         headers = {
             'X-Kite-Version': '3',

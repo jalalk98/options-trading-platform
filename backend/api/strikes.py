@@ -363,6 +363,76 @@ _history_cache = {}   # symbol → {"day": date, "data": [...]}
 # Set False to revert to scanning gap_ticks (old behaviour, zero risk).
 _USE_FAST_TABLES = True
 
+# ── Fyers history queries (FY:-prefixed symbols → fyers_ticks table) ──────
+
+_FYERS_HIST_Q = """
+    WITH ticks AS (
+        SELECT
+            FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+            ltp,
+            timestamp
+        FROM fyers_ticks
+        WHERE display_symbol = $1
+          AND ltp IS NOT NULL
+          AND timestamp >= $2::date + TIME '09:15:00'
+          AND timestamp <= $2::date + TIME '16:00:00'
+    )
+    SELECT
+        bucket,
+        (ARRAY_AGG(ltp ORDER BY timestamp))[1]      AS open,
+        MAX(ltp)                                     AS high,
+        MIN(ltp)                                     AS low,
+        (ARRAY_AGG(ltp ORDER BY timestamp DESC))[1]  AS close
+    FROM ticks
+    GROUP BY bucket
+    ORDER BY bucket ASC
+"""
+
+_FYERS_HIST_INCR_Q = """
+    WITH ticks AS (
+        SELECT
+            FLOOR(EXTRACT(EPOCH FROM timestamp)/5)*5 AS bucket,
+            ltp,
+            timestamp
+        FROM fyers_ticks
+        WHERE display_symbol = $1
+          AND ltp IS NOT NULL
+          AND timestamp >= TO_TIMESTAMP($2) - INTERVAL '10 seconds'
+          AND timestamp >= $3::date + TIME '09:15:00'
+          AND timestamp <= $3::date + TIME '16:00:00'
+    )
+    SELECT
+        bucket,
+        (ARRAY_AGG(ltp ORDER BY timestamp))[1]      AS open,
+        MAX(ltp)                                     AS high,
+        MIN(ltp)                                     AS low,
+        (ARRAY_AGG(ltp ORDER BY timestamp DESC))[1]  AS close
+    FROM ticks
+    GROUP BY bucket
+    ORDER BY bucket ASC
+"""
+
+
+async def _query_history_fyers(conn, symbol: str, date: str = None, since_bucket: int = None):
+    """OHLC aggregation from fyers_ticks for FY:-prefixed symbols.
+    Same bucket formula as candles_5s — timestamps stored as IST-naive, consistent convention."""
+    if date:
+        rows = await conn.fetch(_FYERS_HIST_Q, symbol, PyDate.fromisoformat(date))
+        return _rows_to_candles_fast(rows)
+
+    today = PyDate.today()
+    if since_bucket:
+        rows = await conn.fetch(_FYERS_HIST_INCR_Q, symbol, since_bucket, today)
+        return _rows_to_candles_fast(rows)
+
+    rows = await conn.fetch(_FYERS_HIST_Q, symbol, today)
+    if not rows:
+        last_ts = await conn.fetchval(
+            "SELECT MAX(timestamp) FROM fyers_ticks WHERE display_symbol=$1", symbol)
+        if last_ts:
+            rows = await conn.fetch(_FYERS_HIST_Q, symbol, last_ts.date())
+    return _rows_to_candles_fast(rows)
+
 
 _HIST_Q = """
     WITH ticks AS (
@@ -529,6 +599,9 @@ async def _query_history(conn, symbol: str, date: str = None, since_bucket: int 
     """Full or incremental OHLC history query.
     since_bucket: if set, only fetch candles at or after that epoch second (incremental update).
     """
+    if symbol.startswith("FY:"):
+        return await _query_history_fyers(conn, symbol, date, since_bucket)
+
     if _USE_FAST_TABLES:
         return await _query_history_fast(conn, symbol, date, since_bucket)
 
@@ -573,6 +646,9 @@ _gaps_cache = {}   # symbol → {"data": [...], "ts": float}
 
 
 async def _query_gaps(conn, symbol: str, date: str = None, since_bucket: int = None):
+    if symbol.startswith("FY:"):
+        return []  # no gap detection for Fyers raw ticks
+
     if _USE_FAST_TABLES:
         result = await _query_gaps_fast(conn, symbol, date, since_bucket)
         if result is not None:  # None means SENSEX — fall through to old path
@@ -1265,7 +1341,7 @@ async def get_batch(body: BatchRequest, request: Request):
     """Fetch history + gaps for multiple symbols in parallel. Used by auto-populate."""
     pool = request.app.state.pool
     symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
-    sem = asyncio.Semaphore(20)  # limit concurrent DB pairs to pool size
+    sem = asyncio.Semaphore(4)   # 4 symbols × 2 connections = 8 = pool max_size
 
     async def fetch_one(symbol):
         # Serve from cache if fresh and not bypassed
@@ -1301,6 +1377,110 @@ async def get_batch(body: BatchRequest, request: Request):
     results = await asyncio.gather(*[fetch_one(s) for s in symbols])
     payload = {sym: {"history": h, "gaps": g} for sym, h, g in results if h is not None}
     return Response(content=orjson.dumps(payload), media_type="application/json")
+
+
+class BatchLtpRequest(BaseModel):
+    symbols: list[str]
+
+
+@router.post("/batch-ltp")
+async def get_batch_ltp(body: BatchLtpRequest, request: Request):
+    """Return the latest LTP for each requested symbol as a single snapshot.
+
+    Cache-first: reads the last close from _history_cache when the entry is
+    fresh (same TTL the /batch warmer uses), so the dropdown poll at 1.5s
+    intervals rarely hits the DB during market hours.
+
+    Symbols not found in cache or DB are returned as null.
+
+    Response: {"SYM1": {"ltp": 12.50, "ts": 1747123456}, "SYM2": null, ...}
+      ts is the candle bucket epoch (seconds since Unix epoch, IST-naive).
+    """
+    symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
+    result: dict = {}
+    missing: list[str] = []
+
+    now = time.monotonic()
+    for sym in symbols:
+        cached = _history_cache.get(sym)
+        if cached and cached.get("data") and (now - cached["ts"]) < cached.get("ttl", 600):
+            candles = cached["data"]
+            if candles:
+                last = candles[-1]  # [bucket, open, high, low, close]
+                result[sym] = {"ltp": last[4], "ts": last[0]}
+                continue
+        missing.append(sym)
+
+    if missing:
+        pool = request.app.state.pool
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT s.symbol, c.close AS ltp, c.bucket AS ts
+                    FROM unnest($1::text[]) AS s(symbol)
+                    CROSS JOIN LATERAL (
+                        SELECT close, bucket
+                        FROM candles_5s
+                        WHERE symbol = s.symbol
+                          AND bucket >= EXTRACT(EPOCH FROM NOW() - INTERVAL '5 days')::BIGINT
+                        ORDER BY symbol, bucket DESC
+                        LIMIT 1
+                    ) c
+                """, missing)
+            for row in rows:
+                result[row["symbol"]] = {
+                    "ltp": float(row["ltp"]),
+                    "ts":  int(row["ts"]),
+                }
+        except Exception as e:
+            logger.error(f"batch-ltp DB query failed: {e}")
+
+    for sym in missing:
+        if sym not in result:
+            result[sym] = None
+
+    return result
+
+
+@router.post("/live-ltp")
+async def get_live_ltp(body: BatchLtpRequest):
+    """Fetch live last-traded price directly from Kite /quote/ltp.
+
+    Symbols are plain trading symbols (e.g. NIFTY2651923750CE).
+    Exchange is inferred: SENSEX* → BFO, everything else → NFO.
+    Response: {"NIFTY2651923750CE": 113.40, ...}  — null if Kite returned nothing.
+    """
+    symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
+    instruments = []
+    for sym in symbols:
+        exch = "BFO" if sym.startswith("SENSEX") else "NFO"
+        instruments.append(f"{exch}:{sym}")
+
+    headers = {
+        "X-Kite-Version": "3",
+        "Authorization": f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+    try:
+        r = await kite1.reqsession.get(
+            "https://api.kite.trade/quote/ltp",
+            params=[("i", inst) for inst in instruments],
+            headers=headers,
+            timeout=7,
+        )
+        r.raise_for_status()
+        data = r.json().get("data", {})
+    except Exception as e:
+        logger.error(f"live-ltp Kite call failed: {e}")
+        return {sym: None for sym in symbols}
+
+    result = {}
+    for sym in symbols:
+        exch = "BFO" if sym.startswith("SENSEX") else "NFO"
+        key = f"{exch}:{sym}"
+        entry = data.get(key)
+        result[sym] = float(entry["last_price"]) if entry else None
+    return result
+
 
 class SLOrder(BaseModel):
     symbol: str
