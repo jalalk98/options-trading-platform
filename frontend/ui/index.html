@@ -314,6 +314,44 @@
             width: 12px; height: 12px; accent-color: #38bdf8; cursor: pointer; margin: 0;
         }
 
+        /* ── Hedge Config ── */
+        .ob-hdg {
+            background: #0f172a; color: #64748b; cursor: pointer; border: none;
+            padding: 5px 8px; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 1px; min-width: 44px;
+            transition: background 0.12s, color 0.12s;
+        }
+        .ob-hdg:hover            { background: #1e293b; color: #94a3b8; }
+        .ob-hdg .ob-label        { font-size: 11px; font-weight: bold; letter-spacing: 0.5px; }
+        .ob-hdg.hdg-active       { color: #34d399; }
+        .ob-hdg.hdg-mismatch     { color: #f87171; }
+        #hdgChip { font-size: 9px; font-weight: normal; letter-spacing: 0; white-space: nowrap; opacity: 0.9; }
+        #hedgeConfigPopup {
+            display: none; position: fixed; z-index: 400;
+            background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+            padding: 14px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+            color: #e2e8f0; font-family: Arial,sans-serif; min-width: 175px;
+        }
+        #hedgeCandidates { overflow-y: auto; max-height: 220px; margin: 0 -4px; }
+        #hedgeCandidates::-webkit-scrollbar { width: 4px; }
+        #hedgeCandidates::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+        .hcfg-for-sym { font-size: 10px; color: #64748b; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid #263d59; }
+        .hcfg-for-sym span { color: #93c5fd; font-weight: bold; }
+        .hcfg-empty { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 5px; padding: 14px 12px; color: #64748b; font-size: 11px; text-align: center; }
+        .hcfg-row {
+            display: flex; align-items: center; padding: 4px 4px;
+            border-radius: 4px; font-size: 11px; border: 1px solid transparent; cursor: pointer;
+        }
+        .hcfg-row:hover    { background: #334155; }
+        .hcfg-row.hcfg-sel { background: #172554; border-color: #3b82f6; }
+        .hcfg-otm    { color: #64748b; font-size: 9px; width: 24px; flex-shrink: 0; }
+        .hcfg-strike { flex: 1; color: #e2e8f0; font-size: 11px; }
+        .hcfg-ltp    { color: #fbbf24; font-size: 11px; font-weight: bold; min-width: 52px; text-align: right; }
+        .hcfg-divider { border: none; border-top: 1px solid #334155; margin: 10px 0; }
+        .hcfg-footer  { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .hcfg-footer label { font-size: 11px; color: #94a3b8; flex-shrink: 0; }
+        .hcfg-footer input { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 6px; font-size: 12px; text-align: right; }
+
         /* ── Historical mode bar ── */
         #histBar {
             display: none;
@@ -672,6 +710,50 @@
             pointer-events: none;
             z-index: 5;
         }
+        /* ── Leg toggle pill ───────────────────────── */
+        .leg-toggle {
+            pointer-events: all;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .leg-toggle input { display: none; }
+        .leg-toggle-track {
+            display: block;
+            width: 28px;
+            height: 14px;
+            border-radius: 7px;
+            background: #334155;
+            border: 1px solid #475569;
+            position: relative;
+            transition: background 0.2s, border-color 0.2s;
+        }
+        .leg-toggle-track::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #94a3b8;
+            transition: transform 0.2s, background 0.2s;
+        }
+        .leg-toggle input:checked + .leg-toggle-track {
+            background: #7c3aed;
+            border-color: #8b5cf6;
+        }
+        .leg-toggle input:checked + .leg-toggle-track::after {
+            transform: translateX(14px);
+            background: #fff;
+        }
+        .leg-toggle input:disabled + .leg-toggle-track {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+        .leg-toggle:has(input:disabled) { cursor: not-allowed; }
+        /* ─────────────────────────────────────────── */
         .panel-refresh-btn {
             pointer-events: all;
             width: 20px;
@@ -1156,6 +1238,10 @@
         <button class="ob-type-btn"        data-type="M"  onclick="setOrderType('M')">M</button>
         <button class="ob-type-btn"        data-type="SL" onclick="setOrderType('SL')">SL</button>
     </div>
+    <button class="ob-hdg" id="btnHedge" onclick="toggleHedgeDropdown(event)" title="Hedge Config (click to configure)">
+        <span class="ob-label">HDG</span>
+        <span id="hdgChip"></span>
+    </button>
 </div>
 
 <!-- SL order config popup -->
@@ -1193,6 +1279,34 @@
         SL at Cost
     </label>
     <button id="slConfigClose" onclick="closeSlConfig()">Done</button>
+</div>
+
+<!-- Hedge config popup -->
+<div id="hedgeConfigPopup">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <span style="font-size:11px;font-weight:bold;color:#94a3b8;letter-spacing:.5px;">HEDGE CONFIG</span>
+        <div style="display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="hedgeEnabledToggle"
+                   onclick="console.log('[HDG] checkbox clicked, checked=', this.checked); onHedgeToggle(this);"
+                   onchange="console.log('[HDG] checkbox onchange fired, checked=', this.checked);"
+                   style="accent-color:#3b82f6;width:14px;height:14px;cursor:pointer;margin:0;flex-shrink:0;">
+            <span style="font-size:11px;color:#e2e8f0;user-select:none;cursor:pointer;"
+                  onclick="const cb=document.getElementById('hedgeEnabledToggle');cb.checked=!cb.checked;onHedgeToggle(cb);">Enable</span>
+        </div>
+    </div>
+    <div id="hedgeCandidates">
+        <div class="hcfg-empty">Focus a panel with an active strike,<br>then re-open this dropdown</div>
+    </div>
+    <hr class="hcfg-divider">
+    <div style="font-size:10px;color:#64748b;text-align:center;margin-bottom:4px;">Hedge Qty</div>
+    <div class="qty-row" style="margin-bottom:6px;">
+        <button class="qty-btn" id="hdgQtyMinus">−</button>
+        <input id="hedgeQtyInput" type="number" min="1" value="1"
+               style="font-size:13px;font-weight:bold;color:#f1f5f9;width:56px;background:#0f172a;border:1px solid #475569;border-radius:4px;text-align:center;padding:3px 4px;appearance:textfield;-moz-appearance:textfield;"
+               onchange="const _s=orderLotSize||1;hedgeQty=Math.max(_s,Math.round((parseInt(this.value)||_s)/_s)*_s);this.value=hedgeQty;_saveHedgeConfig();">
+        <button class="qty-btn" id="hdgQtyPlus">+</button>
+    </div>
+    <button onclick="closeHedgeConfig()" style="width:100%;background:#0f172a;border:1px solid #334155;color:#94a3b8;border-radius:4px;padding:5px 0;cursor:pointer;font-size:11px;">Done</button>
 </div>
 
 <!-- Limit / Market order config popup -->
@@ -1237,6 +1351,10 @@
         <input id="dqSellInput" type="number" min="0" placeholder="qty" oninput="onDQInput('sell')" style="width:70px;text-align:center;background:#0d1117;border:1px solid #333;color:#FFD600;padding:4px;border-radius:4px;font-size:13px;">
         <button onclick="adjustDefaultQty('sell',+1)" onmousedown="startDQHold('sell',+1)" onmouseup="stopDQHold()" onmouseleave="stopDQHold()" style="width:28px;height:28px;background:#1a1a2e;border:1px solid #333;color:#fff;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;">+</button>
         <button onclick="clearDefaultQty('sell')" style="width:24px;height:24px;background:none;border:1px solid #333;color:#555;border-radius:4px;cursor:pointer;font-size:12px;">✕</button>
+    </div>
+    <div id="dqSaveRow" style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+        <button id="dqSaveBtn" onclick="saveAsIndexDefault()" style="flex:1;background:#1B4332;border:1px solid #2E7D52;color:#00E676;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:10px;">Save as NIFTY default</button>
+        <button id="dqResetBtn" onclick="resetIndexDefault()" style="display:none;background:none;border:1px solid #333;color:#94a3b8;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:10px;">Reset</button>
     </div>
     <button id="qtyClose" onclick="toggleQtyPopup()">Done</button>
 </div>
@@ -1295,6 +1413,13 @@ function makeChartOptions(w, h) {
 ====================== */
 const INTERVAL  = 5;
 const LOT_SIZES = { NIFTY: 65, SENSEX: 20, BANKNIFTY: 30 };
+const SYMBOL_DEFAULT_QTY = {
+    NIFTY:      { buy: 1755, sell: 910  },
+    SENSEX:     { buy: 1000, sell: 340  },
+    BANKNIFTY:  { buy: 600,  sell: 300  },
+    MIDCPNIFTY: { buy: 2800, sell: 1400 },
+    FINNIFTY:   { buy: 1200, sell: 600  },
+};
 const SL_COLOR  = { pending: '#06b6d4', placed: '#fb923c', hit: '#6b7280' };
 const LAYOUT_CONFIGS = {
     '1':  { cols: 1, rows: 1 }, '2h': { cols: 2, rows: 1 }, '2v': { cols: 1, rows: 2 },
@@ -1350,6 +1475,27 @@ let slAutoCancelCount = 1;
 let slAutoSlIncCount  = 1;
 let slAtCost          = false;
 
+/* hedge state */
+let hedgeEnabled    = false;
+let hedgeSymbol     = null;   // trading symbol of selected hedge strike
+let hedgeExchange   = 'NFO';
+let hedgeQty        = 1;      // contracts (not lots)
+let forSellSymbol   = null;   // sell symbol active when hedge was selected
+let _hedgeCandidates = [];    // [{otm, symbol, exchange, ltp}]
+
+/* ======================
+   LEG-TOGGLE HELPERS
+====================== */
+function getPairedSymbol(sym) {
+    if (!sym) return null;
+    if (sym.endsWith('CE')) return sym.slice(0, -2) + 'PE';
+    if (sym.endsWith('PE')) return sym.slice(0, -2) + 'CE';
+    return null;
+}
+function isKnownSymbol(sym) {
+    return sym ? Object.values(strikeMap).includes(sym) : false;
+}
+
 /* ======================
    PANEL FACTORY
 ====================== */
@@ -1372,7 +1518,23 @@ function createPanel(id) {
     refreshBtn.title = 'Refresh chart';
     refreshBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
 
+    const legToggleWrapEl = document.createElement('label');
+    legToggleWrapEl.className = 'leg-toggle';
+    legToggleWrapEl.title = 'Switch to paired leg';
+    const legToggleEl = document.createElement('input');
+    legToggleEl.type = 'checkbox';
+    legToggleEl.disabled = true;
+    legToggleEl.addEventListener('change', e => {
+        e.stopPropagation();
+        switchLeg(e.target.checked);
+    });
+    const legToggleTrackEl = document.createElement('span');
+    legToggleTrackEl.className = 'leg-toggle-track';
+    legToggleWrapEl.appendChild(legToggleEl);
+    legToggleWrapEl.appendChild(legToggleTrackEl);
+
     topBarEl.appendChild(labelEl);
+    topBarEl.appendChild(legToggleWrapEl);
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
 
@@ -1454,6 +1616,9 @@ function createPanel(id) {
 
     // ── Per-panel state ───────────────────────────
     let symbol         = null;
+    let _baseSymbol    = null;   // symbol loaded externally (before any toggle)
+    let _legToggled    = false;  // whether panel currently shows the paired leg
+    let _isLegSwitching = false; // guard: prevents panelLoadSymbol from overwriting _baseSymbol
     let socket         = null;
     let reconnectTimeout = null;
     let currentCandle  = null;
@@ -2082,7 +2247,13 @@ function createPanel(id) {
                 body: JSON.stringify({ symbol, price: droppedPrice }),
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            console.debug('[SL drag] confirmed — price accepted by backend');
+            const data = await res.json();
+            const n = data.modified_count || 0;
+            if (n > 0) {
+                const trig = data.trigger_price != null ? `\n   Limit ${droppedPrice}  |  Trigger ${data.trigger_price}` : '';
+                toast(`✅ SL order modified — ${n} order${n === 1 ? '' : 's'}${trig}`, 'success', 5000);
+            }
+            console.debug('[SL drag] confirmed — price accepted by backend, modified_count:', n);
         } catch (err) {
             // Backend rejected — revert line to where it was before the drag
             console.warn('[SL drag] failed — reverting to', slPreDragPrice, err);
@@ -2257,9 +2428,49 @@ function createPanel(id) {
         socket.onerror = () => { if (socket) socket.close(); };
     }
 
+    // ── Switch Leg ───────────────────────────────
+    function _updateLegToggleEnabled() {
+        const paired = getPairedSymbol(_baseSymbol);
+        const canToggle = !!paired && isKnownSymbol(paired);
+        legToggleEl.disabled = !canToggle;
+        legToggleEl.parentElement.title = canToggle
+            ? 'Switch to paired leg'
+            : _baseSymbol && !getPairedSymbol(_baseSymbol)
+                ? 'Not an options instrument'
+                : 'Paired symbol not available';
+    }
+
+    async function switchLeg(wantOn) {
+        if (!_baseSymbol) return;
+        if (wantOn) {
+            const paired = getPairedSymbol(_baseSymbol);
+            if (!paired || !isKnownSymbol(paired)) {
+                legToggleEl.checked = false;
+                toast('Paired symbol not found', 'warn');
+                return;
+            }
+            _legToggled = true;
+            _isLegSwitching = true;
+            await panelLoadSymbol(paired, null, true);
+        } else {
+            _legToggled = false;
+            _isLegSwitching = true;
+            await panelLoadSymbol(_baseSymbol, null, true);
+        }
+    }
+
     // ── Load symbol ───────────────────────────────
     async function panelLoadSymbol(sym, prefetched = null, nocache = false, histDate = null) {
         if (!sym) return;
+        // ── Leg-toggle guard ──────────────────────────
+        if (!_isLegSwitching) {
+            _baseSymbol = sym;
+            _legToggled = false;
+            legToggleEl.checked = false;
+            _updateLegToggleEnabled();
+        }
+        _isLegSwitching = false;
+        // ─────────────────────────────────────────────
         noDataEl.style.display = 'none';
         const isSameSymbol = (sym === symbol);
         // Save current lines for the outgoing symbol before clearing
@@ -2349,6 +2560,7 @@ function createPanel(id) {
         if (savedLines.length) restoreUserLines(savedLines);
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
         if (!histDate) saveViewState();
+        _updateLegToggleEnabled();
         // Skip live features in historical mode
         if (!histDate) {
             loadSLStateLocal(sym);
@@ -2368,8 +2580,11 @@ function createPanel(id) {
         if (!symbol) return;
         if (syncCharts) toggleSyncCharts();
         refreshBtn.classList.add('spinning');
-        await panelLoadSymbol(symbol, null, true);
-        refreshBtn.classList.remove('spinning');
+        try {
+            await panelLoadSymbol(symbol, null, true);
+        } finally {
+            refreshBtn.classList.remove('spinning');
+        }
     });
 
     // ── Resize ────────────────────────────────────
@@ -2405,6 +2620,9 @@ function createPanel(id) {
     const panel = {
         id, el: panelEl,
         get symbol()          { return symbol; },
+        get baseSymbol()      { return _baseSymbol; },
+        get legToggled()      { return _legToggled; },
+        switchLeg,
         get historyLoaded()   { return historyLoaded; },
         get lastCandleTime()  { return lastCandleTime; },
         get crosshairPrice()  { return crosshairPrice; },
@@ -2519,6 +2737,8 @@ function activatePanel(p) {
             `Quantity (${getIndexName(sym)} · ${orderLotSize}/lot)`;
         updateOrderBar(null);
         p.refreshPosition();
+    } else {
+        _updateHedgeChip();
     }
     updateSLBadge();
     if (p.updateGoToLiveBtn) p.updateGoToLiveBtn();
@@ -2977,20 +3197,24 @@ async function checkSlOrders() {
         }
 
         const allCovered = results.every(r => r.status === 'covered');
+        const fmtCovered = r =>
+            `✓  ${r.symbol}: pos ${r.position_qty} | SL ${r.cached_qty} (${r.order_count} order${r.order_count === 1 ? '' : 's'})`;
+
         if (allCovered) {
-            toast('✅ SL Check — all positions covered', 'success', 7000);
+            const lines = ['✅ SL Check — all covered', ...results.map(fmtCovered)];
+            toast(lines.join('\n'), 'success', 10000);
             return;
         }
 
         const lines = [`SL Check — ${results.length} symbol(s)`];
         for (const r of results) {
             if (r.status === 'covered') {
-                lines.push(`✓  ${r.symbol}: fully covered`);
+                lines.push(fmtCovered(r));
             } else if (r.status === 'placed') {
                 const src = r.price_source === 'default dist'
                     ? '[default — draw SL to adjust]'
                     : `[${r.price_source}]`;
-                lines.push(`✅ ${r.symbol}: +${r.placed_qty} SL @ ${r.price} ${src}`);
+                lines.push(`✅ ${r.symbol}: placed +${r.placed_qty} | pos ${r.position_qty} | SL ${r.cached_qty + r.placed_qty} (${r.order_count} order${r.order_count === 1 ? '' : 's'}) ${src}`);
             } else {
                 lines.push(`❌ ${r.symbol}: ${(r.errors || []).join(', ') || 'error'}`);
             }
@@ -3090,11 +3314,16 @@ async function refreshAutoPopulate() {
 }
 
 // Load panels in batches of 4 to prevent DB saturation.
-async function loadPanelsBatched(panelList, sym_getter, nocache) {
+async function loadPanelsBatched(panelList, sym_getter, nocache, prefetched = {}) {
     const BATCH = 4;
     for (let i = 0; i < panelList.length; i += BATCH) {
         const batch = panelList.slice(i, i + BATCH);
-        await Promise.all(batch.map(p => p.loadSymbol(sym_getter(p), null, nocache)));
+        const results = await Promise.allSettled(batch.map(p => p.loadSymbol(sym_getter(p), prefetched[sym_getter(p)] || null, nocache)));
+        results.forEach((result, i) => {
+            if (result.status === 'rejected') {
+                console.error(`[Refresh] Panel ${batch[i].symbol} failed to load:`, result.reason);
+            }
+        });
     }
 }
 
@@ -3122,9 +3351,23 @@ async function refreshAllPanels() {
     // Turn sync off before refreshing (re-enables after if it was already off)
     if (syncCharts) toggleSyncCharts();
     const activePanels = panels.filter(p => p.symbol);
-    await loadPanelsBatched(activePanels, p => p.symbol, true);
-    btn.classList.remove('spinning');
-    hideLoadingBar();
+    try {
+        let prefetched = {};
+        try {
+            const res = await fetch('/api/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: activePanels.map(p => p.symbol), nocache: true }),
+            });
+            prefetched = await res.json();
+        } catch (e) {
+            console.warn('[Refresh] Batch pre-fetch failed, panels will fetch individually:', e);
+        }
+        await loadPanelsBatched(activePanels, p => p.symbol, true, prefetched);
+    } finally {
+        btn.classList.remove('spinning');
+        hideLoadingBar();
+    }
 }
 
 document.getElementById('autoPopulateSelect').addEventListener('change', function() {
@@ -3140,6 +3383,7 @@ function onAutoPopulateChange(mode) {
             hideLoadingBar();
             toast('Auto populate failed: ' + e.message, 'warn');
         });
+        applyModeDefaults(mode);
     }
 
     const btn = document.getElementById('refreshAutoPopBtn');
@@ -3296,7 +3540,18 @@ async function autoPopulatePanels(mode) {
         const activeSingle = panelSymbols
             .map((sym, i) => sym ? panels[i] : null)
             .filter(Boolean);
-        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true);
+        let prefetched = {};
+        try {
+            const res = await fetch('/api/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: panelSymbols.filter(Boolean), nocache: true }),
+            });
+            prefetched = await res.json();
+        } catch (e) {
+            console.warn('[Refresh] Batch pre-fetch failed, panels will fetch individually:', e);
+        }
+        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true, prefetched);
         panelSymbols.forEach((sym, i) => {
             if (!sym && panels[i]) panels[i].showNoData(strikes[i] ? `${strikes[i]} ${type}` : 'No Data');
         });
@@ -3333,7 +3588,18 @@ async function autoPopulatePanels(mode) {
     const activeDual = panelSymbols
         .map((sym, i) => sym ? panels[i] : null)
         .filter(Boolean);
-    await loadPanelsBatched(activeDual, p => panelSymbols[panels.indexOf(p)], true);
+    let prefetched = {};
+    try {
+        const res = await fetch('/api/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbols: panelSymbols.filter(Boolean), nocache: true }),
+        });
+        prefetched = await res.json();
+    } catch (e) {
+        console.warn('[Refresh] Batch pre-fetch failed, panels will fetch individually:', e);
+    }
+    await loadPanelsBatched(activeDual, p => panelSymbols[panels.indexOf(p)], true, prefetched);
     panelSymbols.forEach((sym, i) => {
         if (!sym && panels[i]) panels[i].showNoData(panelLabels[i]);
     });
@@ -3474,11 +3740,214 @@ function updateOrderBar(ltp) {
     const inp = document.getElementById('qtyDisplay');
     if (document.activeElement !== inp) inp.value = qty;
     document.getElementById('lotsDisplay').textContent = `${orderLots} lot${orderLots > 1 ? 's' : ''}`;
+    _updateHedgeChip();
 }
 function resetOrderBar(symbol) {
     orderLotSize = getLotSize(symbol); orderLots = 1; currentLTP = null;
     document.getElementById('qtyPopupTitle').textContent = `Quantity (${getIndexName(symbol)} · ${orderLotSize}/lot)`;
     updateOrderBar(null);
+}
+
+/* ── Hedge helpers ── */
+function _loadHedgeConfig() {
+    try {
+        const s = localStorage.getItem('hedgeCfg');
+        if (!s) return;
+        const c = JSON.parse(s);
+        hedgeEnabled   = !!c.enabled;
+        hedgeSymbol    = c.symbol  || null;
+        hedgeExchange  = c.exchange || 'NFO';
+        hedgeQty       = c.qty     || 1;
+        forSellSymbol  = c.forSell || null;
+        document.getElementById('hedgeEnabledToggle').checked = hedgeEnabled;
+        document.getElementById('hedgeQtyInput').value = hedgeQty;
+        _updateHedgeChip();
+    } catch(e) {}
+}
+function _saveHedgeConfig() {
+    try {
+        localStorage.setItem('hedgeCfg', JSON.stringify({
+            enabled:  hedgeEnabled,
+            symbol:   hedgeSymbol,
+            exchange: hedgeExchange,
+            qty:      hedgeQty,
+            forSell:  forSellSymbol,
+        }));
+    } catch(e) {}
+}
+function _parseSymbolInfo(tradingSymbol) {
+    /* Zerodha weekly format: {INDEX}{YY}{M}{DD}{STRIKE}{CE|PE}
+       M is a single char: 1-9 for Jan-Sep, O=Oct, N=Nov, D=Dec.
+       Returns raw components so callers can reconstruct sibling symbols. */
+    if (!tradingSymbol) return null;
+    const MONTH = {'1':'01','2':'02','3':'03','4':'04','5':'05','6':'06',
+                   '7':'07','8':'08','9':'09','O':'10','N':'11','D':'12'};
+    const m = tradingSymbol.match(
+        /^(NIFTY|BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$/
+    );
+    if (!m) return null;
+    const month = MONTH[m[3]];
+    if (!month) return null;
+    return {
+        index:   m[1],
+        yy:      m[2],   // "26"
+        mCode:   m[3],   // "5"
+        dd:      m[4],   // "19"
+        expiry:  `20${m[2]}-${month}-${m[4]}`,
+        strike:  parseInt(m[5], 10),
+        optType: m[6],
+    };
+}
+function _getHedgeCandidates(sym) {
+    /* Build OTM candidates purely from the active symbol's components —
+       no strikeMap lookup. Symbols are constructed mathematically and
+       validated by Kite when _fetchHedgeLtps filters out null responses. */
+    if (!sym) return [];
+    const info = _parseSymbolInfo(sym);
+    if (!info) return [];
+    const { index, yy, mCode, dd, strike, optType } = info;
+    const step      = { NIFTY: 50, SENSEX: 100, BANKNIFTY: 100, MIDCPNIFTY: 25, FINNIFTY: 50 }[index] || 50;
+    const direction = optType === 'CE' ? 1 : -1;
+    const exchange  = index === 'SENSEX' ? 'BFO' : 'NFO';
+    const results   = [];
+    for (let i = 1; i <= 25; i++) {
+        const candidateStrike = strike + direction * i * step;
+        const symbol = `${index}${yy}${mCode}${dd}${candidateStrike}${optType}`;
+        results.push({ otm: i, symbol, exchange, ltp: null });
+    }
+    return results;
+}
+function _friendlyStrike(tradingSymbol) {
+    /* "NIFTY2651923750PE" → "23750 PE" */
+    const info = _parseSymbolInfo(tradingSymbol);
+    return info ? `${info.strike} ${info.optType}` : tradingSymbol;
+}
+async function _fetchHedgeLtps() {
+    /* Single one-shot fetch on dropdown open — live price direct from Kite. */
+    if (!_hedgeCandidates.length) return;
+    const syms = _hedgeCandidates.map(c => c.symbol);
+    console.log('[HDG] live-ltp request:', syms);
+    try {
+        const resp = await fetch('/api/live-ltp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbols: syms }),
+        });
+        if (!resp.ok) { console.log('[HDG] live-ltp HTTP error:', resp.status); return; }
+        const data = await resp.json();
+        console.log('[HDG] live-ltp response:', data);
+        for (const cand of _hedgeCandidates) {
+            const ltp = data[cand.symbol];
+            if (ltp != null) cand.ltp = ltp;
+        }
+        _renderHedgeCandidates();
+    } catch(e) { console.log('[HDG] live-ltp error:', e.message); }
+}
+function _renderHedgeCandidates() {
+    const container = document.getElementById('hedgeCandidates');
+    const sym = activePanel && activePanel.symbol;
+    if (!_hedgeCandidates.length) {
+        container.innerHTML = sym
+            ? `<div class="hcfg-empty">Could not parse symbol<br><span style="color:#93c5fd">${sym}</span></div>`
+            : `<div class="hcfg-empty">Focus a panel with an active strike,<br>then re-open this dropdown</div>`;
+        return;
+    }
+    const forLine = sym
+        ? `<div class="hcfg-for-sym">Hedging: <span>${_friendlyStrike(sym)}</span></div>`
+        : '';
+    container.innerHTML = forLine + _hedgeCandidates.map((c, idx) => {
+        const isSel  = c.symbol === hedgeSymbol;
+        const ltpStr = c.ltp != null ? c.ltp.toFixed(2) : '—';
+        const label  = _friendlyStrike(c.symbol);
+        return `<div class="hcfg-row${isSel ? ' hcfg-sel' : ''}" onclick="selectHedgeCandidate(${idx})">
+            <span class="hcfg-otm">+${c.otm}</span>
+            <span class="hcfg-strike">${label}</span>
+            <span class="hcfg-ltp">${ltpStr}</span>
+        </div>`;
+    }).join('');
+}
+function selectHedgeCandidate(idx) {
+    const cand = _hedgeCandidates[idx];
+    if (!cand) return;
+    const sym = activePanel && activePanel.symbol;
+    hedgeSymbol   = cand.symbol;
+    hedgeExchange = cand.exchange;
+    forSellSymbol = sym || null;
+    _saveHedgeConfig();
+    _renderHedgeCandidates();
+    _updateHedgeChip();
+}
+function _updateHedgeChip() {
+    const btn  = document.getElementById('btnHedge');
+    const chip = document.getElementById('hdgChip');
+    if (!btn || !chip) return;
+    if (!hedgeEnabled || !hedgeSymbol) {
+        btn.classList.remove('hdg-active', 'hdg-mismatch');
+        chip.textContent = '';
+        return;
+    }
+    const curSym = activePanel && activePanel.symbol;
+    const mismatch = forSellSymbol && curSym && curSym !== forSellSymbol;
+    btn.classList.toggle('hdg-active',   !mismatch);
+    btn.classList.toggle('hdg-mismatch',  mismatch);
+    /* Chip: "HDG: 23750 PE → 23800 PE" (hedge → sell) */
+    const shortHedge = _friendlyStrike(hedgeSymbol);
+    const shortSell  = forSellSymbol ? _friendlyStrike(forSellSymbol) : '';
+    chip.textContent = shortSell ? `HDG: ${shortHedge} → ${shortSell}` : `HDG: ${shortHedge}`;
+}
+function toggleHedgeDropdown(evt) {
+    evt.stopPropagation();
+    const popup = document.getElementById('hedgeConfigPopup');
+    if (popup.style.display === 'block') { closeHedgeConfig(); return; }
+    openHedgeConfig(evt.currentTarget);
+}
+function openHedgeConfig(anchorEl) {
+    const popup = document.getElementById('hedgeConfigPopup');
+    document.getElementById('hedgeEnabledToggle').checked = hedgeEnabled;
+    /* Reset to 1 lot of the current symbol on every open */
+    hedgeQty = orderLotSize || 1;
+    document.getElementById('hedgeQtyInput').value = hedgeQty;
+
+    const sym = activePanel && activePanel.symbol;
+    _hedgeCandidates = _getHedgeCandidates(sym);
+    _renderHedgeCandidates();
+
+    popup.style.display = 'block';  // must be visible to measure height
+    const rect = anchorEl.getBoundingClientRect();
+    const popH = popup.offsetHeight;
+    popup.style.right  = (window.innerWidth - rect.right) + 'px';
+    popup.style.left   = 'auto';
+    /* clamp so the header is never above the viewport */
+    popup.style.top    = Math.max(8, rect.top - popH - 8) + 'px';
+
+    /* Single LTP fetch on open — no timer */
+    _fetchHedgeLtps();
+
+    document.addEventListener('mousedown', _hedgeOutsideClick);
+}
+function closeHedgeConfig() {
+    document.getElementById('hedgeConfigPopup').style.display = 'none';
+    document.removeEventListener('mousedown', _hedgeOutsideClick);
+}
+function _adjustHedgeQty(delta) {
+    const step = orderLotSize || 1;
+    hedgeQty = Math.max(step, hedgeQty + delta * step);
+    document.getElementById('hedgeQtyInput').value = hedgeQty;
+    _saveHedgeConfig();
+}
+function _hedgeOutsideClick(e) {
+    const popup = document.getElementById('hedgeConfigPopup');
+    const btn   = document.getElementById('btnHedge');
+    if (!popup.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+        closeHedgeConfig();
+    }
+}
+function onHedgeToggle(el) {
+    console.log('[HDG] onHedgeToggle called, prev=', hedgeEnabled, 'new=', el.checked);
+    hedgeEnabled = el.checked;
+    _saveHedgeConfig();
+    _updateHedgeChip();
+    console.log('[HDG] hedgeEnabled now=', hedgeEnabled, 'localStorage=', localStorage.getItem('hedgeCfg'));
 }
 function openSlConfig(anchorEl) {
     const popup = document.getElementById('slConfigPopup');
@@ -3562,10 +4031,137 @@ async function pollUntilFilled(sym, panel, predicate, timeoutMs = 30000) {
     if (panel === activePanel && activePanel?.symbol === sym) panel.refreshPosition();
 }
 
+async function placeHedgedSell() {
+    /* Called by placeOrder when hedge is active and symbol matches. */
+    if (!activePanel || !activePanel.symbol) return;
+    const sym = activePanel.symbol;
+    if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
+
+    const posQty      = activePanel.openPositionQty;
+    const isSquareOff = posQty != null && posQty > 0;
+    const sellQty     = isSquareOff ? posQty
+                      : (defaultSellQty != null ? defaultSellQty : orderLots * orderLotSize);
+
+    let sellPrice = parseFloat(currentLTP.toFixed(2));
+    if (isSquareOff && orderType === 'L') {
+        const sqBuf = sym.startsWith('SENSEX') ? 5 : 2;
+        sellPrice = parseFloat((sellPrice - sqBuf).toFixed(2));
+    } else if (!isSquareOff && orderType === 'L') {
+        sellPrice = parseFloat((sellPrice - limitBuffer).toFixed(2));
+    }
+
+    const body = {
+        sell_symbol:    sym,
+        sell_exchange:  sym.startsWith('SENSEX') ? 'BFO' : 'NFO',
+        sell_qty:       sellQty,
+        sell_price:     sellPrice,
+        sell_order_type: orderType,
+        sl_buffer:      slBuffer,
+        sl_distance:    slDistance,
+        hedge_symbol:   hedgeSymbol,
+        hedge_exchange: hedgeExchange,
+        hedge_qty:      hedgeQty,
+    };
+
+    toast(`⏳ Placing hedge BUY ${hedgeQty}×${hedgeSymbol} → then SELL ${sellQty}×${sym}…`, 'info', 5000);
+
+    let data;
+    try {
+        const res = await fetch('/api/hedge/place-hedged-sell', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        data = await res.json();
+    } catch (err) {
+        toast(`✗ Hedge request failed: ${err.message}`, 'error', 10000);
+        return;
+    }
+
+    const pairId  = data.hedge_pair_id != null ? data.hedge_pair_id : null;
+    const pairTag = pairId != null ? ` <small style="opacity:.6;font-size:9px;">[pair #${pairId}]</small>` : '';
+
+    function _toastHtml(html, type, duration = 9000) {
+        const container = document.getElementById('toastContainer');
+        const el = document.createElement('div');
+        el.className = `toast ${type}`;
+        el.innerHTML = html;
+        const btn = document.createElement('button');
+        btn.className = 'toast-close';
+        btn.textContent = '×';
+        const dismiss = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 420); };
+        btn.addEventListener('click', dismiss);
+        el.appendChild(btn);
+        container.appendChild(el);
+        const timer = setTimeout(dismiss, duration);
+        btn.addEventListener('click', () => clearTimeout(timer), { once: true });
+    }
+
+    const panel = activePanel;
+
+    if (data.status === 'success') {
+        _toastHtml(
+            `✓ Hedged sell placed: BUY ${hedgeQty}×${hedgeSymbol} → SELL ${sellQty}×${sym}${pairTag}`,
+            'success', 8000
+        );
+        if (isSquareOff) {
+            defaultBuyQty = _savedBuyQty; defaultSellQty = _savedSellQty;
+            _savedBuyQty = null; _savedSellQty = null;
+            updateOrderBar(currentLTP);
+        } else {
+            _savedBuyQty = defaultBuyQty; _savedSellQty = defaultSellQty;
+        }
+        pollUntilFilled(sym, panel, q => q <= 0);
+
+    } else if (data.status === 'hedge_rejected') {
+        _toastHtml(
+            `✗ Hedge BUY rejected — sell blocked. ${data.message || ''}${pairTag}`,
+            'error', 12000
+        );
+
+    } else if (data.status === 'hedge_timeout') {
+        _toastHtml(
+            `✗ Hedge fill timeout (10s) — sell blocked.${pairTag}`,
+            'error', 12000
+        );
+
+    } else if (data.status === 'sell_rejected_hedge_unwound') {
+        _toastHtml(
+            `⚠ Sell rejected — hedge unwound at market. ${data.message || ''}${pairTag}`,
+            'warn', 14000
+        );
+        /* Unwind is server-side automatic; refresh so panel reflects cleared hedge position */
+        pollUntilFilled(sym, panel, q => q <= 0, 20000);
+
+    } else {
+        /* error or unexpected status */
+        _toastHtml(
+            `✗ Unexpected error — check logs.${pairTag}`,
+            'error', 12000
+        );
+    }
+}
+
 async function placeOrder(side) {
     if (!activePanel || !activePanel.symbol) { toast('No symbol selected', 'warn'); return; }
     const sym = activePanel.symbol;
     if (currentLTP == null) { toast('No LTP available yet', 'warn'); return; }
+
+    /* ── Hedge gate ── */
+    if (side === 'SELL') {
+        const gateActive = hedgeEnabled && !!hedgeSymbol && hedgeQty > 0;
+        console.log(`[HDG] gate: enabled=${hedgeEnabled} symbol=${hedgeSymbol} qty=${hedgeQty} → ${gateActive ? 'hedged sell' : 'naked sell'}`);
+    }
+    if (side === 'SELL' && hedgeEnabled && hedgeSymbol && hedgeQty > 0) {
+        if (forSellSymbol !== sym) {
+            toast(
+                `⚠ Hedge bound to ${forSellSymbol || '(none)'}, not ${sym}. Open hedge config to re-bind, or disable hedge.`,
+                'warn', 9000
+            );
+            return;
+        }
+        return placeHedgedSell();
+    }
 
     const posQty      = activePanel.openPositionQty;
     const isSquareOff = (side === 'SELL' && posQty != null && posQty > 0) ||
@@ -3813,6 +4409,7 @@ function toggleQtyPopup(e) {
     const sellInp = document.getElementById('dqSellInput');
     buyInp.value  = defaultBuyQty  != null ? defaultBuyQty  : '';
     sellInp.value = defaultSellQty != null ? defaultSellQty : '';
+    _refreshDQSaveRow();
     const inp = document.getElementById('qtyDisplay');
     inp.focus(); inp.select();
 }
@@ -3861,6 +4458,82 @@ function stopDQHold() {
     clearInterval(_dqHoldInterval);
 }
 
+// ── Index-based default qty helpers ──────────────────────────
+function _modeToIndex(mode) {
+    if (!mode || mode.startsWith('nifty-sensex')) return null;
+    if (mode.startsWith('banknifty')) return 'BANKNIFTY';
+    if (mode.startsWith('midcap'))    return 'MIDCPNIFTY';
+    if (mode.startsWith('sensex'))    return 'SENSEX';
+    if (mode.startsWith('nifty'))     return 'NIFTY';
+    if (mode.startsWith('finnifty'))  return 'FINNIFTY';
+    return null;
+}
+
+function _getActiveDQIndex() {
+    const mode = document.getElementById('autoPopulateSelect').value;
+    return _modeToIndex(mode) || getIndexName(activePanel?.symbol) || null;
+}
+
+function applyModeDefaults(mode) {
+    const index = _modeToIndex(mode);
+    if (!index) return;
+    const saved = JSON.parse(localStorage.getItem('dqIndexDefaults') || '{}');
+    const d = saved[index] || SYMBOL_DEFAULT_QTY[index];
+    if (!d) return;
+    defaultBuyQty  = d.buy;
+    defaultSellQty = d.sell;
+    updateOrderBar(null);
+}
+
+function saveAsIndexDefault() {
+    const index = _getActiveDQIndex();
+    if (!index) { toast('Cannot determine index', 'warn'); return; }
+    const buy  = parseInt(document.getElementById('dqBuyInput').value, 10);
+    const sell = parseInt(document.getElementById('dqSellInput').value, 10);
+    if (isNaN(buy) || buy <= 0 || isNaN(sell) || sell <= 0) {
+        toast('Enter valid BUY and SELL quantities first', 'warn'); return;
+    }
+    const saved = JSON.parse(localStorage.getItem('dqIndexDefaults') || '{}');
+    saved[index] = { buy, sell };
+    localStorage.setItem('dqIndexDefaults', JSON.stringify(saved));
+    _refreshDQSaveRow();
+    toast(`Saved ${index} defaults: BUY ${buy} / SELL ${sell}`, 'success');
+}
+
+function resetIndexDefault() {
+    const index = _getActiveDQIndex();
+    if (!index) return;
+    const saved = JSON.parse(localStorage.getItem('dqIndexDefaults') || '{}');
+    delete saved[index];
+    localStorage.setItem('dqIndexDefaults', JSON.stringify(saved));
+    const factory = SYMBOL_DEFAULT_QTY[index];
+    if (factory) {
+        defaultBuyQty  = factory.buy;
+        defaultSellQty = factory.sell;
+        document.getElementById('dqBuyInput').value  = factory.buy;
+        document.getElementById('dqSellInput').value = factory.sell;
+        updateOrderBar(null);
+    }
+    _refreshDQSaveRow();
+    toast(`Reset ${index} to factory defaults`, 'info');
+}
+
+function _refreshDQSaveRow() {
+    const index   = _getActiveDQIndex();
+    const saveBtn = document.getElementById('dqSaveBtn');
+    const resetBtn = document.getElementById('dqResetBtn');
+    if (!saveBtn) return;
+    if (index) {
+        saveBtn.textContent   = `Save as ${index} default`;
+        saveBtn.style.display = '';
+        const saved = JSON.parse(localStorage.getItem('dqIndexDefaults') || '{}');
+        resetBtn.style.display = saved[index] ? '' : 'none';
+    } else {
+        saveBtn.style.display  = 'none';
+        resetBtn.style.display = 'none';
+    }
+}
+
 // Keep input in sync when popup opens (used by toggleQtyPopup)
 // — no addEventListener needed; oninput handles live edits inline.
 function adjustLots(delta) {
@@ -3883,6 +4556,23 @@ function adjustLots(delta) {
     ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev => {
         document.getElementById('btnPlus') .addEventListener(ev, stopHold);
         document.getElementById('btnMinus').addEventListener(ev, stopHold);
+    });
+})();
+
+(function() {
+    let _hTimer = null, _hInterval = null;
+    function _startHdgHold(delta, e) {
+        e.stopPropagation(); _adjustHedgeQty(delta);
+        _hTimer = setTimeout(() => { _hInterval = setInterval(() => _adjustHedgeQty(delta), 80); }, 400);
+    }
+    function _stopHdgHold() { clearTimeout(_hTimer); clearInterval(_hInterval); }
+    ['mousedown','touchstart'].forEach(ev => {
+        document.getElementById('hdgQtyPlus') .addEventListener(ev, e => _startHdgHold(+1, e), {passive:false});
+        document.getElementById('hdgQtyMinus').addEventListener(ev, e => _startHdgHold(-1, e), {passive:false});
+    });
+    ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev => {
+        document.getElementById('hdgQtyPlus') .addEventListener(ev, _stopHdgHold);
+        document.getElementById('hdgQtyMinus').addEventListener(ev, _stopHdgHold);
     });
 })();
 
@@ -4150,7 +4840,7 @@ function _captureState() {
     return {
         layout:       activeLayout,
         autoPopulate: '',
-        symbols:      panels.map(p => p.symbol || null),
+        symbols:      panels.map(p => (p.baseSymbol || p.symbol) || null),
         userLines:    panels.map(p => p.getUserLines()),
     };
 }
@@ -4405,7 +5095,8 @@ function saveViewState() {
         localStorage.setItem('otpViewState', JSON.stringify({
             layout: activeLayout,
             autoPopulate: document.getElementById('autoPopulateSelect').value,
-            symbols: panels.map(p => p.symbol || null),
+            symbols: panels.map(p => (p.baseSymbol || p.symbol) || null),
+            legToggles: panels.map(p => p.legToggled || false),
             lines: symbolLinesStore,
         }));
     } catch (e) {}
@@ -4425,6 +5116,7 @@ function saveViewState() {
     selectLayout(document.querySelector(`.lp-option[data-layout="${layoutKey}"]`));
 
     await loadStrikes();
+    _loadHedgeConfig();
 
     if (saved && saved.autoPopulate) {
         const sel = document.getElementById('autoPopulateSelect');
@@ -4438,6 +5130,19 @@ function saveViewState() {
             .filter(Boolean);
         await loadPanelsBatched(activeSaved, p => syms[panels.indexOf(p)], true);
         prefetchJumps(syms.filter(Boolean));
+        // Restore leg-toggle state — must run after symbols are loaded
+        if (saved.legToggles) {
+            for (let i = 0; i < panels.length; i++) {
+                if (saved.legToggles[i] && panels[i] && panels[i].baseSymbol) {
+                    const paired = getPairedSymbol(panels[i].baseSymbol);
+                    if (paired && isKnownSymbol(paired)) {
+                        await panels[i].switchLeg(true);
+                    } else if (saved.legToggles[i]) {
+                        toast(`Paired leg for ${panels[i].baseSymbol} no longer available — showing base symbol`, 'warn');
+                    }
+                }
+            }
+        }
     }
 })();
 
