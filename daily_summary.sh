@@ -73,9 +73,16 @@ fi
 # ── Today's tick data ─────────────────────────────────────────────────────────
 SYMBOLS_TODAY=$(_pg "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
 TICKS_TODAY=$(_pg "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
+CANDLES_TODAY=$(_pg "SELECT COUNT(*) FROM candles_5s WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
+EVENTS_TODAY=$(_pg "SELECT COUNT(*) FROM gap_events WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
 
-# Format ticks with thousands separator
+TOTAL_TICKS=$(( ${TICKS_TODAY:-0} + ${CANDLES_TODAY:-0} + ${EVENTS_TODAY:-0} ))
+
+# Format with thousands separator
+TOTAL_TICKS_FMT=$(printf "%'d" "${TOTAL_TICKS:-0}" 2>/dev/null || echo "${TOTAL_TICKS:-0}")
 TICKS_FMT=$(printf "%'d" "${TICKS_TODAY:-0}" 2>/dev/null || echo "${TICKS_TODAY:-0}")
+CANDLES_FMT=$(printf "%'d" "${CANDLES_TODAY:-0}" 2>/dev/null || echo "${CANDLES_TODAY:-0}")
+EVENTS_FMT=$(printf "%'d" "${EVENTS_TODAY:-0}" 2>/dev/null || echo "${EVENTS_TODAY:-0}")
 
 # ── Disk & memory ─────────────────────────────────────────────────────────────
 DISK_USED=$(df -h / | awk 'NR==2 {print $3}')
@@ -143,15 +150,21 @@ $(echo "${TOP_TABLES:-N/A}" | sed 's/^/    /')
 
 📈 Today's data
   Symbols tracked: ${SYMBOLS_TODAY:-0}
-  Ticks collected: ${TICKS_FMT}${REBOOT_LINE}"
+  Ticks collected: ${TOTAL_TICKS_FMT}
+    gap_ticks:  ${TICKS_FMT}
+    candles_5s: ${CANDLES_FMT}
+    gap_events: ${EVENTS_FMT}${REBOOT_LINE}"
 
 _tg "$MESSAGE"
 echo "$(date): Daily summary sent."
 
 # ── Persist today's stats for tomorrow's trend comparison ────────────────────
 touch "$STATS_FILE"
+# Use mktemp (/tmp) — ubuntu cannot create new files directly in /var/log/
+_TMP=$(mktemp)
 # Remove any existing entry for today before appending
-grep -v "^${TODAY}," "$STATS_FILE" > "${STATS_FILE}.tmp" && mv "${STATS_FILE}.tmp" "$STATS_FILE"
+grep -v "^${TODAY}," "$STATS_FILE" > "$_TMP" && mv "$_TMP" "$STATS_FILE" || rm -f "$_TMP"
 echo "${TODAY},${TOTAL_ROWS:-0},${TABLE_SIZE_BYTES:-0}" >> "$STATS_FILE"
 # Keep only last 30 days of history
-tail -30 "$STATS_FILE" > "${STATS_FILE}.tmp" && mv "${STATS_FILE}.tmp" "$STATS_FILE"
+_TMP=$(mktemp)
+tail -30 "$STATS_FILE" > "$_TMP" && mv "$_TMP" "$STATS_FILE" || rm -f "$_TMP"
