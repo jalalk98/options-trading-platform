@@ -17,6 +17,7 @@ logs/
 *.log
 # Credentials
 config/credentials.py
+.env.fyers
 
 # OS files
 .DS_Store

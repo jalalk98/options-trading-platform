@@ -82,6 +82,11 @@ async def ensure_partition(conn, target_date: date):
         WHERE stream_id IS NOT NULL
     """)
 
+    await conn.execute(f"""
+        CREATE INDEX {partition_name}_id_idx
+        ON {partition_name} (id)
+    """)
+
     return True
 
 

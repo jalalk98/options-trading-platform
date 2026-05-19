@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 
 # Create logs directory if it doesn't exist
-log_dir = r"D:\User\Desktop\Trade_Project\trade\Zerodha\custom_package\logs"
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
