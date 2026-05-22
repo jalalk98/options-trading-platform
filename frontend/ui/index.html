@@ -671,6 +671,20 @@
         .panel-label.ce-label { background: rgba(22,163,74,0.80); }
         .panel-label.pe-label { background: rgba(220,38,38,0.80); }
         .panel-label.no-label { background: rgba(51,65,85,0.70); }
+        .panel-no-data {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            color: #4b5563;
+            font-size: 13px;
+            font-family: Arial, sans-serif;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            pointer-events: none;
+            z-index: 5;
+        }
         .panel-refresh-btn {
             pointer-events: all;
             width: 20px;
@@ -976,6 +990,12 @@
             <option value="nifty-pe">Nifty PE</option>
             <option value="sensex-ce">Sensex CE</option>
             <option value="sensex-pe">Sensex PE</option>
+            <option value="banknifty-ce-pe">BankNifty CE &amp; PE</option>
+            <option value="banknifty-ce">BankNifty CE</option>
+            <option value="banknifty-pe">BankNifty PE</option>
+            <option value="midcap-ce-pe">Midcap CE &amp; PE</option>
+            <option value="midcap-ce">Midcap CE</option>
+            <option value="midcap-pe">Midcap PE</option>
         </select>
         <button id="refreshAllBtn" title="Refresh all charts" onclick="refreshAllPanels()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -1388,6 +1408,10 @@ function createPanel(id) {
     scrollLeftBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>`;
     bottomBarEl.appendChild(scrollLeftBtn);
     chartAreaEl.appendChild(bottomBarEl);
+
+    const noDataEl = document.createElement('div');
+    noDataEl.className = 'panel-no-data';
+    chartAreaEl.appendChild(noDataEl);
 
     panelEl.appendChild(chartAreaEl);
     document.getElementById('chartGrid').appendChild(panelEl);
@@ -2161,6 +2185,7 @@ function createPanel(id) {
     // ── Load symbol ───────────────────────────────
     async function panelLoadSymbol(sym, prefetched = null, nocache = false, histDate = null) {
         if (!sym) return;
+        noDataEl.style.display = 'none';
         const isSameSymbol = (sym === symbol);
         // Save current lines for the outgoing symbol before clearing
         if (symbol && userLines.length) symbolLinesStore[symbol] = userLines.map(l => ({ price: l.price, colorIdx: l.colorIdx }));
@@ -2354,6 +2379,15 @@ function createPanel(id) {
                 saveViewState();
                 return 'Undo: Line restored';
             }
+        },
+        showNoData(label) {
+            candleSeries.setData([]);
+            symbol = null;
+            gapDetails.clear();
+            labelEl.textContent = label || 'No Data';
+            labelEl.className = 'panel-label no-label';
+            noDataEl.textContent = 'No Data';
+            noDataEl.style.display = 'flex';
         },
         redoLastAction() {
             if (!lineRedoStack.length) return 'Nothing to redo';
@@ -2918,14 +2952,20 @@ function onAutoPopulateChange(mode) {
     const btn = document.getElementById('refreshAutoPopBtn');
     if (!btn) return;
     const labels = {
-        'nifty-sensex-ce': 'Nifty & Sensex CE',
-        'nifty-sensex-pe': 'Nifty & Sensex PE',
-        'nifty-ce-pe'    : 'Nifty CE & PE',
-        'sensex-ce-pe'   : 'Sensex CE & PE',
-        'nifty-ce'       : 'Nifty CE',
-        'nifty-pe'       : 'Nifty PE',
-        'sensex-ce'      : 'Sensex CE',
-        'sensex-pe'      : 'Sensex PE',
+        'nifty-sensex-ce' : 'Nifty & Sensex CE',
+        'nifty-sensex-pe' : 'Nifty & Sensex PE',
+        'nifty-ce-pe'     : 'Nifty CE & PE',
+        'sensex-ce-pe'    : 'Sensex CE & PE',
+        'nifty-ce'        : 'Nifty CE',
+        'nifty-pe'        : 'Nifty PE',
+        'sensex-ce'       : 'Sensex CE',
+        'sensex-pe'       : 'Sensex PE',
+        'banknifty-ce-pe' : 'BankNifty CE & PE',
+        'banknifty-ce'    : 'BankNifty CE',
+        'banknifty-pe'    : 'BankNifty PE',
+        'midcap-ce-pe'    : 'Midcap CE & PE',
+        'midcap-ce'       : 'Midcap CE',
+        'midcap-pe'       : 'Midcap PE',
     };
     if (mode) {
         btn.disabled          = false;
@@ -2955,13 +2995,15 @@ async function autoPopulatePanels(mode) {
 
     // Determine index + option type for each group
     let g1Index, g1Type, g2Index, g2Type;
-    if      (mode === 'nifty-sensex-ce') { g1Index='NIFTY';  g1Type='CE'; g2Index='SENSEX'; g2Type='CE'; }
-    else if (mode === 'nifty-sensex-pe') { g1Index='NIFTY';  g1Type='PE'; g2Index='SENSEX'; g2Type='PE'; }
-    else if (mode === 'nifty-ce-pe')     { g1Index='NIFTY';  g1Type='CE'; g2Index='NIFTY';  g2Type='PE'; }
-    else if (mode === 'sensex-ce-pe')    { g1Index='SENSEX'; g1Type='CE'; g2Index='SENSEX'; g2Type='PE'; }
-    else if (!['nifty-ce','nifty-pe','sensex-ce','sensex-pe'].includes(mode)) return;
+    if      (mode === 'nifty-sensex-ce') { g1Index='NIFTY';      g1Type='CE'; g2Index='SENSEX';     g2Type='CE'; }
+    else if (mode === 'nifty-sensex-pe') { g1Index='NIFTY';      g1Type='PE'; g2Index='SENSEX';     g2Type='PE'; }
+    else if (mode === 'nifty-ce-pe')     { g1Index='NIFTY';      g1Type='CE'; g2Index='NIFTY';      g2Type='PE'; }
+    else if (mode === 'sensex-ce-pe')    { g1Index='SENSEX';     g1Type='CE'; g2Index='SENSEX';     g2Type='PE'; }
+    else if (mode === 'banknifty-ce-pe') { g1Index='BANKNIFTY';  g1Type='CE'; g2Index='BANKNIFTY';  g2Type='PE'; }
+    else if (mode === 'midcap-ce-pe')    { g1Index='MIDCPNIFTY'; g1Type='CE'; g2Index='MIDCPNIFTY'; g2Type='PE'; }
+    else if (!['nifty-ce','nifty-pe','sensex-ce','sensex-pe','banknifty-ce','banknifty-pe','midcap-ce','midcap-pe'].includes(mode)) return;
 
-    const STEP = { NIFTY: 50, SENSEX: 100 };
+    const STEP = { NIFTY: 50, SENSEX: 100, BANKNIFTY: 100, MIDCPNIFTY: 25 };
     const atmMap = {};
     let findSymbol;
     const loadHistDate = (_histMode && _histDate) ? _histDate : null;
@@ -3062,7 +3104,22 @@ async function autoPopulatePanels(mode) {
         // ── Live mode: fetch live index prices ──
         const ltpData = await fetch('/api/index-ltp').then(r => r.json()).catch(() => ({}));
         let usedFallback = false;
-        const indicesNeedingAtm = ['NIFTY', 'SENSEX'].filter(idx => {
+
+        // Determine which indices are actually needed for this mode
+        let neededIndices;
+        if (mode === 'nifty-sensex-ce' || mode === 'nifty-sensex-pe') {
+            neededIndices = ['NIFTY', 'SENSEX'];
+        } else if (mode.startsWith('banknifty')) {
+            neededIndices = ['BANKNIFTY'];
+        } else if (mode.startsWith('midcap')) {
+            neededIndices = ['MIDCPNIFTY'];
+        } else if (mode.startsWith('sensex')) {
+            neededIndices = ['SENSEX'];
+        } else {
+            neededIndices = ['NIFTY'];
+        }
+
+        const indicesNeedingAtm = neededIndices.filter(idx => {
             const ltp = ltpData[idx] && ltpData[idx].ltp;
             if (ltp) { atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx]; return false; }
             return true;
@@ -3112,10 +3169,13 @@ async function autoPopulatePanels(mode) {
             return Array.from({ length: n }, (_, i) => atm + (n - 1 - i) * s);
     }
 
-    // ── Single-index modes (Nifty CE / Nifty PE / Sensex CE / Sensex PE) ──
-    if (['nifty-ce','nifty-pe','sensex-ce','sensex-pe'].includes(mode)) {
-        const idxName = mode.startsWith('nifty') ? 'NIFTY' : 'SENSEX';
-        const type    = mode.endsWith('ce')      ? 'CE'    : 'PE';
+    // ── Single-index modes ──
+    if (['nifty-ce','nifty-pe','sensex-ce','sensex-pe','banknifty-ce','banknifty-pe','midcap-ce','midcap-pe'].includes(mode)) {
+        const idxName = mode.startsWith('banknifty') ? 'BANKNIFTY'
+                      : mode.startsWith('midcap')    ? 'MIDCPNIFTY'
+                      : mode.startsWith('sensex')    ? 'SENSEX'
+                      : 'NIFTY';
+        const type    = mode.endsWith('ce') ? 'CE' : 'PE';
         const s       = STEP[idxName];
         const atm     = atmMap[idxName];
         if (!atm) { hideLoadingBar(); toast('ATM not available for ' + idxName, 'warn'); return; }
@@ -3141,6 +3201,9 @@ async function autoPopulatePanels(mode) {
             .map((sym, i) => sym ? panels[i] : null)
             .filter(Boolean);
         await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true, loadHistDate);
+        panelSymbols.forEach((sym, i) => {
+            if (!sym && panels[i]) panels[i].showNoData(strikes[i] ? `${strikes[i]} ${type}` : 'No Data');
+        });
         hideLoadingBar();
         saveViewState();
         prefetchJumps(panelSymbols.filter(Boolean), loadHistDate || undefined);
@@ -3152,26 +3215,32 @@ async function autoPopulatePanels(mode) {
 
     const g1Symbols = g1Strikes.map(s => findSymbol(s, g1Type, g1Index));
     const g2Symbols = g2Strikes.map(s => findSymbol(s, g2Type, g2Index));
+    const g1Labels  = g1Strikes.map(s => s ? `${s} ${g1Type}` : 'No Data');
+    const g2Labels  = g2Strikes.map(s => s ? `${s} ${g2Type}` : 'No Data');
 
     // For 2-column layouts with >2 rows: fill column-by-column so g1 goes down
     // the left column and g2 goes down the right column (e.g. CE left, PE right).
     // For all other layouts keep the default sequential (row-major) order.
     const cfg = LAYOUT_CONFIGS[activeLayout];
-    let panelSymbols;
+    let panelSymbols, panelLabels;
     if (cfg.cols === 2 && cfg.rows > 2) {
-        panelSymbols = [];
+        panelSymbols = []; panelLabels = [];
         for (let row = 0; row < cfg.rows; row++) {
-            panelSymbols.push(g1Symbols[row] || null);
-            panelSymbols.push(g2Symbols[row] || null);
+            panelSymbols.push(g1Symbols[row] || null); panelLabels.push(g1Labels[row]);
+            panelSymbols.push(g2Symbols[row] || null); panelLabels.push(g2Labels[row]);
         }
     } else {
         panelSymbols = [...g1Symbols, ...g2Symbols];
+        panelLabels  = [...g1Labels,  ...g2Labels];
     }
 
     const activeDual = panelSymbols
         .map((sym, i) => sym ? panels[i] : null)
         .filter(Boolean);
     await loadPanelsBatched(activeDual, p => panelSymbols[panels.indexOf(p)], true, loadHistDate);
+    panelSymbols.forEach((sym, i) => {
+        if (!sym && panels[i]) panels[i].showNoData(panelLabels[i]);
+    });
     hideLoadingBar();
     saveViewState();
     prefetchJumps(panelSymbols.filter(Boolean), loadHistDate || undefined);
