@@ -823,6 +823,28 @@
         }
         .panel-gap-btn:hover { opacity: 1; }
         .panel-gap-btn.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; opacity: 1; }
+        .panel-invert-btn {
+            pointer-events: all;
+            height: 20px;
+            padding: 0 7px;
+            border-radius: 10px;
+            border: 2px solid #fff;
+            background: #0f172a;
+            color: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: Arial, sans-serif;
+            white-space: nowrap;
+            line-height: 1;
+        }
+        .panel-invert-btn:hover { opacity: 1; }
+        .panel-invert-btn.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; opacity: 1; }
 
         /* ── Saved Layouts modal ── */
         #layoutsOverlay {
@@ -1533,8 +1555,23 @@ function createPanel(id) {
     legToggleWrapEl.appendChild(legToggleEl);
     legToggleWrapEl.appendChild(legToggleTrackEl);
 
+    const invertBtn = document.createElement('button');
+    invertBtn.className = 'panel-invert-btn';
+    invertBtn.title = 'Invert chart (flip index to match PE direction)';
+    invertBtn.textContent = '⇅';
+    invertBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        invertScale = !invertScale;
+        invertBtn.classList.toggle('active', invertScale);
+        candleSeries.setData(invertScale ? allCandles.map(invertCandle) : allCandles);
+        if (slPrice != null) updateSLLineLocal(slPrice, slLineState);
+        if (livePriceLine && currentCandle) livePriceLine.applyOptions({ price: ip(currentCandle.close) });
+        userLines.forEach(l => l.priceLine.applyOptions({ price: ip(l.price) }));
+    });
+
     topBarEl.appendChild(labelEl);
     topBarEl.appendChild(legToggleWrapEl);
+    topBarEl.appendChild(invertBtn);
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
 
@@ -1628,6 +1665,7 @@ function createPanel(id) {
     let crosshairPrice = null;
     let livePriceLine    = null;
     let lockRightGap     = false;
+    let invertScale      = false;
     let slPriceLine      = null;
     let slPrice          = null;
     let slLineState      = 'none';
@@ -1661,6 +1699,9 @@ function createPanel(id) {
     let _wsIsReconnect  = false;  // true after first onopen — gap-fill on subsequent opens only
     let _lastMsgAt      = 0;      // ms timestamp of last received WS message — used by watchdog
     let _watchdogTimer  = null;   // setInterval ID for 35s silence watchdog
+
+    function invertCandle(c) { return { time: c.time, open: -c.open, high: -c.low, low: -c.high, close: -c.close }; }
+    function ip(price) { return invertScale ? -price : price; }
 
     // ── Open position refresh ─────────────────────
     async function refreshPosition() {
@@ -1720,7 +1761,7 @@ function createPanel(id) {
         // history concurrently (all hit range.from<=2 simultaneously in sync mode).
         _syncLock = true;
         try {
-            candleSeries.setData(allCandles);
+            candleSeries.setData(invertScale ? allCandles.map(invertCandle) : allCandles);
             refreshMarkers();
             if (range) {
                 chart.timeScale().setVisibleLogicalRange({ from: range.from + prevCandles.length, to: range.to + prevCandles.length });
@@ -1772,7 +1813,7 @@ function createPanel(id) {
         l.colorIdx = (l.colorIdx + 1) % HLINE_COLORS.length;
         candleSeries.removePriceLine(l.priceLine);
         l.priceLine = candleSeries.createPriceLine({
-            price: l.price, color: HLINE_COLORS[l.colorIdx],
+            price: ip(l.price), color: HLINE_COLORS[l.colorIdx],
             lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
@@ -1795,7 +1836,7 @@ function createPanel(id) {
     function addUserLine(price, colorIdx = 0, existingId = null) {
         const rounded = Math.round(price * 20) / 20;
         const priceLine = candleSeries.createPriceLine({
-            price: rounded, color: HLINE_COLORS[colorIdx],
+            price: ip(rounded), color: HLINE_COLORS[colorIdx],
             lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
@@ -1839,7 +1880,7 @@ function createPanel(id) {
         _hideHlinePopup();
         if (drawHlineMode) {
             const price = candleSeries.coordinateToPrice(param.point.y);
-            if (price != null) { addUserLine(price, 0); saveViewState(); }
+            if (price != null) { addUserLine(ip(price), 0); saveViewState(); }
             return;
         }
         // Normal mode — show popup if click is near a user line
@@ -1847,7 +1888,7 @@ function createPanel(id) {
         if (price == null || !userLines.length) return;
         let nearest = null, minDiff = Infinity;
         for (const l of userLines) {
-            const d = Math.abs(l.price - price);
+            const d = Math.abs(ip(l.price) - price);
             if (d < minDiff) { minDiff = d; nearest = l; }
         }
         if (nearest && minDiff <= 8) _showHlinePopup(nearest, param.point.x, param.point.y);
@@ -1864,7 +1905,7 @@ function createPanel(id) {
         // crosshairPrice only tracked on active panel
         if (panel === activePanel) {
             const price = candleSeries.coordinateToPrice(param.point.y);
-            if (price !== null) crosshairPrice = price;
+            if (price !== null) crosshairPrice = ip(price);
         }
         const tooltip = document.getElementById('tooltip');
         const rect = chartAreaEl.getBoundingClientRect();
@@ -2055,7 +2096,7 @@ function createPanel(id) {
         }
         slPrice = price; slLineState = state;
         slPriceLine = candleSeries.createPriceLine({
-            price, color: SL_COLOR[state] || SL_COLOR.pending,
+            price: ip(price), color: SL_COLOR[state] || SL_COLOR.pending,
             lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: `SL ${price}`
         });
         if (panel === activePanel) updateSLBadge();
@@ -2165,7 +2206,7 @@ function createPanel(id) {
         const rect = chartAreaEl.getBoundingClientRect();
         const y = clientY - rect.top;
         for (const l of userLines) {
-            const ly = candleSeries.priceToCoordinate(l.price);
+            const ly = candleSeries.priceToCoordinate(ip(l.price));
             if (ly !== null && Math.abs(y - ly) < 10) return l;
         }
         return null;
@@ -2175,7 +2216,7 @@ function createPanel(id) {
     function isNearSL(clientY) {
         if (!slPrice) return false;
         const rect = chartAreaEl.getBoundingClientRect();
-        const slY  = candleSeries.priceToCoordinate(slPrice);
+        const slY  = candleSeries.priceToCoordinate(ip(slPrice));
         return slY !== null && Math.abs((clientY - rect.top) - slY) < 10;
     }
     function disableScroll() { chart.applyOptions({ handleScroll: { mouseWheel: true, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false } }); }
@@ -2186,9 +2227,9 @@ function createPanel(id) {
         if (hlineDragging) {
             const p = candleSeries.coordinateToPrice(y);
             if (p !== null) {
-                const rounded = Math.round(p * 20) / 20;
+                const rounded = Math.round(ip(p) * 20) / 20;
                 hlineDragging.price = rounded;
-                hlineDragging.priceLine.applyOptions({ price: rounded });
+                hlineDragging.priceLine.applyOptions({ price: ip(rounded) });
             }
             return;
         }
@@ -2200,7 +2241,7 @@ function createPanel(id) {
         }
         if (slDragging) {
             const p = candleSeries.coordinateToPrice(y);
-            if (p !== null) updateSLLineLocal(Math.round(p * 20) / 20, slLineState === 'none' ? 'pending' : slLineState);
+            if (p !== null) updateSLLineLocal(Math.round(ip(p) * 20) / 20, slLineState === 'none' ? 'pending' : slLineState);
         }
     });
 
@@ -2322,7 +2363,7 @@ function createPanel(id) {
                 }));
                 const missed = fresh.filter(c => c.time > lastCandleTime);
                 if (missed.length) {
-                    missed.forEach(c => { allCandles.push(c); candleSeries.update(c); });
+                    missed.forEach(c => { allCandles.push(c); candleSeries.update(invertScale ? invertCandle(c) : c); });
                     lastCandleTime = missed[missed.length - 1].time;
                     currentCandle  = { ...missed[missed.length - 1] };
                     if (lockRightGap) {
@@ -2409,13 +2450,13 @@ function createPanel(id) {
                 currentCandle.close = price;
             } else return;
             if (panel === activePanel) updateOrderBar(price);
-            if (currentCandle && !isNaN(currentCandle.open)) candleSeries.update(currentCandle);
+            if (currentCandle && !isNaN(currentCandle.open)) candleSeries.update(invertScale ? invertCandle(currentCandle) : currentCandle);
             if (lockRightGap) {
                 chart.timeScale().applyOptions({ rightOffset: 20 });
                 if (isNewCandle) chart.timeScale().scrollToRealTime();
             }
             if (livePriceLine) livePriceLine.applyOptions({
-                price,
+                price: ip(price),
                 color: price >= currentCandle.open ? '#089981' : '#F23645'
             });
             checkGapFill(currentCandle);
@@ -2531,7 +2572,7 @@ function createPanel(id) {
                 volume: g.vol_change || 0, isFilled,
             });
         });
-        candleSeries.setData(candles);
+        candleSeries.setData(invertScale ? candles.map(invertCandle) : candles);
         refreshMarkers();
         if (candles.length > 0) {
             const halfBars = Math.max(10, Math.floor(chartAreaEl.offsetWidth / 12));
@@ -2543,7 +2584,7 @@ function createPanel(id) {
             lastCandleTime = currentCandle.time;
             if (!histDate) {
                 livePriceLine = candleSeries.createPriceLine({
-                    price: currentCandle.close,
+                    price: ip(currentCandle.close),
                     color: currentCandle.close >= currentCandle.open ? '#089981' : '#F23645',
                     lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: ''
                 });
@@ -2657,7 +2698,7 @@ function createPanel(id) {
                 lineRedoStack.push({ type: 'move', id: entry.id, prevPrice: line.price });
                 if (lineRedoStack.length > 5) lineRedoStack.shift();
                 line.price = entry.prevPrice;
-                line.priceLine.applyOptions({ price: entry.prevPrice });
+                line.priceLine.applyOptions({ price: ip(entry.prevPrice) });
                 _syncLinesToStore();
                 saveViewState();
                 return 'Undo: Line moved';
@@ -2698,7 +2739,7 @@ function createPanel(id) {
                 lineUndoStack.push({ type: 'move', id: entry.id, prevPrice: line.price });
                 if (lineUndoStack.length > 5) lineUndoStack.shift();
                 line.price = entry.prevPrice;
-                line.priceLine.applyOptions({ price: entry.prevPrice });
+                line.priceLine.applyOptions({ price: ip(entry.prevPrice) });
                 _syncLinesToStore();
                 saveViewState();
                 return 'Redo: Line moved';
@@ -3020,7 +3061,14 @@ async function prewarmAutoPopulate(atm) {
     } catch (_) {}
 }
 
-document.getElementById("symbolSelect").addEventListener("focus", function() { this.select(); });
+let _symbolSelectPrev = '';
+document.getElementById("symbolSelect").addEventListener("focus", function() {
+    _symbolSelectPrev = this.value;
+    this.value = '';
+});
+document.getElementById("symbolSelect").addEventListener("blur", function() {
+    if (!this.value) this.value = _symbolSelectPrev;
+});
 document.getElementById("symbolSelect").addEventListener("change", async function() {
     const displayValue = this.value.trim().toUpperCase();
     // Direct index symbols (NIFTY, SENSEX, BANKNIFTY, etc.)
@@ -3776,27 +3824,52 @@ function _saveHedgeConfig() {
     } catch(e) {}
 }
 function _parseSymbolInfo(tradingSymbol) {
-    /* Zerodha weekly format: {INDEX}{YY}{M}{DD}{STRIKE}{CE|PE}
-       M is a single char: 1-9 for Jan-Sep, O=Oct, N=Nov, D=Dec.
-       Returns raw components so callers can reconstruct sibling symbols. */
+    /* Supports two Zerodha formats:
+       Weekly:  {INDEX}{YY}{M}{DD}{STRIKE}{CE|PE}  e.g. NIFTY2651923500CE
+                M = single char: 1-9=Jan-Sep, O=Oct, N=Nov, D=Dec
+       Monthly: {INDEX}{YY}{MON}{STRIKE}{CE|PE}    e.g. NIFTY26MAY23500CE
+                MON = 3-letter uppercase month abbreviation */
     if (!tradingSymbol) return null;
-    const MONTH = {'1':'01','2':'02','3':'03','4':'04','5':'05','6':'06',
-                   '7':'07','8':'08','9':'09','O':'10','N':'11','D':'12'};
-    const m = tradingSymbol.match(
+    const MONTH_CODE = {'1':'01','2':'02','3':'03','4':'04','5':'05','6':'06',
+                        '7':'07','8':'08','9':'09','O':'10','N':'11','D':'12'};
+    const MONTH_NAME = {JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',
+                        JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12'};
+
+    // Try weekly first
+    const w = tradingSymbol.match(
         /^(NIFTY|BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX)(\d{2})([1-9OND])(\d{2})(\d+)(CE|PE)$/
     );
-    if (!m) return null;
-    const month = MONTH[m[3]];
-    if (!month) return null;
-    return {
-        index:   m[1],
-        yy:      m[2],   // "26"
-        mCode:   m[3],   // "5"
-        dd:      m[4],   // "19"
-        expiry:  `20${m[2]}-${month}-${m[4]}`,
-        strike:  parseInt(m[5], 10),
-        optType: m[6],
-    };
+    if (w && MONTH_CODE[w[3]]) {
+        return {
+            index:    w[1],
+            yy:       w[2],
+            mCode:    w[3],        // single-char month code
+            dd:       w[4],
+            monthly:  false,
+            expiry:   `20${w[2]}-${MONTH_CODE[w[3]]}-${w[4]}`,
+            strike:   parseInt(w[5], 10),
+            optType:  w[6],
+        };
+    }
+
+    // Try monthly
+    const mo = tradingSymbol.match(
+        /^(NIFTY|BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX)(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d+)(CE|PE)$/
+    );
+    if (mo) {
+        return {
+            index:    mo[1],
+            yy:       mo[2],
+            mCode:    mo[3],       // 3-letter month name e.g. "MAY"
+            dd:       null,
+            monthly:  true,
+            expiry:   `20${mo[2]}-${MONTH_NAME[mo[3]]}-??`,
+            strike:   parseInt(mo[4], 10),
+            optType:  mo[5],
+        };
+    }
+
+    return null;
 }
 function _getHedgeCandidates(sym) {
     /* Build OTM candidates purely from the active symbol's components —
@@ -3805,14 +3878,17 @@ function _getHedgeCandidates(sym) {
     if (!sym) return [];
     const info = _parseSymbolInfo(sym);
     if (!info) return [];
-    const { index, yy, mCode, dd, strike, optType } = info;
+    const { index, yy, mCode, dd, strike, optType, monthly } = info;
     const step      = { NIFTY: 50, SENSEX: 100, BANKNIFTY: 100, MIDCPNIFTY: 25, FINNIFTY: 50 }[index] || 50;
     const direction = optType === 'CE' ? 1 : -1;
     const exchange  = index === 'SENSEX' ? 'BFO' : 'NFO';
     const results   = [];
     for (let i = 1; i <= 25; i++) {
         const candidateStrike = strike + direction * i * step;
-        const symbol = `${index}${yy}${mCode}${dd}${candidateStrike}${optType}`;
+        // Reconstruct symbol in same format as source (weekly or monthly)
+        const symbol = monthly
+            ? `${index}${yy}${mCode}${candidateStrike}${optType}`
+            : `${index}${yy}${mCode}${dd}${candidateStrike}${optType}`;
         results.push({ otm: i, symbol, exchange, ltp: null });
     }
     return results;

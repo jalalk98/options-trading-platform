@@ -1339,17 +1339,21 @@ class BatchRequest(BaseModel):
 @router.post("/batch")
 async def get_batch(body: BatchRequest, request: Request):
     """Fetch history + gaps for multiple symbols in parallel. Used by auto-populate."""
+    _t_batch_start = time.monotonic()
     pool = request.app.state.pool
     symbols = list(dict.fromkeys(body.symbols))  # deduplicate, preserve order
     sem = asyncio.Semaphore(4)   # 4 symbols × 2 connections = 8 = pool max_size
+    _sym_times: dict = {}
 
     async def fetch_one(symbol):
+        _t0 = time.monotonic()
         # Serve from cache if fresh and not bypassed
         if not body.nocache:
             h_cached = _history_cache.get(symbol)
             g_cached  = _gaps_cache.get(symbol)
             now = time.monotonic()
             if (h_cached and now - h_cached["ts"] < h_cached.get("ttl", 600)) and (g_cached and now - g_cached["ts"] < g_cached.get("ttl", 600)):
+                _sym_times[symbol] = {"ms": (time.monotonic() - _t0) * 1000, "path": "cache", "rows": len(h_cached["data"])}
                 return symbol, h_cached["data"], g_cached["data"]
 
         async def do_history():
@@ -1365,17 +1369,32 @@ async def get_batch(body: BatchRequest, request: Request):
                 history, gaps = await asyncio.gather(do_history(), do_gaps())
             except Exception as e:
                 logger.warning(f"batch fetch_one failed for {symbol}: {e}")
+                _sym_times[symbol] = {"ms": (time.monotonic() - _t0) * 1000, "path": "error", "rows": 0}
                 return symbol, None, None
         if history is None:
+            _sym_times[symbol] = {"ms": (time.monotonic() - _t0) * 1000, "path": "error", "rows": 0}
             return symbol, None, None
         _compute_gap_fills(history, gaps)
         ttl = 600 + random.randint(0, 60)
         _history_cache[symbol] = {"data": history, "ts": time.monotonic(), "ttl": ttl}
         _gaps_cache[symbol]    = {"data": gaps,    "ts": time.monotonic(), "ttl": ttl}
+        _sym_times[symbol] = {"ms": (time.monotonic() - _t0) * 1000, "path": "full", "rows": len(history)}
         return symbol, history, gaps
 
     results = await asyncio.gather(*[fetch_one(s) for s in symbols])
     payload = {sym: {"history": h, "gaps": g} for sym, h, g in results if h is not None}
+
+    total_ms = (time.monotonic() - _t_batch_start) * 1000
+    slowest_sym = max(_sym_times, key=lambda s: _sym_times[s]["ms"]) if _sym_times else "n/a"
+    slowest_ms  = _sym_times[slowest_sym]["ms"] if _sym_times else 0
+    slowest_rows = _sym_times[slowest_sym]["rows"] if _sym_times else 0
+    cache_hits  = sum(1 for v in _sym_times.values() if v["path"] == "cache")
+    sym_detail  = " | ".join(f"{s}:{v['ms']:.0f}ms({v['path'][0]})" for s, v in _sym_times.items())
+    logger.info(
+        "[BATCH_TIMING] ts=%s symbols=%d total_ms=%.1f slowest=%s:%.0fms rows=%d cache_hits=%d | %s",
+        _ist_hms(), len(symbols), total_ms, slowest_sym, slowest_ms, slowest_rows, cache_hits, sym_detail,
+    )
+
     return Response(content=orjson.dumps(payload), media_type="application/json")
 
 

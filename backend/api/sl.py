@@ -9,6 +9,8 @@ from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
 import asyncio
 import logging
+import os
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -106,19 +108,26 @@ async def set_sl(req: SetSLRequest):
     if existing.get("state") == "placed" and new_ids and req.price is not None and not req.order_id:
         side          = existing.get("side")
         trigger_price = _round(new_price + new_buffer) if side == "SELL" else _round(new_price - new_buffer)
-        for oid in new_ids:
+
+        async def _mod(oid):
             try:
-                result = await kite1.hard_code_regular_modify_order(
-                    order_id=oid,
-                    price=new_price,
-                    trig_price=trigger_price,
-                    access_token=KITE_ACCESS_TOKEN,
-                    api_key=KITE_API_KEY
+                r = await kite1.hard_code_regular_modify_order(
+                    order_id=oid, price=new_price, trig_price=trigger_price,
+                    access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
                 )
-                logger.info(f"SL order {oid} modified to {new_price} (trigger {trigger_price}) for {req.symbol}: {result}")
-                modified_count += 1
+                logger.info(f"SL order {oid} modified to {new_price} (trigger {trigger_price}) for {req.symbol}: {r}")
+                return True
             except Exception as e:
                 logger.error(f"Failed to modify SL order {oid}: {e}")
+                return False
+
+        for i in range(0, len(new_ids), 9):
+            batch         = new_ids[i:i + 9]
+            batch_results = await asyncio.gather(*[_mod(oid) for oid in batch])
+            modified_count += sum(batch_results)
+            if i + 9 < len(new_ids):
+                await asyncio.sleep(1.0)
+
         sl_state[req.symbol]["state"] = "placed"
 
     return {"status": "ok", "symbol": req.symbol, "price": new_price, "trigger_price": trigger_price, "modified_count": modified_count}
@@ -808,6 +817,19 @@ async def check_sl_orders():
     if not positions:
         return {"status": "ok", "message": "No open positions found", "results": []}
 
+    # Fetch all live orders once — used to filter out cancelled/triggered cached SL IDs
+    try:
+        live_orders_resp = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
+        live_orders      = live_orders_resp.get("data", []) if isinstance(live_orders_resp, dict) else []
+        active_order_ids = {
+            o["order_id"]
+            for o in live_orders
+            if o.get("status") in ("OPEN", "TRIGGER PENDING")
+        }
+    except Exception as e:
+        logger.warning(f"check-sl-orders: could not fetch live orders, skipping cache filter: {e}")
+        active_order_ids = None  # fall back to trusting cache as-is
+
     default_sl_dist = app_config.get("default_sl_dist", 10.0)
     used_fallback   = False
     results         = []
@@ -826,10 +848,29 @@ async def check_sl_orders():
         abs_qty  = abs(net_qty)
         side     = "SELL" if net_qty > 0 else "BUY"
 
-        sym_state    = sl_state.get(symbol, {})
-        cached_sl    = sym_state.get("sl_orders", [])
-        cached_qty   = sum(o["qty"] for o in cached_sl)
-        missing_qty  = abs_qty - cached_qty
+        sym_state = sl_state.get(symbol, {})
+        cached_sl = sym_state.get("sl_orders", [])
+
+        # Filter cached orders to only those still alive on Zerodha
+        if active_order_ids is not None:
+            active_sl = [o for o in cached_sl if o["order_id"] in active_order_ids]
+            # Clean up stale IDs from sl_state so they don't accumulate
+            if len(active_sl) != len(cached_sl):
+                dead_ids = {o["order_id"] for o in cached_sl} - {o["order_id"] for o in active_sl}
+                logger.info(f"check-sl-orders: pruning stale order IDs for {symbol}: {dead_ids}")
+                new_oids = [oid for oid in (sym_state.get("order_ids") or []) if oid not in dead_ids]
+                sl_state[symbol] = {
+                    **sym_state,
+                    "sl_orders": active_sl,
+                    "order_ids": new_oids,
+                    "order_id":  new_oids[0] if new_oids else None,
+                }
+                sym_state = sl_state[symbol]
+        else:
+            active_sl = cached_sl
+
+        cached_qty  = sum(o["qty"] for o in active_sl)
+        missing_qty = abs_qty - cached_qty
 
         if missing_qty <= 0:
             results.append({
@@ -838,16 +879,16 @@ async def check_sl_orders():
                 "position_qty": abs_qty,
                 "cached_qty":   cached_qty,
                 "placed_qty":   0,
-                "order_count":  len(cached_sl),
+                "order_count":  len(active_sl),
                 "price_source": None,
             })
             continue
 
-        # Determine SL price — priority: existing sl_state price → default dist fallback
+        # SL price priority: active SL price → SL line price → default dist from LTP
         sl_price       = sym_state.get("price")
         trigger_buffer = sym_state.get("trigger_buffer", 0.20)
 
-        if sl_price is not None and cached_sl:
+        if sl_price is not None and active_sl:
             price_source = "cache"
         elif sl_price is not None:
             price_source = "SL line"
@@ -882,38 +923,61 @@ async def check_sl_orders():
                 "trigger_price":    str(trigger),
                 "price":            str(limit),
             }
-            try:
-                r      = await kite1.reqsession.post(
-                    "https://api.kite.trade/orders/regular",
-                    data=data, headers=headers, timeout=7,
-                )
-                result = r.json()
-                if r.status_code == 200:
-                    order_id = (result.get("data") or {}).get("order_id")
-                    if order_id:
-                        placed_ids.append({"order_id": order_id, "qty": chunk})
-                        existing     = sl_state.get(symbol, {})
-                        existing_sl  = existing.get("sl_orders", [])
-                        existing_ids = {o["order_id"] for o in existing_sl}
-                        if order_id not in existing_ids:
+
+            placed_this_chunk = False
+            for attempt in range(3):
+                try:
+                    r      = await kite1.reqsession.post(
+                        "https://api.kite.trade/orders/regular",
+                        data=data, headers=headers, timeout=7,
+                    )
+                    result = r.json()
+                    if r.status_code == 200:
+                        order_id = (result.get("data") or {}).get("order_id")
+                        if order_id:
+                            placed_ids.append({"order_id": order_id, "qty": chunk})
+                            existing      = sl_state.get(symbol, {})
+                            existing_sl   = existing.get("sl_orders", [])
+                            existing_oids = existing.get("order_ids") or ([existing["order_id"]] if existing.get("order_id") else [])
+                            existing_sl_ids = {o["order_id"] for o in existing_sl}
+                            new_sl   = existing_sl   + ([{"order_id": order_id, "qty": chunk}] if order_id not in existing_sl_ids else [])
+                            new_oids = existing_oids + ([order_id] if order_id not in existing_oids else [])
                             sl_state[symbol] = {
                                 **existing,
-                                "sl_orders":      existing_sl + [{"order_id": order_id, "qty": chunk}],
+                                "sl_orders":      new_sl,
+                                "order_ids":      new_oids,
+                                "order_id":       new_oids[0] if new_oids else None,
                                 "price":          existing.get("price") or sl_price,
                                 "side":           existing.get("side") or side,
                                 "exchange":       existing.get("exchange") or exchange,
                                 "trigger_buffer": trigger_buffer,
-                                "state":          existing.get("state", "placed"),
+                                "state":          "placed",
                             }
-                        logger.info(f"check-sl-orders: placed {side} {chunk} SL for {symbol} @ {trigger}/{limit} → {order_id}")
-                else:
-                    msg = result.get("message") or f"HTTP {r.status_code}"
-                    logger.error(f"check-sl-orders broker error for {symbol}: {msg}")
+                            placed_this_chunk = True
+                            logger.info(f"check-sl-orders: placed {side} {chunk} SL for {symbol} @ {trigger}/{limit} → {order_id}")
+                        break
+                    else:
+                        msg = result.get("message") or f"HTTP {r.status_code}"
+                        is_rate_limit = any(kw in msg.lower() for kw in ("exceeded", "too many", "rate"))
+                        logger.error(f"check-sl-orders broker error for {symbol}: {msg}")
+                        if is_rate_limit and attempt < 2:
+                            await asyncio.sleep(1.0)
+                            continue
+                        errors.append(f"chunk {chunk}: {msg}")
+                        break
+                except Exception as e:
+                    msg = str(e)
+                    is_rate_limit = any(kw in msg.lower() for kw in ("429", "too many", "exceeded"))
+                    logger.error(f"check-sl-orders error for {symbol}: {e}")
+                    if is_rate_limit and attempt < 2:
+                        await asyncio.sleep(1.0)
+                        continue
                     errors.append(f"chunk {chunk}: {msg}")
-            except Exception as e:
-                logger.error(f"check-sl-orders error for {symbol}: {e}")
-                errors.append(f"chunk {chunk}: {str(e)}")
+                    break
+
             remaining -= chunk
+            if placed_this_chunk:
+                await asyncio.sleep(0.10)
 
         placed_qty = sum(o["qty"] for o in placed_ids)
         results.append({
@@ -991,3 +1055,34 @@ async def reset_positions():
     pathlib.Path("/tmp/reset_positions").touch()
     logger.info("reset_positions flag set — tick_collector will clear active_positions on next order update")
     return {"status": "ok"}
+
+
+@router.post("/refresh-kite-token")
+async def refresh_kite_token():
+    """
+    Re-reads KITE_ACCESS_TOKEN from .env and updates every in-memory reference:
+      - kite1 object (used by websocket_handler for order placement)
+      - module-level KITE_ACCESS_TOKEN in sl.py (used by direct HTTP calls)
+      - module-level KITE_ACCESS_TOKEN in websocket_handler.py
+    Call this after generating a new Zerodha token each morning — no server restart needed.
+    """
+    import sys
+    load_dotenv(override=True)
+    new_token = os.getenv("KITE_ACCESS_TOKEN", "")
+    if not new_token:
+        return {"status": "error", "detail": "KITE_ACCESS_TOKEN not found in .env"}
+
+    # 1. Update kite1 object
+    kite1.set_access_token(new_token)
+
+    # 2. Update module-level variable in this module (sl.py) — used in direct HTTP calls
+    global KITE_ACCESS_TOKEN
+    KITE_ACCESS_TOKEN = new_token
+
+    # 3. Update module-level variable in websocket_handler — used in order placement calls
+    ws_mod = sys.modules.get("backend.services.websocket_handler")
+    if ws_mod:
+        ws_mod.KITE_ACCESS_TOKEN = new_token
+
+    logger.info("Kite access token refreshed in-process — kite1 object + all module globals updated")
+    return {"status": "ok", "token_suffix": new_token[-6:]}
