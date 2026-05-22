@@ -16,6 +16,7 @@ Supports:
 """
 import asyncio
 import calendar
+import threading
 from datetime import date as PyDate, datetime
 from pathlib import Path
 from typing import Optional
@@ -32,8 +33,15 @@ _GAPS_ROOT = _PARQUET_ROOT / 'gap_events'
 _TICKS_ROOT = _PARQUET_ROOT / 'raw_ticks'
 
 
-# Single long-lived DuckDB connection (thread-safe for reads)
-_db = duckdb.connect(':memory:')
+# Thread-local DuckDB connections: each thread gets its own connection so that
+# concurrent asyncio.to_thread calls (parallel panel loads) don't contend on a
+# single connection and return empty results.
+_thread_local = threading.local()
+
+def _get_db() -> duckdb.DuckDBPyConnection:
+    if not hasattr(_thread_local, 'db'):
+        _thread_local.db = duckdb.connect(':memory:')
+    return _thread_local.db
 
 
 # Jump detection thresholds (match production constants)
@@ -99,7 +107,7 @@ def _sync_query_candles(symbol: str, d: PyDate) -> list:
         return []
 
     start_ep, end_ep = _day_epoch_range(d)
-    result = _db.execute("""
+    result = _get_db().execute("""
         SELECT bucket, open, high, low, close
         FROM read_parquet(?)
         WHERE symbol = ?
@@ -122,7 +130,7 @@ def _sync_query_gaps(symbol: str, d: PyDate) -> Optional[list]:
         return []
 
     start_ep, end_ep = _day_epoch_range(d)
-    result = _db.execute("""
+    result = _get_db().execute("""
         SELECT bucket, direction, prev_price, curr_price, vol_change
         FROM read_parquet(?)
         WHERE symbol = ?
@@ -157,7 +165,7 @@ def _sync_query_jumps(symbol: str, d: PyDate) -> list:
     time_start, time_end = _jumps_time_range(d)
 
     # Query 1: jump candidates via LAG() window function
-    jumps_raw = _db.execute("""
+    jumps_raw = _get_db().execute("""
         WITH ticks_with_prev AS (
             SELECT
                 timestamp,
@@ -223,7 +231,7 @@ def _sync_query_jumps(symbol: str, d: PyDate) -> list:
         for j in dedup_jumps:
             if j['direction'] == 'UP':
                 # UP filled when any subsequent candle LOW <= pre_price
-                row = _db.execute("""
+                row = _get_db().execute("""
                     SELECT bucket FROM read_parquet(?)
                     WHERE symbol = ?
                       AND bucket > ?
@@ -235,7 +243,7 @@ def _sync_query_jumps(symbol: str, d: PyDate) -> list:
                       j['bucket'], end_bucket, j['pre_price']]).fetchone()
             else:
                 # DOWN filled when any subsequent candle HIGH >= pre_price
-                row = _db.execute("""
+                row = _get_db().execute("""
                     SELECT bucket FROM read_parquet(?)
                     WHERE symbol = ?
                       AND bucket > ?
@@ -261,7 +269,7 @@ def _sync_query_hist_symbols(d: PyDate) -> list:
     # Production uses 09:15:00 to 15:35:00 for hist-symbols window
     start_ep = calendar.timegm(datetime(d.year, d.month, d.day, 9, 15, 0).timetuple())
     end_ep = calendar.timegm(datetime(d.year, d.month, d.day, 15, 35, 0).timetuple())
-    result = _db.execute("""
+    result = _get_db().execute("""
         SELECT DISTINCT symbol FROM read_parquet(?)
         WHERE bucket >= ? AND bucket <= ?
     """, [str(path), start_ep, end_ep]).fetchall()
@@ -295,7 +303,7 @@ def _sync_last_trading_date(symbol: str) -> Optional[PyDate]:
         path = _date_path(_CANDLES_ROOT, d)
         if not path.exists():
             continue
-        row = _db.execute("""
+        row = _get_db().execute("""
             SELECT COUNT(*) FROM read_parquet(?) WHERE symbol = ? LIMIT 1
         """, [str(path), symbol]).fetchone()
         if row and row[0] > 0:

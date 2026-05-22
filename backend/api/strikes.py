@@ -91,11 +91,37 @@ async def prewarm_strikes_cache(pool):
 
 
 @router.get("/strikes")
-async def get_strikes(request: Request):
+async def get_strikes(request: Request, date: str = None):
 
     now = time.monotonic()
     if _strikes_cache["data"] is not None and (now - _strikes_cache["ts"]) < STRIKES_CACHE_TTL:
         return _strikes_cache["data"]
+
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import (
+            query_hist_symbols as _ddb_syms,
+            last_trading_date as _ddb_last,
+        )
+        if date:
+            target_date = date
+        else:
+            last = await _ddb_last("NIFTY")
+            target_date = str(last) if last else None
+        if not target_date:
+            return []
+        symbols = await _ddb_syms(target_date)
+        entries = []
+        for sym in symbols:
+            try:
+                expiry, strike, opt_type, display = _parse_symbol_display(sym)
+                entries.append((expiry, strike, opt_type, sym, display))
+            except Exception:
+                continue
+        entries.sort(key=lambda x: (x[0], x[1], x[2]))
+        result = [{"symbol": e[3], "display": e[4]} for e in entries]
+        _strikes_cache["data"] = result
+        _strikes_cache["ts"] = now
+        return result
 
     result = await _query_strikes(request.app.state.pool)
     _strikes_cache["data"] = result

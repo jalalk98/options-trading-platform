@@ -34,7 +34,7 @@ from config.credentials import (
 )
 
 # ----- Config -----
-MAX_DATES_PER_RUN = 3       # Stay under 1 GB daily budget (~250 MB/day)
+MAX_DATES_PER_RUN = 2       # Stay under 1 GB daily budget (~400 MB/date)
 DAILY_BUDGET_MB = 950       # Hard ceiling per run
 
 # ----- Setup logging -----
@@ -130,6 +130,99 @@ def list_local_dates() -> set:
     return candles_dates & raw_dates
 
 
+def get_table_stats(dates: list) -> dict:
+    """Read parquet metadata for synced dates.
+
+    Returns {date_str: {table: {rows, bytes, groups?}}} where
+    raw_ticks also includes a 'groups' dict keyed by symbol_group name.
+    Uses pyarrow metadata-only reads (fast — no data loaded).
+    """
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        return {}
+
+    local_root = Path(LOCAL_PARQUET_PATH)
+    result: dict = {}
+
+    for d_str in dates:
+        d = datetime.strptime(d_str, '%Y-%m-%d').date()
+        year, month, day = d.year, f'{d.month:02d}', f'{d.day:02d}'
+        date_stats: dict = {}
+
+        # raw_ticks — partitioned by symbol_group
+        ticks_day_root = local_root / 'raw_ticks'
+        if ticks_day_root.exists():
+            ticks_entry: dict = {'rows': 0, 'bytes': 0, 'groups': {}}
+            for sg_dir in sorted(ticks_day_root.iterdir()):
+                if not sg_dir.name.startswith('symbol_group='):
+                    continue
+                group_name = sg_dir.name.split('=', 1)[1]
+                pf = sg_dir / f'year={year}' / f'month={month}' / f'day={day}' / 'data.parquet'
+                if not pf.is_file() or pf.stat().st_size == 0:
+                    continue
+                try:
+                    rows = pq.read_metadata(str(pf)).num_rows
+                except Exception:
+                    rows = 0
+                ticks_entry['rows'] += rows
+                ticks_entry['bytes'] += pf.stat().st_size
+                ticks_entry['groups'][group_name] = rows
+            if ticks_entry['rows'] > 0:
+                date_stats['raw_ticks'] = ticks_entry
+
+        # candles_5s and gap_events
+        for table in ('candles_5s', 'gap_events'):
+            pf = local_root / table / f'year={year}' / f'month={month}' / f'day={day}' / 'data.parquet'
+            if not pf.is_file() or pf.stat().st_size == 0:
+                continue
+            try:
+                rows = pq.read_metadata(str(pf)).num_rows
+            except Exception:
+                rows = 0
+            if rows > 0:
+                date_stats[table] = {'rows': rows, 'bytes': pf.stat().st_size}
+
+        if date_stats:
+            result[d_str] = date_stats
+
+    return result
+
+
+def format_date_stats(d_str: str, date_stats: dict) -> str:
+    """Format per-date stats as the Telegram message block."""
+    lines = [f"Syncing: {d_str}"]
+    total_rows = 0
+    all_tables = {'raw_ticks', 'candles_5s', 'gap_events'}
+    found_tables = set(date_stats.keys())
+
+    # gap_ticks (raw_ticks)
+    if 'raw_ticks' in date_stats:
+        s = date_stats['raw_ticks']
+        lines.append(f"  gap_ticks:  {s['rows']:>12,} rows")
+        for group, rows in sorted(date_stats['raw_ticks']['groups'].items(),
+                                  key=lambda x: -x[1]):
+            lines.append(f"    {group:<16} {rows:>10,}")
+        total_rows += s['rows']
+
+    for table in ('candles_5s', 'gap_events'):
+        if table in date_stats:
+            rows = date_stats[table]['rows']
+            lines.append(f"  {table}:  {rows:>12,} rows")
+            total_rows += rows
+
+    lines.append("  " + "-" * 26)
+    lines.append(f"  total:      {total_rows:>12,} rows")
+
+    missing = all_tables - found_tables
+    if missing:
+        lines.append(f"  WARNING: missing tables: {', '.join(sorted(missing))}")
+    else:
+        lines.append("  All table_kinds verified in B2.")
+
+    return "\n".join(lines)
+
+
 def estimate_size_mb(s3, dates: list) -> float:
     """Estimate total MB needed for given dates."""
     total = 0
@@ -204,24 +297,43 @@ def main():
             cwd=str(Path(__file__).parent.parent),
             capture_output=True,
             text=True,
-            timeout=3600,  # 1 hour max
+            timeout=7200,  # 2 hours max
         )
 
         if result.returncode == 0:
             log.info("sync_from_b2.py completed successfully")
             log.info(f"stdout (last 500 chars):\n{result.stdout[-500:]}")
 
-            remaining = len(missing) - len(to_sync)
-            msg_lines = [
-                "Daily sync OK",
-                f"Synced {len(to_sync)} date(s):",
-                *[f"  - {d}" for d in to_sync],
-            ]
-            if remaining > 0:
-                msg_lines.append(
-                    f"{remaining} more date(s) pending (will sync next runs)"
+            # Verify the dates actually landed locally — sync_from_b2.py exits 0
+            # even when it finds no files (e.g. wrong B2 prefix), so a clean exit
+            # code alone is not sufficient proof that anything was downloaded.
+            local_after = list_local_dates()
+            actually_synced = [d for d in to_sync if d in local_after]
+            still_missing = [d for d in to_sync if d not in local_after]
+
+            if still_missing:
+                log.error(
+                    f"sync_from_b2.py exited 0 but these dates are still missing "
+                    f"locally: {still_missing}"
                 )
-            send_telegram("\n".join(msg_lines))
+                log.error(f"stdout:\n{result.stdout[-500:]}")
+                send_telegram(
+                    f"Daily sync FAILED — no files downloaded\n"
+                    f"Dates attempted: {', '.join(to_sync)}\n"
+                    f"Still missing: {', '.join(still_missing)}\n"
+                    f"B2 files may be under an unexpected prefix. Check sync.log."
+                )
+                return 1
+
+            remaining = len(missing) - len(to_sync)
+            all_stats = get_table_stats(actually_synced)
+            msg_parts = []
+            for d_str in actually_synced:
+                date_stats = all_stats.get(d_str, {})
+                msg_parts.append(format_date_stats(d_str, date_stats))
+            if remaining > 0:
+                msg_parts.append(f"{remaining} more date(s) pending (will sync next runs)")
+            send_telegram("\n\n".join(msg_parts))
             return 0
         else:
             log.error(f"sync_from_b2.py failed with code {result.returncode}")
