@@ -342,7 +342,7 @@
         }
         #histBar.active { display: flex; }
         #histBar .hist-label { color: #92400e; font-weight: 700; margin-right: 4px; }
-        #histDatePicker {
+        #histDatePicker, #histTimePicker {
             font-size: 11px; padding: 2px 5px;
             border: 1px solid #d97706; border-radius: 4px; background: #fff; cursor: pointer;
         }
@@ -691,6 +691,28 @@
         .panel-refresh-btn:hover { opacity: 1; }
         .panel-refresh-btn.spinning svg { animation: spin 0.6s linear; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .panel-invert-btn {
+            pointer-events: all;
+            height: 20px;
+            padding: 0 7px;
+            border-radius: 10px;
+            border: 2px solid #fff;
+            background: #0f172a;
+            color: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: Arial, sans-serif;
+            white-space: nowrap;
+            line-height: 1;
+        }
+        .panel-invert-btn:hover { opacity: 1; }
+        .panel-invert-btn.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; opacity: 1; }
         .panel-bottom-bar {
             position: absolute;
             bottom: 38px;
@@ -994,6 +1016,7 @@
 <div id="histBar">
     <span class="hist-label">📅 Historical</span>
     <input type="date" id="histDatePicker" onchange="onHistDateChange(this.value)">
+    <input type="time" id="histTimePicker" value="09:20" min="09:15" max="15:30" step="300" title="Time for ATM calculation (IST)">
     <select id="histSymbolPicker" onchange="onHistSymbolSelect(this.value)">
         <option value="">— select date first —</option>
     </select>
@@ -1338,7 +1361,22 @@ function createPanel(id) {
     refreshBtn.title = 'Refresh chart';
     refreshBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
 
+    const invertBtn = document.createElement('button');
+    invertBtn.className = 'panel-invert-btn';
+    invertBtn.title = 'Invert chart (flip index to match PE direction)';
+    invertBtn.textContent = '⇅';
+    invertBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        invertScale = !invertScale;
+        invertBtn.classList.toggle('active', invertScale);
+        candleSeries.setData(invertScale ? allCandles.map(invertCandle) : allCandles);
+        if (slPrice != null) updateSLLineLocal(slPrice, slLineState);
+        if (livePriceLine && currentCandle) livePriceLine.applyOptions({ price: ip(currentCandle.close) });
+        userLines.forEach(l => l.priceLine.applyOptions({ price: ip(l.price) }));
+    });
+
     topBarEl.appendChild(labelEl);
+    topBarEl.appendChild(invertBtn);
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
 
@@ -1406,6 +1444,7 @@ function createPanel(id) {
     let lastCandleTime = null;
     let crosshairPrice = null;
     let livePriceLine    = null;
+    let invertScale      = false;
     let slPriceLine      = null;
     let slPrice          = null;
     let slLineState      = 'none';
@@ -1431,6 +1470,9 @@ function createPanel(id) {
     let noMoreHistory    = false;
     // Tracks unfilled gap count — checkGapFill returns immediately when 0
     let _unfilledGapCount = 0;
+
+    function invertCandle(c) { return { time: c.time, open: -c.open, high: -c.low, low: -c.high, close: -c.close }; }
+    function ip(price) { return invertScale ? -price : price; }
 
     // ── Open position refresh ─────────────────────
     async function refreshPosition() {
@@ -1490,7 +1532,7 @@ function createPanel(id) {
         // history concurrently (all hit range.from<=2 simultaneously in sync mode).
         _syncLock = true;
         try {
-            candleSeries.setData(allCandles);
+            candleSeries.setData(invertScale ? allCandles.map(invertCandle) : allCandles);
             refreshMarkers();
             if (range) {
                 chart.timeScale().setVisibleLogicalRange({ from: range.from + prevCandles.length, to: range.to + prevCandles.length });
@@ -1542,7 +1584,7 @@ function createPanel(id) {
         l.colorIdx = (l.colorIdx + 1) % HLINE_COLORS.length;
         candleSeries.removePriceLine(l.priceLine);
         l.priceLine = candleSeries.createPriceLine({
-            price: l.price, color: HLINE_COLORS[l.colorIdx],
+            price: ip(l.price), color: HLINE_COLORS[l.colorIdx],
             lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
@@ -1565,7 +1607,7 @@ function createPanel(id) {
     function addUserLine(price, colorIdx = 0, existingId = null) {
         const rounded = Math.round(price * 20) / 20;
         const priceLine = candleSeries.createPriceLine({
-            price: rounded, color: HLINE_COLORS[colorIdx],
+            price: ip(rounded), color: HLINE_COLORS[colorIdx],
             lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Solid,
             axisLabelVisible: true, title: '', draggable: true,
         });
@@ -2140,7 +2182,7 @@ function createPanel(id) {
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _panelHistDate = null;
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = [];
         stopSLPoll();
         let history, gapsRaw;
         if (prefetched) {
@@ -2151,10 +2193,16 @@ function createPanel(id) {
             if (nocache) params.set('nocache', 'true');
             if (histDate) params.set('date', histDate);
             const qs = params.toString() ? '?' + params.toString() : '';
-            const res = await fetch(`/api/chart/${sym}${qs}`);
-            const payload = await res.json();
-            history  = payload.history;
-            gapsRaw  = payload.gaps;
+            try {
+                const res = await fetch(`/api/chart/${sym}${qs}`);
+                const payload = await res.json();
+                history  = payload.history;
+                gapsRaw  = payload.gaps;
+            } catch (e) {
+                console.error(`[panel] chart fetch failed for ${sym}:`, e);
+                history = [];
+                gapsRaw = [];
+            }
         }
         const candles = history.map(c => ({ time: c[0] - 19800, open: c[1], high: c[2], low: c[3], close: c[4] }));
         lastCandleTime = candles.length ? candles[candles.length - 1].time : null;
@@ -2167,7 +2215,7 @@ function createPanel(id) {
             : new Date().toISOString().split('T')[0];
         // is_filled is pre-computed server-side — no O(N²) loop needed here
         _unfilledGapCount = 0;
-        gapsRaw.forEach(g => {
+        (gapsRaw || []).forEach(g => {
             const dir = g.direction === 'UP' ? 'D' : 'U';
             const isFilled = g.is_filled || false;
             if (!isFilled) _unfilledGapCount++;
@@ -2537,6 +2585,7 @@ function clearHistMode() {
     document.getElementById('histBtn').classList.remove('active');
     document.getElementById('orderBar').style.display = '';
     document.getElementById('histDatePicker').value = '';
+    document.getElementById('histTimePicker').value = '09:20';
     document.getElementById('histSymbolPicker').innerHTML = '<option value="">— select date first —</option>';
     document.getElementById('histNoData').style.display = 'none';
     requestAnimationFrame(updateLayout);
@@ -2811,11 +2860,14 @@ async function refreshAutoPopulate() {
 }
 
 // Load panels in batches of 4 to prevent DB saturation.
-async function loadPanelsBatched(panelList, sym_getter, nocache) {
+async function loadPanelsBatched(panelList, sym_getter, nocache, histDate = null) {
     const BATCH = 4;
     for (let i = 0; i < panelList.length; i += BATCH) {
         const batch = panelList.slice(i, i + BATCH);
-        await Promise.all(batch.map(p => p.loadSymbol(sym_getter(p), null, nocache)));
+        await Promise.all(batch.map(p =>
+            p.loadSymbol(sym_getter(p), null, nocache, histDate)
+             .catch(e => console.warn('[panel] load failed:', sym_getter(p), '-', e.message))
+        ));
     }
 }
 
@@ -2910,32 +2962,147 @@ async function autoPopulatePanels(mode) {
     else if (!['nifty-ce','nifty-pe','sensex-ce','sensex-pe'].includes(mode)) return;
 
     const STEP = { NIFTY: 50, SENSEX: 100 };
-
-    // Fetch live index prices; only call ATM endpoint for indices where LTP is unavailable
-    const ltpData = await fetch('/api/index-ltp').then(r => r.json()).catch(() => ({}));
     const atmMap = {};
-    let usedFallback = false;
-    const indicesNeedingAtm = ['NIFTY', 'SENSEX'].filter(idx => {
-        const ltp = ltpData[idx] && ltpData[idx].ltp;
-        if (ltp) { atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx]; return false; }
-        return true;
-    });
-    if (indicesNeedingAtm.length) {
-        // Fetch ATM for indices with no live LTP — run in parallel if multiple
-        const atmResults = await Promise.all(
-            indicesNeedingAtm.map(idx => fetch(`/api/atm-symbol?index=${idx}`).then(r => r.json()).catch(() => ({})))
+    let findSymbol;
+    const loadHistDate = (_histMode && _histDate) ? _histDate : null;
+
+    if (loadHistDate) {
+        // ── Historical mode: derive ATM from DB candles at user-selected date+time ──
+        const timeVal = (document.getElementById('histTimePicker').value || '09:20').trim();
+        const [hh, mm] = timeVal.split(':').map(Number);
+        const [yyyy, mo, dd] = loadHistDate.split('-').map(Number);
+        // Candle buckets are IST-naive: 9:20 AM IST is stored as epoch("09:20 UTC").
+        // Treat the user's IST HH:MM directly as UTC in Date.UTC to get the matching epoch.
+        const targetBucket = Math.floor(Date.UTC(yyyy, mo - 1, dd, hh, mm, 0) / 1000);
+
+        const indicesNeeded = [...new Set(
+            [g1Index, g2Index, mode.startsWith('nifty') ? 'NIFTY' : 'SENSEX'].filter(Boolean)
+        )];
+
+        const chartResults = await Promise.all(
+            indicesNeeded.map(idx =>
+                fetch(`/api/chart/${idx}?date=${loadHistDate}`).then(r => r.json()).catch(() => ({ history: [] }))
+            )
         );
-        indicesNeedingAtm.forEach((idx, i) => {
-            const strike = atmResults[i] && atmResults[i].strike;
-            atmMap[idx] = strike ? Math.round(strike) : null;
-            if (atmMap[idx]) usedFallback = true;
+        indicesNeeded.forEach((idx, i) => {
+            const history = chartResults[i].history || [];
+            if (!history.length) { atmMap[idx] = null; return; }
+            // find candle whose bucket is closest to the target time
+            let best = history[0];
+            for (const c of history) {
+                if (Math.abs(c[0] - targetBucket) < Math.abs(best[0] - targetBucket)) best = c;
+            }
+            atmMap[idx] = Math.floor(best[4] / STEP[idx]) * STEP[idx];
         });
+
+        // Build lookup from hist-symbols: "{index}|{strike}|{type}" → symbol (nearest expiry first)
+        const histSymbols = await fetch(`/api/hist-symbols?date=${loadHistDate}`).then(r => r.json()).catch(() => []);
+        const histLookup = {};
+        for (const { symbol, display } of histSymbols) {
+            const idxName = symbol.startsWith('SENSEX')     ? 'SENSEX'
+                          : symbol.startsWith('BANKNIFTY')  ? 'BANKNIFTY'
+                          : symbol.startsWith('FINNIFTY')   ? 'FINNIFTY'
+                          : symbol.startsWith('MIDCPNIFTY') ? 'MIDCPNIFTY'
+                          : 'NIFTY';
+            const m = display.match(/^(\d+)\s+(CE|PE)/);
+            if (!m) continue;
+            const key = `${idxName}|${m[1]}|${m[2]}`;
+            if (!histLookup[key]) histLookup[key] = symbol; // first entry = nearest expiry
+        }
+        // Fallback: derive SPOT via put-call parity  C(K) - P(K) + K = SPOT
+        // Works at any strike for European-style index options (NIFTY / SENSEX).
+        // Used when index candles are absent from the duckdb archive (laptop mode).
+        let usedEstimatedAtm = false;
+        const findClosest = (hist) =>
+            hist.reduce((b, c) => Math.abs(c[0] - targetBucket) < Math.abs(b[0] - targetBucket) ? c : b);
+
+        for (const idx of indicesNeeded) {
+            if (atmMap[idx] !== null) continue;
+            // Collect strikes that have both CE and PE in histLookup
+            const pairedStrikes = [];
+            for (const k of Object.keys(histLookup)) {
+                const [kIdx, kStrike, kType] = k.split('|');
+                if (kIdx === idx && kType === 'CE' && histLookup[`${idx}|${kStrike}|PE`])
+                    pairedStrikes.push(parseInt(kStrike));
+            }
+            if (!pairedStrikes.length) continue;
+            pairedStrikes.sort((a, b) => a - b);
+
+            // Use the median paired strike for parity calculation
+            const K = pairedStrikes[Math.floor(pairedStrikes.length / 2)];
+            const ceSym = histLookup[`${idx}|${K}|CE`];
+            const peSym = histLookup[`${idx}|${K}|PE`];
+
+            const [ceR, peR] = await Promise.all([
+                fetch(`/api/chart/${ceSym}?date=${loadHistDate}`).then(r => r.json()).catch(() => ({ history: [] })),
+                fetch(`/api/chart/${peSym}?date=${loadHistDate}`).then(r => r.json()).catch(() => ({ history: [] })),
+            ]);
+            const ceH = ceR.history || [], peH = peR.history || [];
+
+            if (ceH.length && peH.length) {
+                // put-call parity: SPOT = CE_close − PE_close + K
+                const spot = findClosest(ceH)[4] - findClosest(peH)[4] + K;
+                if (spot > 0) {
+                    atmMap[idx] = Math.round(spot / STEP[idx]) * STEP[idx];
+                    usedEstimatedAtm = true;
+                    continue;
+                }
+            }
+            // Last resort: use the median paired strike itself as ATM estimate
+            atmMap[idx] = Math.round(K / STEP[idx]) * STEP[idx];
+            usedEstimatedAtm = true;
+        }
+        if (usedEstimatedAtm) toast('ATM derived from option chain — index candles not in archive', 'warn');
+
+        findSymbol = (strike, type, index) => {
+            if (!strike) return null;
+            return histLookup[`${index}|${strike}|${type}`] || null;
+        };
+    } else {
+        // ── Live mode: fetch live index prices ──
+        const ltpData = await fetch('/api/index-ltp').then(r => r.json()).catch(() => ({}));
+        let usedFallback = false;
+        const indicesNeedingAtm = ['NIFTY', 'SENSEX'].filter(idx => {
+            const ltp = ltpData[idx] && ltpData[idx].ltp;
+            if (ltp) { atmMap[idx] = Math.floor(ltp / STEP[idx]) * STEP[idx]; return false; }
+            return true;
+        });
+        if (indicesNeedingAtm.length) {
+            // Fetch ATM for indices with no live LTP — run in parallel if multiple
+            const atmResults = await Promise.all(
+                indicesNeedingAtm.map(idx => fetch(`/api/atm-symbol?index=${idx}`).then(r => r.json()).catch(() => ({})))
+            );
+            indicesNeedingAtm.forEach((idx, i) => {
+                const strike = atmResults[i] && atmResults[i].strike;
+                atmMap[idx] = strike ? Math.round(strike) : null;
+                if (atmMap[idx]) usedFallback = true;
+            });
+        }
+        if (usedFallback) toast('Market closed — using last known ATM from DB', 'warn');
+
+        // Find symbol in strikeMap by strike + type (nearest expiry comes first).
+        // If not found (symbol not yet in DB), construct it using the expiry from
+        // an existing strikeMap entry for the same index.
+        findSymbol = (strike, type, index) => {
+            if (!strike) return null;
+            const suffix = `| ${strike} ${type}`;
+            for (const [display, sym] of Object.entries(strikeMap)) {
+                if (display.endsWith(suffix)) return sym;
+            }
+            // Fallback: extract expiry from existing strikeMap entry for same index
+            for (const sym of Object.values(strikeMap)) {
+                if (sym.startsWith(index)) {
+                    const expiry = sym.slice(index.length, index.length + 5); // e.g. "26319"
+                    return `${index}${expiry}${strike}${type}`;
+                }
+            }
+            return null;
+        };
     }
-    if (usedFallback) toast('Market closed — using last known ATM from DB', 'warn');
 
     function getStrikes(index, type, n) {
         const atm = atmMap[index];
-        if (!atm) return new Array(n).fill(null); // blank if Sensex not in DB
+        if (!atm) return new Array(n).fill(null); // blank if index not in DB
         const s = STEP[index];
         if (type === 'CE')
             // [ATM-(n-2)*s, ..., ATM, ATM+s] — ends with 1 OTM (ATM+step)
@@ -2943,25 +3110,6 @@ async function autoPopulatePanels(mode) {
         else
             // [ATM+(n-1)*s, ..., ATM+s, ATM] — descending, ends with ATM (OTM for PE)
             return Array.from({ length: n }, (_, i) => atm + (n - 1 - i) * s);
-    }
-
-    // Find symbol in strikeMap by strike + type (nearest expiry comes first).
-    // If not found (symbol not yet in DB), construct it using the expiry from
-    // an existing strikeMap entry for the same index.
-    function findSymbol(strike, type, index) {
-        if (!strike) return null;
-        const suffix = `| ${strike} ${type}`;
-        for (const [display, sym] of Object.entries(strikeMap)) {
-            if (display.endsWith(suffix)) return sym;
-        }
-        // Fallback: extract expiry from existing strikeMap entry for same index
-        for (const sym of Object.values(strikeMap)) {
-            if (sym.startsWith(index)) {
-                const expiry = sym.slice(index.length, index.length + 5); // e.g. "26319"
-                return `${index}${expiry}${strike}${type}`;
-            }
-        }
-        return null;
     }
 
     // ── Single-index modes (Nifty CE / Nifty PE / Sensex CE / Sensex PE) ──
@@ -2992,10 +3140,10 @@ async function autoPopulatePanels(mode) {
         const activeSingle = panelSymbols
             .map((sym, i) => sym ? panels[i] : null)
             .filter(Boolean);
-        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true);
+        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true, loadHistDate);
         hideLoadingBar();
         saveViewState();
-        prefetchJumps(panelSymbols.filter(Boolean));
+        prefetchJumps(panelSymbols.filter(Boolean), loadHistDate || undefined);
         return;
     }
 
@@ -3023,10 +3171,10 @@ async function autoPopulatePanels(mode) {
     const activeDual = panelSymbols
         .map((sym, i) => sym ? panels[i] : null)
         .filter(Boolean);
-    await loadPanelsBatched(activeDual, p => panelSymbols[panels.indexOf(p)], true);
+    await loadPanelsBatched(activeDual, p => panelSymbols[panels.indexOf(p)], true, loadHistDate);
     hideLoadingBar();
     saveViewState();
-    prefetchJumps(panelSymbols.filter(Boolean));
+    prefetchJumps(panelSymbols.filter(Boolean), loadHistDate || undefined);
 }
 
 /* ======================
