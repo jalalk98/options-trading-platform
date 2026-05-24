@@ -705,6 +705,50 @@
         .panel-label.ce-label { background: rgba(22,163,74,0.80); }
         .panel-label.pe-label { background: rgba(220,38,38,0.80); }
         .panel-label.no-label { background: rgba(51,65,85,0.70); }
+        /* ── Leg toggle pill ───────────────────────── */
+        .leg-toggle {
+            pointer-events: all;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .leg-toggle input { display: none; }
+        .leg-toggle-track {
+            display: block;
+            width: 28px;
+            height: 14px;
+            border-radius: 7px;
+            background: #334155;
+            border: 1px solid #475569;
+            position: relative;
+            transition: background 0.2s, border-color 0.2s;
+        }
+        .leg-toggle-track::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #94a3b8;
+            transition: transform 0.2s, background 0.2s;
+        }
+        .leg-toggle input:checked + .leg-toggle-track {
+            background: #7c3aed;
+            border-color: #8b5cf6;
+        }
+        .leg-toggle input:checked + .leg-toggle-track::after {
+            transform: translateX(14px);
+            background: #fff;
+        }
+        .leg-toggle input:disabled + .leg-toggle-track {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+        .leg-toggle:has(input:disabled) { cursor: not-allowed; }
+        /* ─────────────────────────────────────────── */
         .panel-no-data {
             position: absolute;
             inset: 0;
@@ -1407,6 +1451,19 @@ let slAutoSlIncCount  = 1;
 let slAtCost          = false;
 
 /* ======================
+   LEG-TOGGLE HELPERS
+====================== */
+function getPairedSymbol(sym) {
+    if (!sym) return null;
+    if (sym.endsWith('CE')) return sym.slice(0, -2) + 'PE';
+    if (sym.endsWith('PE')) return sym.slice(0, -2) + 'CE';
+    return null;
+}
+function isKnownSymbol(sym) {
+    return sym ? Object.values(strikeMap).includes(sym) : false;
+}
+
+/* ======================
    PANEL FACTORY
 ====================== */
 function createPanel(id) {
@@ -1428,6 +1485,21 @@ function createPanel(id) {
     refreshBtn.title = 'Refresh chart';
     refreshBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`;
 
+    const legToggleWrapEl = document.createElement('label');
+    legToggleWrapEl.className = 'leg-toggle';
+    legToggleWrapEl.title = 'Switch to paired leg';
+    const legToggleEl = document.createElement('input');
+    legToggleEl.type = 'checkbox';
+    legToggleEl.disabled = true;
+    legToggleEl.addEventListener('change', e => {
+        e.stopPropagation();
+        switchLeg(e.target.checked);
+    });
+    const legToggleTrackEl = document.createElement('span');
+    legToggleTrackEl.className = 'leg-toggle-track';
+    legToggleWrapEl.appendChild(legToggleEl);
+    legToggleWrapEl.appendChild(legToggleTrackEl);
+
     const invertBtn = document.createElement('button');
     invertBtn.className = 'panel-invert-btn';
     invertBtn.title = 'Invert chart (flip index to match PE direction)';
@@ -1443,6 +1515,7 @@ function createPanel(id) {
     });
 
     topBarEl.appendChild(labelEl);
+    topBarEl.appendChild(legToggleWrapEl);
     topBarEl.appendChild(invertBtn);
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
@@ -1507,6 +1580,9 @@ function createPanel(id) {
 
     // ── Per-panel state ───────────────────────────
     let symbol         = null;
+    let _baseSymbol    = null;   // symbol loaded externally (before any toggle)
+    let _legToggled    = false;  // whether panel currently shows the paired leg
+    let _isLegSwitching = false; // guard: prevents panelLoadSymbol from overwriting _baseSymbol
     let socket         = null;
     let reconnectTimeout = null;
     let currentCandle  = null;
@@ -2231,9 +2307,49 @@ function createPanel(id) {
         socket.onerror = () => socket.close();
     }
 
+    // ── Switch Leg ───────────────────────────────
+    function _updateLegToggleEnabled() {
+        const paired = getPairedSymbol(_baseSymbol);
+        const canToggle = !!paired && isKnownSymbol(paired);
+        legToggleEl.disabled = !canToggle;
+        legToggleEl.parentElement.title = canToggle
+            ? 'Switch to paired leg'
+            : _baseSymbol && !getPairedSymbol(_baseSymbol)
+                ? 'Not an options instrument'
+                : 'Paired symbol not available';
+    }
+
+    async function switchLeg(wantOn) {
+        if (!_baseSymbol) return;
+        if (wantOn) {
+            const paired = getPairedSymbol(_baseSymbol);
+            if (!paired || !isKnownSymbol(paired)) {
+                legToggleEl.checked = false;
+                toast('Paired symbol not found', 'warn');
+                return;
+            }
+            _legToggled = true;
+            _isLegSwitching = true;
+            await panelLoadSymbol(paired, null, true);
+        } else {
+            _legToggled = false;
+            _isLegSwitching = true;
+            await panelLoadSymbol(_baseSymbol, null, true);
+        }
+    }
+
     // ── Load symbol ───────────────────────────────
     async function panelLoadSymbol(sym, prefetched = null, nocache = false, histDate = null) {
         if (!sym) return;
+        // ── Leg-toggle guard ──────────────────────────
+        if (!_isLegSwitching) {
+            _baseSymbol = sym;
+            _legToggled = false;
+            legToggleEl.checked = false;
+            _updateLegToggleEnabled();
+        }
+        _isLegSwitching = false;
+        // ─────────────────────────────────────────────
         noDataEl.style.display = 'none';
         const isSameSymbol = (sym === symbol);
         // Save current lines for the outgoing symbol before clearing
@@ -2328,6 +2444,7 @@ function createPanel(id) {
         if (savedLines.length) restoreUserLines(savedLines);
         setTimeout(() => chart.priceScale('right').applyOptions({ autoScale: true }), 50);
         if (!histDate) saveViewState();
+        _updateLegToggleEnabled();
         // Skip live features in historical mode
         if (!histDate) {
             loadSLStateLocal(sym);
@@ -2382,6 +2499,9 @@ function createPanel(id) {
     const panel = {
         id, el: panelEl,
         get symbol()          { return symbol; },
+        get baseSymbol()      { return _baseSymbol; },
+        get legToggled()      { return _legToggled; },
+        switchLeg,
         get historyLoaded()   { return historyLoaded; },
         get lastCandleTime()  { return lastCandleTime; },
         get crosshairPrice()  { return crosshairPrice; },
@@ -4533,7 +4653,7 @@ function _captureState() {
     return {
         layout:       activeLayout,
         autoPopulate: '',
-        symbols:      panels.map(p => p.symbol || null),
+        symbols:      panels.map(p => (p.baseSymbol || p.symbol) || null),
         userLines:    panels.map(p => p.getUserLines()),
     };
 }
@@ -4788,7 +4908,8 @@ function saveViewState() {
         localStorage.setItem('otpViewState', JSON.stringify({
             layout: activeLayout,
             autoPopulate: document.getElementById('autoPopulateSelect').value,
-            symbols: panels.map(p => p.symbol || null),
+            symbols: panels.map(p => (p.baseSymbol || p.symbol) || null),
+            legToggles: panels.map(p => p.legToggled || false),
             lines: symbolLinesStore,
         }));
     } catch (e) {}
@@ -4821,6 +4942,19 @@ function saveViewState() {
             .filter(Boolean);
         await loadPanelsBatched(activeSaved, p => syms[panels.indexOf(p)], true);
         prefetchJumps(syms.filter(Boolean));
+        // Restore leg-toggle state — must run after symbols are loaded
+        if (saved.legToggles) {
+            for (let i = 0; i < panels.length; i++) {
+                if (saved.legToggles[i] && panels[i] && panels[i].baseSymbol) {
+                    const paired = getPairedSymbol(panels[i].baseSymbol);
+                    if (paired && isKnownSymbol(paired)) {
+                        await panels[i].switchLeg(true);
+                    } else if (saved.legToggles[i]) {
+                        toast(`Paired leg for ${panels[i].baseSymbol} no longer available — showing base symbol`, 'warn');
+                    }
+                }
+            }
+        }
     }
 
     if (new URLSearchParams(window.location.search).get('hist') === '1') {
