@@ -27,12 +27,20 @@ pause
 exit /b
 
 :start_server
-start http://127.0.0.1:8000/
-
-C:\Users\Jalal\anaconda3\envs\trading-platform\python.exe ^
+echo Starting server...
+start "Trading Platform Server" C:\Users\Jalal\anaconda3\envs\trading-platform\python.exe ^
     -m uvicorn backend.api.chart_server:app ^
     --host 127.0.0.1 ^
     --port 8000 ^
     --log-level info
+
+echo Waiting for server to be ready...
+:wait_loop
+timeout /t 1 /nobreak >nul
+netstat -ano | findstr "127.0.0.1:8000" | findstr LISTENING >nul 2>&1
+if errorlevel 1 goto :wait_loop
+
+echo Server is ready. Opening browser...
+start http://127.0.0.1:8000/
 
 pause

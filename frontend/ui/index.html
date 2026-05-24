@@ -357,6 +357,35 @@
             background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-left: 4px;
         }
         #histClearBtn:hover { background: #b45309; }
+        #replayControls {
+            display: none; align-items: center; gap: 5px;
+            border-left: 1px solid #d97706; margin-left: 4px; padding-left: 8px;
+        }
+        #replayControls.visible { display: flex; }
+        #replayPlayBtn {
+            font-size: 11px; padding: 2px 9px;
+            background: #16a34a; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+        }
+        #replayPlayBtn:hover { background: #15803d; }
+        #replayPauseBtn {
+            font-size: 11px; padding: 2px 9px;
+            background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+            display: none;
+        }
+        #replayPauseBtn:hover { background: #b45309; }
+        #replayStopBtn {
+            font-size: 11px; padding: 2px 9px;
+            background: #dc2626; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+            display: none;
+        }
+        #replayStopBtn:hover { background: #b91c1c; }
+        #replaySpeed {
+            font-size: 11px; padding: 2px 4px;
+            border: 1px solid #d97706; border-radius: 4px; background: #fff; cursor: pointer;
+        }
+        #replayProgress {
+            font-size: 10px; color: #92400e; min-width: 70px; text-align: center;
+        }
         #histBtn, #syncBtn, #savedLayoutsBtn {
             background: none; border: 1px solid #ccc; border-radius: 4px;
             cursor: pointer; padding: 2px 5px; display: flex; align-items: center;
@@ -1041,6 +1070,18 @@
         <option value="">— select date first —</option>
     </select>
     <span id="histNoData" style="display:none">No data for this date</span>
+    <div id="replayControls">
+        <button id="replayPlayBtn" title="Replay day candle by candle" onclick="startReplay()">▶ Play</button>
+        <button id="replayPauseBtn" title="Pause / Resume replay" onclick="toggleReplayPause()">⏸ Pause</button>
+        <button id="replayStopBtn" title="Stop replay and show full day" onclick="stopReplay()">⏹ Stop</button>
+        <select id="replaySpeed" title="Replay speed">
+            <option value="1">1×</option>
+            <option value="5">5×</option>
+            <option value="30">30×</option>
+            <option value="60">60×</option>
+        </select>
+        <span id="replayProgress"></span>
+    </div>
     <button id="histClearBtn" onclick="clearHistMode()">× Back to Live</button>
 </div>
 
@@ -1479,6 +1520,8 @@ function createPanel(id) {
     let lineRedoStack    = [];     // [{id, prevPrice}] — cleared on any new drag
     let slPollTimer      = null;
     let _convictionMarker        = null;
+    let _pendingGaps             = new Map();   // replay: gap markers not yet revealed
+    let _pendingJumps            = [];           // replay: jump markers not yet revealed
     let _convictionData          = null;
     let _convictionFired         = false;
     let _historicalConvictions   = [];
@@ -2413,6 +2456,74 @@ function createPanel(id) {
                 return 'Redo: Line deleted';
             }
         },
+
+        // ── Replay helpers ────────────────────────────────────────────────────
+        replayClear() {
+            if (socket) { socket._intentionalClose = true; socket.close(); socket = null; }
+            candleSeries.setMarkers([]);
+            candleSeries.setData([]);
+            currentCandle = null; lastCandleTime = null; allCandles = [];
+            gapDetails.clear(); _unfilledGapCount = 0;
+            _jumpMarkers = []; _convictionMarker = null; _convictionData = null;
+            _convictionFired = false; _historicalConvictions = [];
+            // _pendingGaps / _pendingJumps are NOT cleared here —
+            // replaySetPendingMarkers() sets them after replayClear() is called.
+            chart.timeScale().applyOptions({ rightOffset: 5 });
+            chart.priceScale('right').applyOptions({ autoScale: true });
+        },
+        replaySetPendingMarkers(gapsRaw, jumpsRaw) {
+            _pendingGaps = new Map();
+            (gapsRaw || []).forEach(g => {
+                const ct = g.time - 19800;
+                _pendingGaps.set(ct, {
+                    dir: g.direction === 'UP' ? 'D' : 'U',
+                    from: g.prev_price, to: g.curr_price,
+                    jump: Math.abs(g.curr_price - g.prev_price).toFixed(2),
+                    rangeLow: Math.min(g.prev_price, g.curr_price),
+                    rangeHigh: Math.max(g.prev_price, g.curr_price),
+                    volume: g.vol_change || 0, isFilled: false,
+                });
+            });
+            _pendingJumps = (jumpsRaw || []).map(j => ({
+                chartTime          : j.bucket - 19800,
+                bucket             : j.bucket,
+                direction          : j.direction,
+                pre_price          : j.pre_price,
+                post_price         : j.post_price,
+                jump_pts           : j.jump_pts,
+                is_first           : j.is_first,
+                filled             : false,
+                filledChartTime    : null,
+                _fillAt            : (j.filled && j.filled_bucket) ? j.filled_bucket - 19800 : null,
+            }));
+        },
+        replayUpdate(candle, isFinal = true) {
+            currentCandle = candle; lastCandleTime = candle.time;
+            candleSeries.update(candle);
+            if (!isFinal) return;  // sub-step: visual update only, no marker logic
+            // Reveal gap marker at this candle time
+            if (_pendingGaps.has(candle.time)) {
+                _unfilledGapCount++;
+                gapDetails.set(candle.time, _pendingGaps.get(candle.time));
+                _pendingGaps.delete(candle.time);
+                refreshMarkers();
+            }
+            // Fade gaps: reuse the existing live fill-detection logic
+            checkGapFill(candle);
+            // Reveal pending jump markers whose time has been reached
+            let markerChanged = false;
+            _pendingJumps = _pendingJumps.filter(j => {
+                if (j.chartTime <= candle.time) { _jumpMarkers.push(j); markerChanged = true; return false; }
+                return true;
+            });
+            // Fade jumps: mark as filled when replay clock reaches their fill time
+            _jumpMarkers.forEach(j => {
+                if (!j.filled && j._fillAt !== null && j._fillAt <= candle.time) {
+                    j.filled = true; j.filledChartTime = j._fillAt; markerChanged = true;
+                }
+            });
+            if (markerChanged) refreshMarkers();
+        },
     };
     return panel;
 }
@@ -2610,9 +2721,11 @@ async function onHistDateChange(date) {
 function onHistSymbolSelect(symbol) {
     if (!symbol || !_histDate) return;
     if (activePanel) activePanel.loadSymbol(symbol, null, true, _histDate);
+    document.getElementById('replayControls').classList.add('visible');
 }
 
 function clearHistMode() {
+    if (_replayActive) _cancelReplay();
     _histMode = false;
     _histDate = null;
     document.getElementById('histBar').classList.remove('active');
@@ -2622,7 +2735,212 @@ function clearHistMode() {
     document.getElementById('histTimePicker').value = '09:20';
     document.getElementById('histSymbolPicker').innerHTML = '<option value="">— select date first —</option>';
     document.getElementById('histNoData').style.display = 'none';
+    document.getElementById('replayControls').classList.remove('visible');
     requestAnimationFrame(updateLayout);
+}
+// ── Replay ───────────────────────────────────────────────────────────────────
+let _replayActive  = false;
+let _replayPaused  = false;
+let _replayTimer   = null;
+let _replayData    = {};   // { symbol: { time: candle } }
+let _replayBuckets = [];   // sorted unique time values across all symbols
+let _replayIndex   = 0;
+
+// BroadcastChannel: one tab is master (runs timer + broadcasts),
+// all other tabs with the same date in hist mode follow along.
+const _replayChannel = (typeof BroadcastChannel !== 'undefined')
+    ? new BroadcastChannel('replay-sync') : null;
+
+function _cancelReplay() {
+    if (_replayTimer) { clearInterval(_replayTimer); _replayTimer = null; }
+    _replayActive = false; _replayPaused = false;
+    _replayData = {}; _replayBuckets = []; _replayIndex = 0;
+    const p = document.getElementById('replayPlayBtn');
+    const u = document.getElementById('replayPauseBtn');
+    const s = document.getElementById('replayStopBtn');
+    p.style.display = ''; p.disabled = false; p.textContent = '▶ Play';
+    u.style.display = 'none'; u.textContent = '⏸ Pause';
+    s.style.display = 'none';
+    document.getElementById('replayProgress').textContent = '';
+}
+
+function _activateReplayUI() {
+    document.getElementById('replayPlayBtn').style.display  = 'none';
+    document.getElementById('replayPauseBtn').style.display = 'inline-block';
+    document.getElementById('replayStopBtn').style.display  = 'inline-block';
+    document.getElementById('replayPauseBtn').textContent   = '⏸ Pause';
+}
+
+async function _loadReplayData(date) {
+    const activePanels = panels.filter(p => p.symbol);
+    if (!activePanels.length) return false;
+    const symbols = [...new Set(activePanels.map(p => p.symbol))];
+    const results = await Promise.all(
+        symbols.map(async sym => {
+            const [candleData, chartData, jumpData] = await Promise.all([
+                fetch(`/api/replay/candles?symbol=${encodeURIComponent(sym)}&date=${date}`)
+                    .then(r => r.json()).catch(() => ({ candles: [] })),
+                fetch(`/api/chart/${encodeURIComponent(sym)}?date=${date}`)
+                    .then(r => r.json()).catch(() => ({ gaps: [] })),
+                fetch(`/api/jumps/${encodeURIComponent(sym)}?date=${date}`)
+                    .then(r => r.json()).catch(() => ({ jumps: [] })),
+            ]);
+            return {
+                sym,
+                candles: candleData.candles || [],
+                gaps:    chartData.gaps    || [],
+                jumps:   jumpData.jumps    || [],
+            };
+        })
+    );
+    _replayData = {};
+    const allTimes = new Set();
+    results.forEach(({ sym, candles, gaps, jumps }) => {
+        const byTime = {};
+        candles.forEach(c => { byTime[c.time] = c; allTimes.add(c.time); });
+        _replayData[sym] = byTime;
+        // Set pending markers on each panel that uses this symbol
+        panels.forEach(p => { if (p.symbol === sym) p.replaySetPendingMarkers(gaps, jumps); });
+    });
+    _replayBuckets = [...allTimes].sort((a, b) => a - b);
+    return _replayBuckets.length > 0;
+}
+
+function _makeSubCandle(candle, step) {
+    const { time, open, high, low, close } = candle;
+    const bullish = close >= open;
+    if (step === 0) return { time, open, high: open, low: open, close: open };
+    if (step === 1) return bullish
+        ? { time, open, high: open, low,     close: low  }   // bullish: dip to low first
+        : { time, open, high,     low: open, close: high };  // bearish: spike to high first
+    // step 2: second extreme
+    return bullish
+        ? { time, open, high,     low,     close: high }     // bullish: now reach high
+        : { time, open, high,     low,     close: low  };    // bearish: now reach low
+}
+
+function _applyReplayTick(bucket, timeStr, subStep = 3) {
+    const isFinal = subStep >= 3;
+    panels.forEach(p => {
+        if (!p.symbol || !_replayData[p.symbol]) return;
+        const candle = _replayData[p.symbol][bucket];
+        if (!candle) return;
+        const display = isFinal ? candle : _makeSubCandle(candle, subStep);
+        p.replayUpdate(display, isFinal);
+    });
+    document.getElementById('replayProgress').textContent = timeStr;
+}
+
+function _startReplayInterval() {
+    const speed    = parseInt(document.getElementById('replaySpeed').value) || 1;
+    const useSubs  = speed <= 5;   // sub-step animation only at 1× and 5×
+    const subSteps = useSubs ? 4 : 1;
+    const interval = Math.round(5000 / speed / subSteps);
+    const total    = _replayBuckets.length;
+    let subStep = 0;
+
+    _replayTimer = setInterval(() => {
+        if (_replayIndex >= total) {
+            clearInterval(_replayTimer); _replayTimer = null;
+            document.getElementById('replayProgress').textContent = '✓ Done';
+            document.getElementById('replayPauseBtn').style.display = 'none';
+            return;
+        }
+        const bucket = _replayBuckets[_replayIndex];
+        const ist    = new Date((bucket + 19800) * 1000);
+        const timeStr = `${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')}:${String(ist.getUTCSeconds()).padStart(2,'0')}`;
+
+        _applyReplayTick(bucket, timeStr, useSubs ? subStep : 3);
+
+        const isFinalStep = !useSubs || subStep === 3;
+        if (_replayChannel && isFinalStep) {
+            _replayChannel.postMessage({ type: 'replay-tick', bucket, timeStr });
+        }
+        if (isFinalStep) { _replayIndex++; subStep = 0; }
+        else { subStep++; }
+    }, interval);
+}
+
+// Listen for messages from the master tab
+if (_replayChannel) {
+    _replayChannel.onmessage = async (event) => {
+        const msg = event.data;
+        if (!msg?.type) return;
+
+        if (msg.type === 'replay-start') {
+            // Only join if we're in hist mode with the same date and not already replaying
+            if (!_histMode || _histDate !== msg.date || _replayActive) return;
+            const playBtn = document.getElementById('replayPlayBtn');
+            playBtn.disabled = true; playBtn.textContent = '⏳ Loading...';
+            panels.filter(p => p.symbol).forEach(p => p.replayClear());
+            const ok = await _loadReplayData(msg.date);
+            if (!ok) { playBtn.disabled = false; playBtn.textContent = '▶ Play'; return; }
+            _replayIndex = 0; _replayActive = true; _replayPaused = false;
+            _activateReplayUI();
+
+        } else if (msg.type === 'replay-tick') {
+            if (!_replayActive || _replayPaused) return;
+            _applyReplayTick(msg.bucket, msg.timeStr);
+
+        } else if (msg.type === 'replay-pause') {
+            if (!_replayActive || _replayPaused) return;
+            _replayPaused = true;
+            document.getElementById('replayPauseBtn').textContent = '▶ Resume';
+
+        } else if (msg.type === 'replay-resume') {
+            if (!_replayActive || !_replayPaused) return;
+            _replayPaused = false;
+            document.getElementById('replayPauseBtn').textContent = '⏸ Pause';
+
+        } else if (msg.type === 'replay-stop') {
+            if (!_replayActive) return;
+            _cancelReplay();
+            panels.forEach(p => { if (p.symbol) p.loadSymbol(p.symbol, null, true, _histDate); });
+        }
+    };
+}
+
+async function startReplay() {
+    const date = _histDate;
+    if (!date) return;
+    if (!panels.filter(p => p.symbol).length) return;
+
+    const playBtn = document.getElementById('replayPlayBtn');
+    playBtn.disabled = true; playBtn.textContent = '⏳ Loading...';
+
+    // Tell other tabs to start loading in parallel
+    if (_replayChannel) _replayChannel.postMessage({ type: 'replay-start', date });
+
+    // Clear panels BEFORE loading so replaySetPendingMarkers (called inside
+    // _loadReplayData) sets pending markers after the clear, not before.
+    panels.filter(p => p.symbol).forEach(p => p.replayClear());
+
+    const ok = await _loadReplayData(date);
+    if (!ok) { playBtn.disabled = false; playBtn.textContent = '▶ Play'; return; }
+
+    _replayIndex = 0; _replayActive = true; _replayPaused = false;
+    _activateReplayUI();
+    _startReplayInterval();
+}
+
+function toggleReplayPause() {
+    if (!_replayActive) return;
+    if (!_replayPaused) {
+        clearInterval(_replayTimer); _replayTimer = null; _replayPaused = true;
+        document.getElementById('replayPauseBtn').textContent = '▶ Resume';
+        if (_replayChannel) _replayChannel.postMessage({ type: 'replay-pause' });
+    } else {
+        _replayPaused = false;
+        document.getElementById('replayPauseBtn').textContent = '⏸ Pause';
+        if (_replayChannel) _replayChannel.postMessage({ type: 'replay-resume' });
+        _startReplayInterval();
+    }
+}
+
+function stopReplay() {
+    if (_replayChannel) _replayChannel.postMessage({ type: 'replay-stop' });
+    _cancelReplay();
+    panels.forEach(p => { if (p.symbol) p.loadSymbol(p.symbol, null, true, _histDate); });
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2947,6 +3265,7 @@ function onAutoPopulateChange(mode) {
             hideLoadingBar();
             toast('Auto populate failed: ' + e.message, 'warn');
         });
+        if (_histMode) document.getElementById('replayControls').classList.add('visible');
     }
 
     const btn = document.getElementById('refreshAutoPopBtn');
@@ -3017,8 +3336,12 @@ async function autoPopulatePanels(mode) {
         // Treat the user's IST HH:MM directly as UTC in Date.UTC to get the matching epoch.
         const targetBucket = Math.floor(Date.UTC(yyyy, mo - 1, dd, hh, mm, 0) / 1000);
 
+        const modeIdx = mode.startsWith('banknifty') ? 'BANKNIFTY'
+                      : mode.startsWith('midcap')    ? 'MIDCPNIFTY'
+                      : mode.startsWith('sensex')    ? 'SENSEX'
+                      : 'NIFTY';
         const indicesNeeded = [...new Set(
-            [g1Index, g2Index, mode.startsWith('nifty') ? 'NIFTY' : 'SENSEX'].filter(Boolean)
+            [g1Index, g2Index, modeIdx].filter(Boolean)
         )];
 
         const chartResults = await Promise.all(

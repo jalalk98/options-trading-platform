@@ -15,7 +15,8 @@ from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router, prewarm_strikes_cache, refresh_b2_cache
 from backend.api.sl import router as sl_router
 from backend.api.streaming import manager
-from fastapi import WebSocketDisconnect
+from fastapi import WebSocketDisconnect, Query
+from backend.services import duckdb_adapter as _duckdb
 
     
 app = FastAPI()
@@ -157,6 +158,17 @@ async def startup():
             await asyncio.sleep(300)  # check every 5 minutes
 
     asyncio.create_task(_b2_refresh_loop())
+
+@app.get("/api/replay/candles")
+async def replay_candles(symbol: str = Query(...), date: str = Query(...)):
+    """Return all 5s candles for a symbol/date from parquet for client-side replay."""
+    rows = await _duckdb.query_history(symbol, date_str=date)
+    candles = [
+        {"time": r[0] - 19800, "open": r[1], "high": r[2], "low": r[3], "close": r[4]}
+        for r in rows
+    ]
+    return {"symbol": symbol, "date": date, "candles": candles}
+
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):
