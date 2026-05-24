@@ -159,6 +159,13 @@ async def startup():
 
     asyncio.create_task(_b2_refresh_loop())
 
+@app.get("/api/replay/ticks")
+async def replay_ticks(symbol: str = Query(...), date: str = Query(...)):
+    """Return all raw ticks for a symbol/date for client-side tick-level replay."""
+    ticks = await _duckdb.query_ticks(symbol, date)
+    return {"symbol": symbol, "date": date, "count": len(ticks), "ticks": ticks}
+
+
 @app.get("/api/replay/candles")
 async def replay_candles(symbol: str = Query(...), date: str = Query(...)):
     """Return all 5s candles for a symbol/date from parquet for client-side replay."""

@@ -378,3 +378,32 @@ async def query_hist_symbols(date_str: str) -> list:
 async def last_trading_date(symbol: str) -> Optional[PyDate]:
     """Drop-in DuckDB replacement for _get_last_trading_date."""
     return await asyncio.to_thread(_sync_last_trading_date, symbol)
+
+
+# Raw ticks for tick-level replay
+def _sync_query_ticks(symbol: str, d: PyDate) -> list:
+    """Return all raw ticks for symbol/date as [{t: epoch_sec, p: price}]."""
+    group = _symbol_to_group(symbol)
+    path = _raw_ticks_path(group, d)
+    if not path.exists():
+        return []
+
+    time_start, time_end = _jumps_time_range(d)
+
+    rows = _get_db().execute("""
+        SELECT timestamp, curr_price
+        FROM read_parquet(?)
+        WHERE symbol = ?
+          AND timestamp >= ?
+          AND timestamp <= ?
+          AND curr_price > 0
+        ORDER BY timestamp ASC
+    """, [str(path), symbol, time_start, time_end]).fetchall()
+
+    return [{"t": calendar.timegm(r[0].timetuple()), "p": float(r[1])} for r in rows]
+
+
+async def query_ticks(symbol: str, date_str: str) -> list:
+    """Return all raw ticks for tick-level replay."""
+    d = PyDate.fromisoformat(date_str)
+    return await asyncio.to_thread(_sync_query_ticks, symbol, d)

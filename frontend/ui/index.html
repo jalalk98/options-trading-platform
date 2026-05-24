@@ -383,6 +383,11 @@
             font-size: 11px; padding: 2px 4px;
             border: 1px solid #d97706; border-radius: 4px; background: #fff; cursor: pointer;
         }
+        #replayLiveBtn {
+            font-size: 11px; padding: 2px 9px;
+            background: #0369a1; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+        }
+        #replayLiveBtn:hover { background: #0284c7; }
         #replayProgress {
             font-size: 10px; color: #92400e; min-width: 70px; text-align: center;
         }
@@ -1072,6 +1077,7 @@
     <span id="histNoData" style="display:none">No data for this date</span>
     <div id="replayControls">
         <button id="replayPlayBtn" title="Replay day candle by candle" onclick="startReplay()">▶ Play</button>
+        <button id="replayLiveBtn" title="Replay using raw ticks — candle forms like live market" onclick="startTickReplay()">▶ Live</button>
         <button id="replayPauseBtn" title="Pause / Resume replay" onclick="toggleReplayPause()">⏸ Pause</button>
         <button id="replayStopBtn" title="Stop replay and show full day" onclick="stopReplay()">⏹ Stop</button>
         <select id="replaySpeed" title="Replay speed">
@@ -2524,6 +2530,24 @@ function createPanel(id) {
             });
             if (markerChanged) refreshMarkers();
         },
+        replayTickUpdate(price, bucket) {
+            // Called once per raw tick. bucket = floor(epoch/5)*5 (IST-naive).
+            if (!currentCandle || currentCandle.time !== bucket) {
+                // Bucket boundary: finalize previous candle (reveals markers/fills)
+                if (currentCandle) this.replayUpdate(currentCandle, true);
+                currentCandle = { time: bucket, open: price, high: price, low: price, close: price };
+            } else {
+                currentCandle.close = price;
+                if (price > currentCandle.high) currentCandle.high = price;
+                if (price < currentCandle.low)  currentCandle.low  = price;
+            }
+            lastCandleTime = bucket;
+            candleSeries.update(currentCandle);
+        },
+        replayFinalizeTick() {
+            // Called at end-of-day to flush the last in-flight candle.
+            if (currentCandle) this.replayUpdate(currentCandle, true);
+        },
     };
     return panel;
 }
@@ -2746,19 +2770,26 @@ let _replayData    = {};   // { symbol: { time: candle } }
 let _replayBuckets = [];   // sorted unique time values across all symbols
 let _replayIndex   = 0;
 
+// Tick replay state
+let _replayTimeline  = [];  // [{sym, t, p}, ...] merged sorted across all symbols
+let _replayTickIndex = 0;
+
 // BroadcastChannel: one tab is master (runs timer + broadcasts),
 // all other tabs with the same date in hist mode follow along.
 const _replayChannel = (typeof BroadcastChannel !== 'undefined')
     ? new BroadcastChannel('replay-sync') : null;
 
 function _cancelReplay() {
-    if (_replayTimer) { clearInterval(_replayTimer); _replayTimer = null; }
+    if (_replayTimer) { clearInterval(_replayTimer); clearTimeout(_replayTimer); _replayTimer = null; }
     _replayActive = false; _replayPaused = false;
     _replayData = {}; _replayBuckets = []; _replayIndex = 0;
+    _replayTimeline = []; _replayTickIndex = 0;
     const p = document.getElementById('replayPlayBtn');
+    const l = document.getElementById('replayLiveBtn');
     const u = document.getElementById('replayPauseBtn');
     const s = document.getElementById('replayStopBtn');
     p.style.display = ''; p.disabled = false; p.textContent = '▶ Play';
+    l.style.display = ''; l.disabled = false; l.textContent = '▶ Live';
     u.style.display = 'none'; u.textContent = '⏸ Pause';
     s.style.display = 'none';
     document.getElementById('replayProgress').textContent = '';
@@ -2766,6 +2797,7 @@ function _cancelReplay() {
 
 function _activateReplayUI() {
     document.getElementById('replayPlayBtn').style.display  = 'none';
+    document.getElementById('replayLiveBtn').style.display  = 'none';
     document.getElementById('replayPauseBtn').style.display = 'inline-block';
     document.getElementById('replayStopBtn').style.display  = 'inline-block';
     document.getElementById('replayPauseBtn').textContent   = '⏸ Pause';
@@ -2926,14 +2958,18 @@ async function startReplay() {
 function toggleReplayPause() {
     if (!_replayActive) return;
     if (!_replayPaused) {
-        clearInterval(_replayTimer); _replayTimer = null; _replayPaused = true;
+        // Clear both interval (candle mode) and timeout (tick mode)
+        if (_replayTimer) { clearInterval(_replayTimer); clearTimeout(_replayTimer); _replayTimer = null; }
+        _replayPaused = true;
         document.getElementById('replayPauseBtn').textContent = '▶ Resume';
         if (_replayChannel) _replayChannel.postMessage({ type: 'replay-pause' });
     } else {
         _replayPaused = false;
         document.getElementById('replayPauseBtn').textContent = '⏸ Pause';
         if (_replayChannel) _replayChannel.postMessage({ type: 'replay-resume' });
-        _startReplayInterval();
+        // Resume whichever engine is active
+        if (_replayTimeline.length > 0) _startTickEngine();
+        else _startReplayInterval();
     }
 }
 
@@ -2942,6 +2978,113 @@ function stopReplay() {
     _cancelReplay();
     panels.forEach(p => { if (p.symbol) p.loadSymbol(p.symbol, null, true, _histDate); });
 }
+
+// ── Tick-level replay engine ──────────────────────────────────────────────────
+
+async function _loadTickData(date) {
+    const activePanels = panels.filter(p => p.symbol);
+    if (!activePanels.length) return false;
+    const symbols = [...new Set(activePanels.map(p => p.symbol))];
+
+    const results = await Promise.all(
+        symbols.map(async sym => {
+            const [tickData, chartData, jumpData] = await Promise.all([
+                fetch(`/api/replay/ticks?symbol=${encodeURIComponent(sym)}&date=${date}`)
+                    .then(r => r.json()).catch(() => ({ ticks: [], count: 0 })),
+                fetch(`/api/chart/${encodeURIComponent(sym)}?date=${date}`)
+                    .then(r => r.json()).catch(() => ({ gaps: [] })),
+                fetch(`/api/jumps/${encodeURIComponent(sym)}?date=${date}`)
+                    .then(r => r.json()).catch(() => ({ jumps: [] })),
+            ]);
+            return {
+                sym,
+                ticks: tickData.ticks || [],
+                count: tickData.count || 0,
+                gaps:  chartData.gaps || [],
+                jumps: jumpData.jumps || [],
+            };
+        })
+    );
+
+    _replayTimeline = [];
+    results.forEach(({ sym, ticks, gaps, jumps }) => {
+        panels.forEach(p => { if (p.symbol === sym) p.replaySetPendingMarkers(gaps, jumps); });
+        ticks.forEach(tk => _replayTimeline.push({ sym, t: tk.t, p: tk.p }));
+    });
+
+    // Sort merged timeline by timestamp
+    _replayTimeline.sort((a, b) => a.t - b.t);
+    _replayTickIndex = 0;
+    return _replayTimeline.length > 0;
+}
+
+function _startTickEngine() {
+    const speed = parseInt(document.getElementById('replaySpeed').value) || 1;
+    const total = _replayTimeline.length;
+
+    function _fireTick() {
+        if (!_replayActive || _replayPaused) return;
+        if (_replayTickIndex >= total) {
+            // Finalize the last in-flight candle for every active panel
+            panels.forEach(p => { if (p.symbol) p.replayFinalizeTick?.(); });
+            document.getElementById('replayProgress').textContent = '✓ Done';
+            document.getElementById('replayPauseBtn').style.display = 'none';
+            _replayActive = false;
+            return;
+        }
+
+        const tick = _replayTimeline[_replayTickIndex];
+        const bucket = Math.floor(tick.t / 5) * 5;  // IST-naive epoch → 5s bucket
+
+        // Update progress display on bucket boundaries (not every tick — too noisy)
+        const prevBucket = _replayTickIndex > 0
+            ? Math.floor(_replayTimeline[_replayTickIndex - 1].t / 5) * 5 : -1;
+        if (bucket !== prevBucket) {
+            const ist = new Date((bucket + 19800) * 1000);
+            document.getElementById('replayProgress').textContent =
+                `${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')}:${String(ist.getUTCSeconds()).padStart(2,'0')}`;
+        }
+
+        // Apply tick to matching panels
+        panels.forEach(p => {
+            if (p.symbol === tick.sym) p.replayTickUpdate(tick.p, bucket);
+        });
+
+        _replayTickIndex++;
+
+        // Schedule next tick
+        if (_replayTickIndex < total) {
+            const next = _replayTimeline[_replayTickIndex];
+            const gap = Math.max(16, Math.round((next.t - tick.t) * 1000 / speed));
+            _replayTimer = setTimeout(_fireTick, gap);
+        } else {
+            _replayTimer = setTimeout(_fireTick, 16);  // flush final tick
+        }
+    }
+
+    _replayTimer = setTimeout(_fireTick, 0);
+}
+
+async function startTickReplay() {
+    const date = _histDate;
+    if (!date) return;
+    if (!panels.filter(p => p.symbol).length) return;
+
+    const liveBtn = document.getElementById('replayLiveBtn');
+    liveBtn.disabled = true; liveBtn.textContent = '⏳ Loading...';
+
+    if (_replayChannel) _replayChannel.postMessage({ type: 'replay-start', date });
+
+    panels.filter(p => p.symbol).forEach(p => p.replayClear());
+
+    const ok = await _loadTickData(date);
+    if (!ok) { liveBtn.disabled = false; liveBtn.textContent = '▶ Live'; return; }
+
+    _replayActive = true; _replayPaused = false;
+    _activateReplayUI();
+    _startTickEngine();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function loadStrikes() {
