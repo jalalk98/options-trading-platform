@@ -4679,6 +4679,10 @@ function saveViewState() {
         await loadPanelsBatched(activeSaved, p => syms[panels.indexOf(p)], true);
         prefetchJumps(syms.filter(Boolean));
     }
+
+    if (new URLSearchParams(window.location.search).get('hist') === '1') {
+        toggleHistMode();
+    }
 })();
 
 // ══════════════════════════════════════════════════════════════

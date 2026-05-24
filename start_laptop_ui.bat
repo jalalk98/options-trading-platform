@@ -41,6 +41,6 @@ netstat -ano | findstr "127.0.0.1:8000" | findstr LISTENING >nul 2>&1
 if errorlevel 1 goto :wait_loop
 
 echo Server is ready. Opening browser...
-start http://127.0.0.1:8000/
+start http://127.0.0.1:8000/?hist=1
 
 pause
