@@ -2334,11 +2334,11 @@ function createPanel(id) {
             }
             _legToggled = true;
             _isLegSwitching = true;
-            await panelLoadSymbol(paired, null, true);
+            await panelLoadSymbol(paired, null, true, _panelHistDate);
         } else {
             _legToggled = false;
             _isLegSwitching = true;
-            await panelLoadSymbol(_baseSymbol, null, true);
+            await panelLoadSymbol(_baseSymbol, null, true, _panelHistDate);
         }
     }
 
