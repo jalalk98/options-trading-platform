@@ -1460,7 +1460,11 @@ function getPairedSymbol(sym) {
     return null;
 }
 function isKnownSymbol(sym) {
-    return sym ? Object.values(strikeMap).includes(sym) : false;
+    if (!sym) return false;
+    if (Object.values(strikeMap).includes(sym)) return true;
+    // In DuckDB/historical mode strikeMap only contains the loaded date's symbols,
+    // so the paired leg may be absent. Accept any symbol that looks like an option.
+    return /^(NIFTY|BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX)\d+(CE|PE)$/.test(sym);
 }
 
 /* ======================
@@ -2552,6 +2556,10 @@ function createPanel(id) {
         showNoData(label) {
             candleSeries.setData([]);
             symbol = null;
+            _baseSymbol = null;
+            _legToggled = false;
+            legToggleEl.checked = false;
+            legToggleEl.disabled = true;
             gapDetails.clear();
             labelEl.textContent = label || 'No Data';
             labelEl.className = 'panel-label no-label';
