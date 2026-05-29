@@ -1490,9 +1490,31 @@ let limitBuffer        = parseFloat(localStorage.getItem('limitBuffer')        ?
 let limitAutoCancelSecs = localStorage.getItem('limitAutoCancelSecs') === null
     ? 3 : parseInt(localStorage.getItem('limitAutoCancelSecs'));
 let limitDefaultSL = 10;
-let slBuffer          = 0.20;
-let slDistance        = 5;
-let slDefaultDist     = 5;
+const SL_INDEX_DEFAULTS = {
+    SENSEX:   { slBuffer: 0.5,  slDistance: 9, slDefaultDist: 20 },
+    NIFTY:    { slBuffer: 0.25, slDistance: 5, slDefaultDist: 10 },
+    _default: { slBuffer: 0.25, slDistance: 5, slDefaultDist: 10 },
+};
+const SL_INDEX_CONFIG = {
+    SENSEX:   { ...SL_INDEX_DEFAULTS.SENSEX },
+    NIFTY:    { ...SL_INDEX_DEFAULTS.NIFTY },
+    _default: { ...SL_INDEX_DEFAULTS._default },
+};
+function _slIndexKey(sym) {
+    if (!sym) return '_default';
+    if (sym.startsWith('SENSEX')) return 'SENSEX';
+    if (sym.startsWith('NIFTY')) return 'NIFTY';
+    return '_default';
+}
+function _loadSlConfig(sym) {
+    const cfg = SL_INDEX_CONFIG[_slIndexKey(sym)];
+    slBuffer      = cfg.slBuffer;
+    slDistance    = cfg.slDistance;
+    slDefaultDist = cfg.slDefaultDist;
+}
+let slBuffer          = SL_INDEX_DEFAULTS._default.slBuffer;
+let slDistance        = SL_INDEX_DEFAULTS._default.slDistance;
+let slDefaultDist     = SL_INDEX_DEFAULTS._default.slDefaultDist;
 let slAutoCancelCount = 1;
 let slAutoSlIncCount  = 1;
 let slAtCost          = false;
@@ -2528,6 +2550,7 @@ function createPanel(id) {
             resetOrderBar(sym);
             if (!isSameSymbol) panelLots = 1;  // new symbol → reset this panel's saved lot count
             if (!isSameSymbol) slTriggerBuffer = sym.startsWith('SENSEX') ? 2 : 1;
+            if (!isSameSymbol) _loadSlConfig(sym);
         }
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; _wsIsReconnect = false; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
@@ -2730,6 +2753,13 @@ function createPanel(id) {
             noDataEl.textContent = 'No Data';
             noDataEl.style.display = 'flex';
         },
+        setInvert(val) {
+            if (invertScale === val) return;
+            invertScale = val;
+            invertBtn.classList.toggle('active', val);
+            if (allCandles.length)
+                candleSeries.setData(val ? allCandles.map(invertCandle) : allCandles);
+        },
         redoLastAction() {
             if (!lineRedoStack.length) return 'Nothing to redo';
             const entry = lineRedoStack.pop();
@@ -2773,6 +2803,7 @@ function activatePanel(p) {
         // Restore this panel's lot count — don't reset to 1 on focus switch
         orderLotSize = getLotSize(sym);
         orderLots    = p.panelLots;
+        _loadSlConfig(sym);
         currentLTP   = null;
         document.getElementById('qtyPopupTitle').textContent =
             `Quantity (${getIndexName(sym)} · ${orderLotSize}/lot)`;
@@ -3568,8 +3599,10 @@ async function autoPopulatePanels(mode) {
         const atm     = atmMap[idxName];
         if (!atm) { hideLoadingBar(); toast('ATM not available for ' + idxName, 'warn'); return; }
 
-        const itmCount = Math.floor(total / 2);
-        const otmCount = total - itmCount;
+        // Last panel is reserved for the index chart; option strikes fill the rest
+        const optionCount = total - 1;
+        const itmCount = Math.floor(optionCount / 2);
+        const otmCount = optionCount - itmCount;
 
         // CE: ascending strikes — ITM (low) on left, OTM (high) on right
         // PE: descending strikes — ITM (high) on left, OTM (low) on right
@@ -3584,9 +3617,10 @@ async function autoPopulatePanels(mode) {
             strikes = [...itm, ...otm];
         }
 
-        const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
-        const activeSingle = panelSymbols
-            .map((sym, i) => sym ? panels[i] : null)
+        const optionPanels  = panels.slice(0, optionCount);
+        const panelSymbols  = strikes.map(strike => findSymbol(strike, type, idxName));
+        const activeSingle  = panelSymbols
+            .map((sym, i) => sym ? optionPanels[i] : null)
             .filter(Boolean);
         let prefetched = {};
         try {
@@ -3599,10 +3633,18 @@ async function autoPopulatePanels(mode) {
         } catch (e) {
             console.warn('[Refresh] Batch pre-fetch failed, panels will fetch individually:', e);
         }
-        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true, prefetched);
+        await loadPanelsBatched(activeSingle, p => panelSymbols[optionPanels.indexOf(p)], true, prefetched);
         panelSymbols.forEach((sym, i) => {
-            if (!sym && panels[i]) panels[i].showNoData(strikes[i] ? `${strikes[i]} ${type}` : 'No Data');
+            if (!sym && optionPanels[i]) optionPanels[i].showNoData(strikes[i] ? `${strikes[i]} ${type}` : 'No Data');
         });
+
+        // Last panel: index chart with invert on for PE
+        const lastPanel = panels[total - 1];
+        if (lastPanel) {
+            await lastPanel.loadSymbol(idxName);
+            lastPanel.setInvert(type === 'PE');
+        }
+
         hideLoadingBar();
         saveViewState();
         prefetchJumps(panelSymbols.filter(Boolean));
@@ -4052,6 +4094,11 @@ function closeSlConfig() {
     if (!isNaN(cancel)  && cancel >= 1) slAutoCancelCount = cancel;
     if (!isNaN(inc)    && inc    >= 1) slAutoSlIncCount  = inc;
     slAtCost = document.getElementById('slCfgSlAtCost').checked;
+    // Persist changes within this session for the active index
+    const _cfgKey = _slIndexKey(activePanel?.symbol);
+    SL_INDEX_CONFIG[_cfgKey].slBuffer      = slBuffer;
+    SL_INDEX_CONFIG[_cfgKey].slDistance    = slDistance;
+    SL_INDEX_CONFIG[_cfgKey].slDefaultDist = slDefaultDist;
     document.getElementById('slConfigPopup').style.display = 'none';
 }
 function openLimitConfig(anchorEl, type) {
@@ -4758,13 +4805,9 @@ window.addEventListener("keydown", async e => {
     const cp  = activePanel.crosshairPrice;
 
     if (key === "q") {
-        if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
-        const price = Number(cp.toFixed(2));
-        toast(`⏳ Placing SL BUY @ ${price}…`, 'info', 2000);
-        try {
-            const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "BUY" }) });
-            toastOrder(await res.json(), `SL BUY ${sym} @ ${price}`);
-        } catch (err) { toast(`❌ SL BUY failed: ${err.message}`, 'error', 10000); }
+        const _prevOrderType = orderType;
+        orderType = 'S';
+        try { await placeOrder('BUY'); } finally { orderType = _prevOrderType; }
     }
     if (key === "w") {
         if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
@@ -4774,6 +4817,29 @@ window.addEventListener("keydown", async e => {
             const res = await fetch("/api/place-sl-order", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ symbol: sym, price, side: "SELL" }) });
             toastOrder(await res.json(), `SL SELL ${sym} @ ${price}`);
         } catch (err) { toast(`❌ SL SELL failed: ${err.message}`, 'error', 10000); }
+    }
+    if (key === "s") {
+        if (!currentLTP) { toast('No LTP available', 'warn'); return; }
+        const slState = await fetch(`/api/sl/${encodeURIComponent(sym)}`).then(r => r.json());
+        if (!slState || slState.state === 'none') { toast('No active order to convert to SL', 'warn'); return; }
+        const side    = slState.side;
+        const slPrice = side === 'SELL'
+            ? roundTick(currentLTP - slDefaultDist)
+            : roundTick(currentLTP + slDefaultDist);
+        const trigger = side === 'SELL'
+            ? roundTick(slPrice + slBuffer)
+            : roundTick(slPrice - slBuffer);
+        toast(`⏳ Converting → SL @ ${slPrice}…`, 'info', 2000);
+        try {
+            const res  = await fetch('/api/sl/convert-to-sl', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol: sym, price: slPrice, trigger }) });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                activePanel.updateSLLine(slPrice, 'placed');
+                toast(`✅ SL set @ ${slPrice}  |  trigger ${trigger}`, 'success', 4000);
+            } else {
+                toast(`❌ Convert to SL failed: ${data.message || ''}`, 'error', 6000);
+            }
+        } catch (err) { toast(`❌ Convert to SL failed: ${err.message}`, 'error', 6000); }
     }
     if (key === "l" || key === "L") {
         if (cp === null) { toast('Move mouse over chart first', 'warn'); return; }
