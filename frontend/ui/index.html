@@ -1091,6 +1091,7 @@
             <span id="layoutBtnArrow">▾</span>
         </button>
         <button id="archiveBtn" title="Archive Manager" onclick="openArchiveModal()" style="font-size:11px;padding:3px 7px;background:#0D2137;border:1px solid #1565C0;border-radius:4px;cursor:pointer;color:#42A5F5;transition:all 0.2s;">🗄 Archive</button>
+        <button id="syncBtn" title="Download missing data from B2 to laptop" onclick="triggerB2Sync()" style="font-size:11px;padding:3px 7px;background:#0D2137;border:1px solid #1565C0;border-radius:4px;cursor:pointer;color:#42A5F5;transition:all 0.2s;">⬇ Sync</button>
         <script>
             (function() {
                 const now = new Date();
@@ -3163,20 +3164,21 @@ function _startTickEngine() {
         }
 
         const tick = _replayTimeline[_replayTickIndex];
-        const bucket = Math.floor(tick.t / 5) * 5;  // IST-naive epoch → 5s bucket
+        const rawBucket  = Math.floor(tick.t / 5) * 5;   // IST-naive epoch (for display + gap comparison)
+        const chartBucket = rawBucket - 19800;            // chartTime (for candleSeries, matches candle.time convention)
 
         // Update progress display on bucket boundaries (not every tick — too noisy)
-        const prevBucket = _replayTickIndex > 0
+        const prevRaw = _replayTickIndex > 0
             ? Math.floor(_replayTimeline[_replayTickIndex - 1].t / 5) * 5 : -1;
-        if (bucket !== prevBucket) {
-            const ist = new Date((bucket + 19800) * 1000);
+        if (rawBucket !== prevRaw) {
+            const ist = new Date(rawBucket * 1000);  // rawBucket IS the IST-naive epoch → getUTC* gives IST digits
             document.getElementById('replayProgress').textContent =
                 `${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')}:${String(ist.getUTCSeconds()).padStart(2,'0')}`;
         }
 
         // Apply tick to matching panels
         panels.forEach(p => {
-            if (p.symbol === tick.sym) p.replayTickUpdate(tick.p, bucket);
+            if (p.symbol === tick.sym) p.replayTickUpdate(tick.p, chartBucket);
         });
 
         _replayTickIndex++;
@@ -3424,6 +3426,28 @@ function toggleMaximize() {
 ====================== */
 function showLoadingBar() { document.getElementById('loadingBar').classList.add('active'); }
 function hideLoadingBar() { document.getElementById('loadingBar').classList.remove('active'); }
+
+async function triggerB2Sync() {
+    const btn = document.getElementById('syncBtn');
+    const orig = btn.textContent;
+    btn.textContent = '⏳ Starting…';
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/sync', { method: 'POST' });
+        if (r.ok) {
+            btn.textContent = '✓ Started';
+            btn.style.borderColor = '#28a745';
+            btn.style.color = '#28a745';
+            setTimeout(() => { btn.textContent = orig; btn.style.borderColor = ''; btn.style.color = ''; btn.disabled = false; }, 4000);
+        } else {
+            btn.textContent = 'Error';
+            setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+        }
+    } catch {
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+    }
+}
 
 async function resetPositionCache() {
     const btn = document.getElementById('resetPositionsBtn');
