@@ -388,7 +388,8 @@ def _sync_query_ticks(symbol: str, d: PyDate) -> list:
     if not path.exists():
         return []
 
-    time_start, time_end = _jumps_time_range(d)
+    time_start = datetime(d.year, d.month, d.day, 9, 15, 0)   # full open, not 09:15:03
+    _, time_end = _jumps_time_range(d)
 
     rows = _get_db().execute("""
         SELECT timestamp, curr_price
