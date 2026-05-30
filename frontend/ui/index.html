@@ -2603,7 +2603,7 @@ function createPanel(id) {
             _convictionFired = false; _historicalConvictions = [];
             // _pendingGaps / _pendingJumps are NOT cleared here —
             // replaySetPendingMarkers() sets them after replayClear() is called.
-            chart.timeScale().applyOptions({ rightOffset: 5 });
+            chart.timeScale().applyOptions({ rightOffset: 5, barSpacing: 6 });
             chart.priceScale('right').applyOptions({ autoScale: true });
         },
         replaySetPendingMarkers(gapsRaw, jumpsRaw) {
