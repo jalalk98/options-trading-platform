@@ -3163,30 +3163,34 @@ function _startTickEngine() {
             return;
         }
 
-        const tick = _replayTimeline[_replayTickIndex];
-        const rawBucket  = Math.floor(tick.t / 5) * 5;   // IST-naive epoch (for display + gap comparison)
-        const chartBucket = rawBucket - 19800;            // chartTime (for candleSeries, matches candle.time convention)
+        try {
+            const tick = _replayTimeline[_replayTickIndex];
+            const rawBucket   = Math.floor(tick.t / 5) * 5;   // IST-naive epoch (for display)
+            const chartBucket = rawBucket - 19800;              // chartTime (for candleSeries)
 
-        // Update progress display on bucket boundaries (not every tick — too noisy)
-        const prevRaw = _replayTickIndex > 0
-            ? Math.floor(_replayTimeline[_replayTickIndex - 1].t / 5) * 5 : -1;
-        if (rawBucket !== prevRaw) {
-            const ist = new Date(rawBucket * 1000);  // rawBucket IS the IST-naive epoch → getUTC* gives IST digits
-            document.getElementById('replayProgress').textContent =
-                `${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')}:${String(ist.getUTCSeconds()).padStart(2,'0')}`;
+            // Update progress display on bucket boundaries (not every tick — too noisy)
+            const prevRaw = _replayTickIndex > 0
+                ? Math.floor(_replayTimeline[_replayTickIndex - 1].t / 5) * 5 : -1;
+            if (rawBucket !== prevRaw) {
+                const ist = new Date(rawBucket * 1000);
+                document.getElementById('replayProgress').textContent =
+                    `${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')}:${String(ist.getUTCSeconds()).padStart(2,'0')}`;
+            }
+
+            // Apply tick to matching panels
+            panels.forEach(p => {
+                if (p.symbol === tick.sym) p.replayTickUpdate(tick.p, chartBucket);
+            });
+        } catch(e) {
+            console.error('[tick replay] _fireTick error at index', _replayTickIndex, e);
         }
-
-        // Apply tick to matching panels
-        panels.forEach(p => {
-            if (p.symbol === tick.sym) p.replayTickUpdate(tick.p, chartBucket);
-        });
 
         _replayTickIndex++;
 
         // Schedule next tick
         if (_replayTickIndex < total) {
             const next = _replayTimeline[_replayTickIndex];
-            const gap = Math.max(16, Math.round((next.t - tick.t) * 1000 / speed));
+            const gap = Math.max(16, Math.round((next.t - _replayTimeline[_replayTickIndex - 1].t) * 1000 / speed));
             _replayTimer = setTimeout(_fireTick, gap);
         } else {
             _replayTimer = setTimeout(_fireTick, 16);  // flush final tick
