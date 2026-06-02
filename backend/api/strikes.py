@@ -9,6 +9,7 @@ import logging
 import orjson
 import subprocess
 import shutil
+from pathlib import Path
 from fastapi import Response
 
 logger = logging.getLogger(__name__)
@@ -203,9 +204,19 @@ def _idx_entry(d):
     change_pct = round(change * 100 / prev, 2) if prev and prev != 0 else None
     return {"ltp": ltp, "change": change, "change_pct": change_pct}
 
+_DOTENV_PATH = Path(__file__).parents[2] / ".env"
+
 async def _compute_ltp(pool) -> dict:
     """Fetch live index LTPs: Kite first (2s timeout), DB fallback.
     Sets _ltp_cache['ttl'] as a side-effect (2s live, 60s DB fallback)."""
+    # Reload token in case it was regenerated since server start (daily Kite tokens)
+    try:
+        from dotenv import dotenv_values
+        fresh_token = dotenv_values(_DOTENV_PATH).get("KITE_ACCESS_TOKEN", "")
+        if fresh_token and fresh_token != _kite.access_token:
+            _kite.set_access_token(fresh_token)
+    except Exception:
+        pass
     # Try Kite with 2-second timeout
     try:
         loop = asyncio.get_event_loop()

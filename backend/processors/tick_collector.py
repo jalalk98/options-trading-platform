@@ -9,13 +9,14 @@ from backend.services.instrument_registry import (
     register_index_instrument,
 )
 
-# 5 indexes to always subscribe and record ticks for
+# Indexes to always subscribe and record ticks for
 INDEX_DEFINITIONS = [
     {"exchange_sym": "NSE:NIFTY 50",         "symbol": "NIFTY"},
     {"exchange_sym": "BSE:SENSEX",            "symbol": "SENSEX"},
     {"exchange_sym": "NSE:NIFTY BANK",        "symbol": "BANKNIFTY"},
     {"exchange_sym": "NSE:NIFTY FIN SERVICE", "symbol": "FINNIFTY"},
     {"exchange_sym": "NSE:NIFTY MID SELECT",  "symbol": "MIDCPNIFTY"},
+    {"exchange_sym": "NSEIX:GIFT NIFTY",      "symbol": "GIFTNIFTY"},
 ]
 
 from kiteconnect import KiteConnect

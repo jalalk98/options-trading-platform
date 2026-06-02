@@ -173,6 +173,45 @@ async def convert_to_limit(req: ConvertRequest):
 
 
 # ─────────────────────────────────────────────
+# POST /api/sl/convert-to-sl   (S key)
+# Converts the active LIMIT order back to an SL order at a new price.
+# ─────────────────────────────────────────────
+class ConvertToSLRequest(BaseModel):
+    symbol:  str
+    price:   float   # SL limit price
+    trigger: float   # SL trigger price
+
+@router.post("/sl/convert-to-sl")
+async def convert_to_sl(req: ConvertToSLRequest):
+    state = sl_state.get(req.symbol)
+    if not state:
+        return {"status": "error", "message": "No active SL order for this symbol"}
+    order_ids = [o["order_id"] for o in state.get("sl_orders", [])]
+    if not order_ids:
+        return {"status": "error", "message": "No active SL order for this symbol"}
+
+    price   = _round(req.price)
+    trigger = _round(req.trigger)
+
+    async def _modify_one(oid):
+        try:
+            result = await kite1.hard_code_modify_limit_type(
+                order_id=oid, price=price, trig_price=trigger,
+                access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
+                type="SL",
+            )
+            logger.info(f"LIMIT→SL for {req.symbol} order {oid} @ trigger={trigger} limit={price}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"convert-to-sl error for {oid}: {e}")
+            return {"error": str(e)}
+
+    results = await asyncio.gather(*[_modify_one(oid) for oid in order_ids])
+    sl_state[req.symbol]["price"]  = price
+    sl_state[req.symbol]["state"]  = "placed"
+    return {"status": "ok", "price": price, "trigger": trigger, "results": list(results)}
+
+
 # POST /api/sl/convert-to-market  (M key)
 # Converts the active SL order to a MARKET order.
 # ─────────────────────────────────────────────

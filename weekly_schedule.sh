@@ -207,6 +207,13 @@ if su_rows:
     keyboard_rows.append(section_header("── Every Sunday ──"))
     keyboard_rows.extend(su_rows)
 
+keyboard_rows.append(section_header("── On demand ──"))
+keyboard_rows.extend([
+    [{"text": "🔍 Trading Status",      "callback_data": "cmd:status"}],
+    [{"text": "⏸ Holiday Mode ON ⚠️",  "callback_data": "cmd:holiday"}],
+    [{"text": "▶️ Resume Trading ⚠️",   "callback_data": "cmd:resume"}],
+])
+
 tg_send(
     "⚡ Run any job on demand — tap a button below\n"
     "(⚠️ = requires confirmation before running)",

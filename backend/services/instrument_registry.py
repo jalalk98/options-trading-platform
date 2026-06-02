@@ -144,6 +144,8 @@ def get_metadata(token):
     return active_instruments.get(token)
 
 
+
+
 def register_index_instrument(token: int, symbol: str):
     """Register a cash-market index token with sentinel option fields."""
     active_instruments[token] = {

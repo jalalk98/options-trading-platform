@@ -30,66 +30,86 @@ _check_disk_warning() {
 }
 _check_disk_warning
 
-# ── DB health — query each value separately to avoid space-in-value parsing issues
-_pg() { PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c "$1" 2>/dev/null | tr -d ' \n'; }
+# ── DB helpers ────────────────────────────────────────────────────────────────
+_pg()  { PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c "$1" 2>/dev/null | tr -d ' \n'; }
+_pgs() { PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq -c "$1" 2>/dev/null | tr -d '\n' | sed 's/^ //;s/ $//'; }
 
-TABLE_SIZE=$(_pg "SELECT pg_size_pretty(pg_total_relation_size('gap_ticks'));")
-TABLE_SIZE_BYTES=$(_pg "SELECT pg_total_relation_size('gap_ticks');")
-TOTAL_ROWS=$(_pg "SELECT SUM(n_live_tup)::bigint FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%';")
-DEAD_TUPLES=$(_pg "SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='gap_ticks';")
-LAST_ANALYZE_DATE=$(_pg "SELECT COALESCE(DATE(GREATEST(last_analyze, last_autoanalyze))::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname='gap_ticks';")
+# ── DB health — only count partitions that actually have data ─────────────────
+# Empty future pre-created partitions (n_live_tup = 0) are excluded.
+TABLE_SIZE=$(_pgs "SELECT pg_size_pretty(COALESCE(SUM(pg_total_relation_size(relid)), 0)) FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%' AND n_live_tup > 0;")
+TABLE_SIZE_BYTES=$(_pg  "SELECT COALESCE(SUM(pg_total_relation_size(relid)), 0) FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%' AND n_live_tup > 0;")
+TOTAL_ROWS=$(_pg  "SELECT COALESCE(SUM(n_live_tup), 0)::bigint FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%' AND n_live_tup > 0;")
+DEAD_TUPLES=$(_pg  "SELECT COALESCE(SUM(n_dead_tup), 0) FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%';")
+LAST_ANALYZE_DATE=$(_pg  "SELECT COALESCE(DATE(MAX(GREATEST(last_analyze, last_autoanalyze)))::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%' AND n_live_tup > 0;")
 
-# ── gap_ticks growth trend (compare to yesterday) ────────────────────────────
+# ── Today's tick data (computed early — used in growth comparison below) ──────
+SYMBOLS_TODAY=$(_pg "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
+TICKS_TODAY=$(_pg   "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
+CANDLES_TODAY=$(_pg "SELECT COUNT(*) FROM candles_5s WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
+EVENTS_TODAY=$(_pg  "SELECT COUNT(*) FROM gap_events WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
+
+TOTAL_TICKS=$(( ${TICKS_TODAY:-0} + ${CANDLES_TODAY:-0} + ${EVENTS_TODAY:-0} ))
+TOTAL_TICKS_FMT=$(printf "%'d" "${TOTAL_TICKS:-0}"   2>/dev/null || echo "${TOTAL_TICKS:-0}")
+TICKS_FMT=$(printf   "%'d" "${TICKS_TODAY:-0}"        2>/dev/null || echo "${TICKS_TODAY:-0}")
+CANDLES_FMT=$(printf "%'d" "${CANDLES_TODAY:-0}"      2>/dev/null || echo "${CANDLES_TODAY:-0}")
+EVENTS_FMT=$(printf  "%'d" "${EVENTS_TODAY:-0}"       2>/dev/null || echo "${EVENTS_TODAY:-0}")
+
+# ── Growth trend: today's ticks vs last active trading day ────────────────────
+# Stats file format: DATE,TICKS_TODAY,TABLE_SIZE_BYTES
+#   TICKS_TODAY  = exact gap_ticks count for that day — unaffected by archiving
+#   TABLE_SIZE_BYTES = total bytes of non-empty partitions — disk capacity trend
 STATS_FILE="/var/log/trading-gap-ticks-stats.csv"
 YESTERDAY=$(date -d "yesterday" +%Y-%m-%d)
 
 TREND_LINE=""
-if [ -f "$STATS_FILE" ]; then
-    PREV=$(grep "^${YESTERDAY}," "$STATS_FILE" 2>/dev/null | tail -1)
+if [ "${TICKS_TODAY:-0}" -eq 0 ]; then
+    : # No trading today — skip growth comparison (would just show 0 vs prev day's count)
+elif [ -f "$STATS_FILE" ]; then
+    # Find last entry with ticks > 0 that isn't today (skips weekends/holidays automatically)
+    PREV=$(grep -v "^${TODAY}," "$STATS_FILE" | awk -F',' '$2 > 0' | tail -1)
     if [ -n "$PREV" ]; then
-        PREV_ROWS=$(echo "$PREV" | cut -d',' -f2)
+        PREV_DATE=$(echo "$PREV" | cut -d',' -f1)
+        PREV_TICKS=$(echo "$PREV" | cut -d',' -f2)
         PREV_BYTES=$(echo "$PREV" | cut -d',' -f3)
-        DELTA_ROWS=$(( ${TOTAL_ROWS:-0} - ${PREV_ROWS:-0} ))
+        DELTA_TICKS=$(( ${TICKS_TODAY:-0} - ${PREV_TICKS:-0} ))
         DELTA_BYTES=$(( ${TABLE_SIZE_BYTES:-0} - ${PREV_BYTES:-0} ))
-        DELTA_ROWS_FMT=$(printf "%'+d" "$DELTA_ROWS" 2>/dev/null || echo "+$DELTA_ROWS")
-        # Convert bytes delta to human-readable
+        DELTA_TICKS_FMT=$(printf "%'+d" "$DELTA_TICKS" 2>/dev/null || echo "$DELTA_TICKS")
         DELTA_MB=$(awk "BEGIN {printf \"%.0f\", $DELTA_BYTES/1048576}")
         if [ "$DELTA_MB" -ge 0 ] 2>/dev/null; then
             DELTA_SIZE_FMT="+${DELTA_MB} MB"
         else
             DELTA_SIZE_FMT="${DELTA_MB} MB"
         fi
-        TREND_LINE="  Growth vs yesterday: ${DELTA_ROWS_FMT} rows | ${DELTA_SIZE_FMT}"
+        if [ "$PREV_DATE" = "$YESTERDAY" ]; then
+            CMP_LABEL="yesterday"
+        else
+            CMP_LABEL="$PREV_DATE"
+        fi
+        TREND_LINE="  Growth vs ${CMP_LABEL}: ${DELTA_TICKS_FMT} ticks | ${DELTA_SIZE_FMT}"$'\n'
     fi
+fi
+
+# ── Last analyzed status ──────────────────────────────────────────────────────
+# On non-trading days autoanalyze doesn't run (nothing changed) — suppress the
+# warning unless the stats are genuinely stale (>3 days).
+DAYS_AGO=0
+if [ "$LAST_ANALYZE_DATE" != "$TODAY" ]; then
+    DAYS_AGO=$(( ( $(date +%s) - $(date -d "${LAST_ANALYZE_DATE:-1970-01-01}" +%s 2>/dev/null || echo $(date +%s)) ) / 86400 ))
 fi
 
 if [ "$LAST_ANALYZE_DATE" = "$TODAY" ]; then
     VACUUM_STATUS="today ✅"
+elif [ "${TICKS_TODAY:-0}" -eq 0 ] && [ "$DAYS_AGO" -le 3 ]; then
+    VACUUM_STATUS="${DAYS_AGO}d ago ✅"
 else
-    DAYS_AGO=$(( ( $(date +%s) - $(date -d "${LAST_ANALYZE_DATE:-1970-01-01}" +%s 2>/dev/null || echo $(date +%s)) ) / 86400 ))
     VACUUM_STATUS="${DAYS_AGO}d ago ⚠️"
 fi
-
-# ── Today's tick data ─────────────────────────────────────────────────────────
-SYMBOLS_TODAY=$(_pg "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
-TICKS_TODAY=$(_pg "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
-CANDLES_TODAY=$(_pg "SELECT COUNT(*) FROM candles_5s WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
-EVENTS_TODAY=$(_pg "SELECT COUNT(*) FROM gap_events WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
-
-TOTAL_TICKS=$(( ${TICKS_TODAY:-0} + ${CANDLES_TODAY:-0} + ${EVENTS_TODAY:-0} ))
-
-# Format with thousands separator
-TOTAL_TICKS_FMT=$(printf "%'d" "${TOTAL_TICKS:-0}" 2>/dev/null || echo "${TOTAL_TICKS:-0}")
-TICKS_FMT=$(printf "%'d" "${TICKS_TODAY:-0}" 2>/dev/null || echo "${TICKS_TODAY:-0}")
-CANDLES_FMT=$(printf "%'d" "${CANDLES_TODAY:-0}" 2>/dev/null || echo "${CANDLES_TODAY:-0}")
-EVENTS_FMT=$(printf "%'d" "${EVENTS_TODAY:-0}" 2>/dev/null || echo "${EVENTS_TODAY:-0}")
 
 # ── Disk & memory ─────────────────────────────────────────────────────────────
 DISK_USED=$(df -h / | awk 'NR==2 {print $3}')
 DISK_TOTAL=$(df -h / | awk 'NR==2 {print $2}')
 DISK_PCT=$(df -h / | awk 'NR==2 {print $5}')
 
-# Warn if disk > 70%
 DISK_PCT_NUM=${DISK_PCT//%/}
 if [ "${DISK_PCT_NUM:-0}" -ge 70 ]; then
     DISK_ICON="⚠️"
@@ -97,11 +117,10 @@ else
     DISK_ICON="✅"
 fi
 
-# Top-3 PostgreSQL tables by total size — use direct psql (not _pg) to preserve newlines
+# Top-3 PostgreSQL tables by total size — direct psql to preserve newlines
 TOP_TABLES=$(PGPASSWORD='MustafaHasnain@123' psql -h localhost -U postgres -d tickdata -tAq \
     -c "SELECT string_agg(relname || ':  ' || pg_size_pretty(pg_total_relation_size(relid)), E'\n' ORDER BY pg_total_relation_size(relid) DESC) FROM (SELECT relid, relname FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 3) t;" 2>/dev/null)
 
-# Log file sizes
 TRADING_LOG_SIZE=$(du -h /var/log/trading-api.log 2>/dev/null | cut -f1 || echo "N/A")
 SYSLOG_SIZE=$(du -h /var/log/syslog 2>/dev/null | cut -f1 || echo "N/A")
 
@@ -159,12 +178,13 @@ _tg "$MESSAGE"
 echo "$(date): Daily summary sent."
 
 # ── Persist today's stats for tomorrow's trend comparison ────────────────────
+# Format: DATE,TICKS_TODAY,TABLE_SIZE_BYTES
 touch "$STATS_FILE"
-# Use mktemp (/tmp) — ubuntu cannot create new files directly in /var/log/
 _TMP=$(mktemp)
-# Remove any existing entry for today before appending
-grep -v "^${TODAY}," "$STATS_FILE" > "$_TMP" && mv "$_TMP" "$STATS_FILE" || rm -f "$_TMP"
-echo "${TODAY},${TOTAL_ROWS:-0},${TABLE_SIZE_BYTES:-0}" >> "$STATS_FILE"
+{ grep -v "^${TODAY}," "$STATS_FILE" 2>/dev/null || true; } > "$_TMP"
+cat "$_TMP" > "$STATS_FILE"; rm -f "$_TMP"
+echo "${TODAY},${TICKS_TODAY:-0},${TABLE_SIZE_BYTES:-0}" >> "$STATS_FILE"
 # Keep only last 30 days of history
 _TMP=$(mktemp)
-tail -30 "$STATS_FILE" > "$_TMP" && mv "$_TMP" "$STATS_FILE" || rm -f "$_TMP"
+tail -30 "$STATS_FILE" > "$_TMP"
+cat "$_TMP" > "$STATS_FILE"; rm -f "$_TMP"

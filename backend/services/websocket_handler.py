@@ -142,6 +142,22 @@ def setup_websocket_events():
             logger.error(f"Error in on_order_update: {e}")
 
 
+    async def _place_sl_with_retry(coro_factory, symbol, max_retries=2, base_delay=0.35):
+        last_exc = None
+        for attempt in range(max_retries):
+            if attempt > 0:
+                delay = base_delay * attempt
+                logger.warning(f"SL placement rate-limited for {symbol} — retry {attempt}/{max_retries - 1} in {delay}s")
+                await asyncio.sleep(delay)
+            try:
+                return await coro_factory()
+            except Exception as e:
+                last_exc = e
+                if "429" in str(e) or "too many" in str(e).lower():
+                    continue
+                raise
+        raise last_exc
+
     async def handle_order_update(ws, data):
 
         global active_positions, sl_covered
@@ -335,14 +351,17 @@ def setup_websocket_events():
                     f"Source: {sl_source}"
                 )
 
-                result = await kite1.hard_code_regular_sell_order(
-                    exchange=exchange,
-                    trade_symbol=trade_symbol,
-                    qty=qty,
-                    stop_loss_price=stop_loss_price,
-                    trig_price=trigger_price,
-                    api_key=KITE_API_KEY,
-                    access_token=KITE_ACCESS_TOKEN
+                result = await _place_sl_with_retry(
+                    lambda: kite1.hard_code_regular_sell_order(
+                        exchange=exchange,
+                        trade_symbol=trade_symbol,
+                        qty=qty,
+                        stop_loss_price=stop_loss_price,
+                        trig_price=trigger_price,
+                        api_key=KITE_API_KEY,
+                        access_token=KITE_ACCESS_TOKEN
+                    ),
+                    trade_symbol
                 )
 
                 order_id = None
@@ -393,14 +412,17 @@ def setup_websocket_events():
                     f"Source: {sl_source}"
                 )
 
-                result = await kite1.hard_code_regular_buy_order(
-                    exchange=exchange,
-                    trade_symbol=trade_symbol,
-                    qty=qty,
-                    price=stop_loss_price,  # limit: at SL line price
-                    trig_price=trigger_price,  # trigger: SL line - buffer
-                    api_key=KITE_API_KEY,
-                    access_token=KITE_ACCESS_TOKEN
+                result = await _place_sl_with_retry(
+                    lambda: kite1.hard_code_regular_buy_order(
+                        exchange=exchange,
+                        trade_symbol=trade_symbol,
+                        qty=qty,
+                        price=stop_loss_price,
+                        trig_price=trigger_price,
+                        api_key=KITE_API_KEY,
+                        access_token=KITE_ACCESS_TOKEN
+                    ),
+                    trade_symbol
                 )
 
                 order_id = None

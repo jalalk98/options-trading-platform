@@ -86,7 +86,7 @@ class MainTicker:
     async def _connect(self):
         logging.info("Connecting to WebSocket...")
         try:
-            self.ws = await websockets.connect(self.ws_url, extra_headers={"User-Agent": self._user_agent()})
+            self.ws = await websockets.connect(self.ws_url, user_agent_header=self._user_agent())
             self.ws.ws_instance = self  # Set the MainTicker instance on the WebSocket object
             self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
             logging.info("Connected to WebSocket.")
@@ -97,12 +97,12 @@ class MainTicker:
             # Start _listen in a background task to prevent blocking
             asyncio.create_task(self._listen())
 
-        except websockets.InvalidStatusCode as e:
-            if e.status_code == 403:
+        except websockets.InvalidStatus as e:
+            if e.response.status_code == 403:
                 logging.error("Connection rejected with HTTP 403 Forbidden")
                 await self._close(code=1003, reason="HTTP 403 Forbidden")
                 return
-            logging.error(f"Invalid status code: {e.status_code}")
+            logging.error(f"Invalid status code: {e.response.status_code}")
             if self.reconnect:
                 await self._reconnect()
         except Exception as e:
