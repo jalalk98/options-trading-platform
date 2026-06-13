@@ -205,7 +205,7 @@ _SYNC_STATE_FILE = r"D:\tickdata\sync_state.json"
 
 def _read_sync_state():
     try:
-        with open(_SYNC_STATE_FILE) as f:
+        with open(_SYNC_STATE_FILE, encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception:
         return {"status": "idle"}

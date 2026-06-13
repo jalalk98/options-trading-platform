@@ -20,7 +20,7 @@ if (-not (Test-Path $LogDir)) {
 
 function Write-SyncState {
     param([string]$Status)
-    try { Set-Content -Path $StateFile -Value "{`"status`":`"$Status`"}" -Encoding utf8 } catch {}
+    try { [System.IO.File]::WriteAllText($StateFile, "{`"status`":`"$Status`"}") } catch {}
 }
 
 Set-Location $ProjectDir
