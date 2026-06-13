@@ -249,14 +249,16 @@ def _write_sync_state(state: dict):
 
 def _run_sync_thread():
     try:
-        proc = subprocess.run(
+        subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
              "-File", r"D:\projects\options-trading-platform\scripts\run_daily_sync.ps1"],
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=1800,
         )
-        _write_sync_state({"status": "done" if proc.returncode in (0, 1) else "error"})
+        # Terminal state (done/error) is written by run_daily_sync.ps1 itself,
+        # so it survives server restarts during the sync.
     except Exception:
+        # Only fires if PowerShell could not be launched at all.
         _write_sync_state({"status": "error"})
 
 @app.post("/api/sync")

@@ -9,12 +9,18 @@
 $ProjectDir = "D:\projects\options-trading-platform"
 $PythonExe  = "C:\Users\Jalal\anaconda3\envs\trading-platform\python.exe"
 $LogFile    = "D:\tickdata\sync_stdout.log"
+$StateFile  = "D:\tickdata\sync_state.json"
 $EnvFile    = "$ProjectDir\.env"
 
 # Ensure log directory exists
 $LogDir = Split-Path $LogFile -Parent
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+}
+
+function Write-SyncState {
+    param([string]$Status)
+    try { Set-Content -Path $StateFile -Value "{`"status`":`"$Status`"}" -Encoding utf8 } catch {}
 }
 
 Set-Location $ProjectDir
@@ -56,6 +62,8 @@ Add-Content -Path $LogFile -Value "======================================"
 Add-Content -Path $LogFile -Value "[$Timestamp] Task Scheduler triggered sync"
 Add-Content -Path $LogFile -Value "======================================"
 
+Write-SyncState "running"
+
 # --- Run the sync ---
 $ExitCode = 1
 try {
@@ -68,6 +76,12 @@ try {
 
 $EndTs = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 Add-Content -Path $LogFile -Value "[$EndTs] Exit code: $ExitCode"
+
+if ($ExitCode -eq 0 -or $ExitCode -eq 1) {
+    Write-SyncState "done"
+} else {
+    Write-SyncState "error"
+}
 
 # --- Failsafe Telegram on non-zero exit ---
 # Python's daily_sync.py sends Telegram on graceful failure (returncode 1)
