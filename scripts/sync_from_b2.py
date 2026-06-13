@@ -21,12 +21,27 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import boto3
+import requests as _requests
 from botocore.client import Config
 from config.credentials import (
     BACKBLAZE_KEY_ID, BACKBLAZE_APP_KEY,
     BACKBLAZE_ENDPOINT, BACKBLAZE_BUCKET,
     LOCAL_PARQUET_PATH,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
 )
+
+
+def _send_telegram(text: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        _requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+            timeout=8,
+        )
+    except Exception:
+        pass
 
 # Daily download budget warning threshold (respect B2 1 GB/day limit)
 DAILY_WARN_MB = 900
@@ -300,13 +315,18 @@ def sync_trade_journal(dry_run=False):
 
     print(f'OK ({size_mb:.2f} MB)')
 
-    # Quick row count via pyarrow
+    # Quick row count via pyarrow + Telegram notification
+    nrows = 0
     try:
         import pyarrow.parquet as pq
         nrows = pq.read_metadata(str(local)).num_rows
         print(f'Rows in file: {nrows:,}')
     except Exception:
         pass
+
+    _send_telegram(
+        f"📒 Trade journal synced to laptop: {nrows:,} rows ({size_mb:.2f} MB)"
+    )
 
 
 def main():
