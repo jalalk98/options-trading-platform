@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router, prewarm_strikes_cache, refresh_b2_cache
 from backend.api.sl import router as sl_router
+from backend.api.journal import router as journal_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect, Query
 from backend.services import duckdb_adapter as _duckdb
@@ -23,6 +24,7 @@ app = FastAPI()
 
 app.include_router(strikes_router, prefix="/api")
 app.include_router(sl_router, prefix="/api")
+app.include_router(journal_router, prefix="/api")
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(

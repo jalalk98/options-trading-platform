@@ -260,6 +260,55 @@ def list_local():
     print('-' * 70)
 
 
+def sync_trade_journal(dry_run=False):
+    """Download trade_journal/latest.parquet from B2 (always overwrites local copy)."""
+    B2_KEY = 'trade_journal/latest.parquet'
+    local = Path(LOCAL_PARQUET_PATH) / B2_KEY
+
+    s3 = get_b2_client()
+    try:
+        head = s3.head_object(Bucket=BACKBLAZE_BUCKET, Key=B2_KEY)
+    except Exception as e:
+        print(f'trade_journal not found on B2 yet: {e}')
+        print('Run a Phase A export on the server first.')
+        return
+
+    size_mb = head['ContentLength'] / 1024 / 1024
+    etag = head.get('ETag', '').strip('"')
+    print(f'trade_journal/latest.parquet — {size_mb:.2f} MB on B2')
+
+    if dry_run:
+        print('DRY RUN — would download to:', local)
+        return
+
+    # Always re-download (full snapshot may have grown since last sync)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    print(f'Downloading to {local}... ', end='', flush=True)
+    try:
+        s3.download_file(BACKBLAZE_BUCKET, B2_KEY, str(local))
+    except Exception as e:
+        print(f'FAILED: {e}')
+        return
+
+    # Verify MD5
+    if etag and len(etag) == 32:
+        actual = file_md5(local)
+        if actual != etag:
+            print(f'MD5 MISMATCH — deleting local copy (expected {etag}, got {actual})')
+            local.unlink()
+            return
+
+    print(f'OK ({size_mb:.2f} MB)')
+
+    # Quick row count via pyarrow
+    try:
+        import pyarrow.parquet as pq
+        nrows = pq.read_metadata(str(local)).num_rows
+        print(f'Rows in file: {nrows:,}')
+    except Exception:
+        pass
+
+
 def main():
     p = argparse.ArgumentParser(description='Sync parquet files from B2 to laptop.')
     p.add_argument('--dates', nargs='+', help='Specific dates (YYYY-MM-DD)')
@@ -269,6 +318,8 @@ def main():
                    default=['candles_5s', 'gap_events', 'raw_ticks'],
                    choices=['raw_ticks', 'candles_5s', 'gap_events'],
                    help='Tables to sync (default: all)')
+    p.add_argument('--journal', action='store_true',
+                   help='Download trade_journal/latest.parquet (full snapshot)')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--list-local', action='store_true',
                    help='Show what parquet files are already on laptop')
@@ -276,6 +327,10 @@ def main():
 
     if args.list_local:
         list_local()
+        return
+
+    if args.journal:
+        sync_trade_journal(dry_run=args.dry_run)
         return
 
     dates = []
@@ -286,7 +341,7 @@ def main():
         end = datetime.strptime(args.to_date, '%Y-%m-%d').date()
         dates = list(date_range(start, end))
     else:
-        p.error('Must provide --dates or --from/--to (or --list-local)')
+        p.error('Must provide --dates or --from/--to or --journal (or --list-local)')
 
     sync_dates(dates, args.tables, dry_run=args.dry_run)
 

@@ -29,8 +29,9 @@ from config.credentials import LOCAL_PARQUET_PATH
 # Paths
 _PARQUET_ROOT = Path(LOCAL_PARQUET_PATH)
 _CANDLES_ROOT = _PARQUET_ROOT / 'candles_5s'
-_GAPS_ROOT = _PARQUET_ROOT / 'gap_events'
-_TICKS_ROOT = _PARQUET_ROOT / 'raw_ticks'
+_GAPS_ROOT    = _PARQUET_ROOT / 'gap_events'
+_TICKS_ROOT   = _PARQUET_ROOT / 'raw_ticks'
+_JOURNAL_PATH = _PARQUET_ROOT / 'trade_journal' / 'latest.parquet'
 
 
 # Thread-local DuckDB connections: each thread gets its own connection so that
@@ -408,3 +409,112 @@ async def query_ticks(symbol: str, date_str: str) -> list:
     """Return all raw ticks for tick-level replay."""
     d = PyDate.fromisoformat(date_str)
     return await asyncio.to_thread(_sync_query_ticks, symbol, d)
+
+
+# ── Trade journal ─────────────────────────────────────────────────────────────
+
+def _sync_query_trade_journal(date_str: str, symbol: Optional[str] = None) -> dict:
+    """
+    Read trade_journal/latest.parquet and return the same JSON shape as
+    the production GET /api/journal endpoint — so the frontend works unchanged.
+    """
+    if not _JOURNAL_PATH.exists():
+        return {"date": date_str, "trades": [], "summary": {"total": 0, "wins": 0, "losses": 0, "pnl": 0.0}}
+
+    where = "WHERE CAST(trade_date AS VARCHAR) = ?"
+    params = [date_str]
+    if symbol:
+        where += " AND symbol = ?"
+        params.append(symbol)
+
+    rows = _get_db().execute(
+        f"""
+        SELECT id, trade_date, symbol, underlying, strike, option_type, expiry_date,
+               direction, quantity, entry_price, exit_price, entry_time, exit_time,
+               underlying_price_at_entry, underlying_price_at_exit,
+               pnl, setup, notes, outcome, order_id
+        FROM read_parquet(?)
+        {where}
+        ORDER BY entry_time ASC NULLS LAST
+        """,
+        [str(_JOURNAL_PATH)] + params,
+    ).fetchall()
+
+    cols = [
+        'id', 'trade_date', 'symbol', 'underlying', 'strike', 'option_type',
+        'expiry_date', 'direction', 'quantity', 'entry_price', 'exit_price',
+        'entry_time', 'exit_time', 'underlying_price_at_entry',
+        'underlying_price_at_exit', 'pnl', 'setup', 'notes', 'outcome', 'order_id',
+    ]
+
+    result = []
+    for row in rows:
+        r = dict(zip(cols, row))
+        result.append({
+            "id":                        int(r['id']) if r['id'] else None,
+            "trade_date":                str(r['trade_date']),
+            "symbol":                    r['symbol'],
+            "underlying":                r['underlying'],
+            "strike":                    float(r['strike']) if r['strike'] else None,
+            "option_type":               r['option_type'],
+            "expiry_date":               str(r['expiry_date']) if r['expiry_date'] else None,
+            "direction":                 r['direction'],
+            "quantity":                  int(r['quantity']) if r['quantity'] else 0,
+            "entry_price":               float(r['entry_price']) if r['entry_price'] else None,
+            "exit_price":                float(r['exit_price']) if r['exit_price'] else None,
+            "entry_time":                r['entry_time'].isoformat() if r['entry_time'] else None,
+            "exit_time":                 r['exit_time'].isoformat() if r['exit_time'] else None,
+            "underlying_price_at_entry": float(r['underlying_price_at_entry']) if r['underlying_price_at_entry'] else None,
+            "underlying_price_at_exit":  float(r['underlying_price_at_exit']) if r['underlying_price_at_exit'] else None,
+            "pnl":                       None,   # recomputed below
+            "setup":                     r['setup'],
+            "notes":                     r['notes'],
+            "outcome":                   r['outcome'],
+            "order_id":                  r['order_id'],
+            "trade_no":                  None,   # assigned below
+        })
+
+    # Compute trade_no + P&L (same algorithm as production journal.py)
+    _global_no: int = 0
+    _sym_qty: dict  = {}
+    _sym_tno: dict  = {}
+    _sym_pnl: dict  = {}
+
+    for trade in result:
+        sym   = trade["symbol"]
+        qty   = trade["quantity"] or 0
+        price = trade["entry_price"] or 0.0
+        prev  = _sym_qty.get(sym, 0)
+
+        if prev == 0:
+            _global_no   += 1
+            _sym_tno[sym] = _global_no
+            _sym_pnl[sym] = 0.0
+
+        trade["trade_no"] = _sym_tno[sym]
+        new_qty = prev + (qty if trade["direction"] == "BUY" else -qty)
+        _sym_qty[sym]  = new_qty
+        _sym_pnl[sym] += price * qty * (1 if trade["direction"] == "SELL" else -1)
+
+        if new_qty == 0:
+            trade["pnl"] = round(_sym_pnl[sym], 2)
+            del _sym_tno[sym]
+            del _sym_pnl[sym]
+
+    closed = [t for t in result if t["pnl"] is not None]
+    total_pnl = sum(t["pnl"] for t in closed)
+    return {
+        "date":    date_str,
+        "trades":  result,
+        "summary": {
+            "total":  len(closed),
+            "wins":   sum(1 for t in closed if t["pnl"] > 0),
+            "losses": sum(1 for t in closed if t["pnl"] < 0),
+            "pnl":    round(total_pnl, 2),
+        },
+    }
+
+
+async def query_trade_journal(date_str: str, symbol: Optional[str] = None) -> dict:
+    """DuckDB replacement for GET /api/journal — reads from trade_journal/latest.parquet."""
+    return await asyncio.to_thread(_sync_query_trade_journal, date_str, symbol)
