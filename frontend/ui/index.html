@@ -3464,9 +3464,6 @@ function _syncPollStart() {
                 clearInterval(_syncPollTimer); _syncPollTimer = null;
                 _syncBtnSet('✗ Failed', '#dc3545');
                 setTimeout(() => _syncBtnSet('⬇ Sync'), 4000);
-            } else if (data.status === 'idle') {
-                clearInterval(_syncPollTimer); _syncPollTimer = null;
-                _syncBtnSet('⬇ Sync');
             }
         } catch {}
     }, 3000);

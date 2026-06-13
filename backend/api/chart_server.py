@@ -2,6 +2,8 @@
 
 import asyncio
 import asyncpg
+import json
+import os
 import subprocess
 import threading
 import datetime as _dt
@@ -228,10 +230,24 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
         manager.disconnect(symbol, websocket)
 
 
-_sync_state = {"status": "idle"}
+_SYNC_STATE_FILE = r"D:\tickdata\sync_state.json"
+
+def _read_sync_state():
+    try:
+        with open(_SYNC_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"status": "idle"}
+
+def _write_sync_state(state: dict):
+    try:
+        os.makedirs(os.path.dirname(_SYNC_STATE_FILE), exist_ok=True)
+        with open(_SYNC_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
 
 def _run_sync_thread():
-    global _sync_state
     try:
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
@@ -239,21 +255,21 @@ def _run_sync_thread():
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=1800,
         )
-        _sync_state = {"status": "done" if proc.returncode in (0, 1) else "error"}
+        _write_sync_state({"status": "done" if proc.returncode in (0, 1) else "error"})
     except Exception:
-        _sync_state = {"status": "error"}
+        _write_sync_state({"status": "error"})
 
 @app.post("/api/sync")
 async def trigger_sync():
-    global _sync_state
-    if _sync_state["status"] == "running":
+    state = _read_sync_state()
+    if state["status"] == "running":
         return {"status": "running"}
-    _sync_state = {"status": "running"}
+    _write_sync_state({"status": "running"})
     threading.Thread(target=_run_sync_thread, daemon=True).start()
     return {"status": "started"}
 
 @app.get("/api/sync/status")
 async def sync_status():
-    return _sync_state
+    return _read_sync_state()
 
 app.mount("/", StaticFiles(directory="frontend/ui", html=True), name="static")
