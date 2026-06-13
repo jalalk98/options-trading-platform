@@ -11,6 +11,8 @@ import os
 import time
 import logging
 import datetime
+import subprocess
+import threading
 import requests
 
 logging.basicConfig(
@@ -24,6 +26,7 @@ SECRETS_FILE  = os.path.expanduser("~/.kite_secrets")
 PAUSE_FLAG    = os.path.expanduser("~/.trading_paused")
 HOLIDAYS_FILE = os.path.expanduser("~/.trading_holidays")
 POLL_INTERVAL = 30  # seconds
+SYNC_SCRIPT   = r"D:\projects\options-trading-platform\scripts\run_daily_sync.ps1"
 
 
 def get_holiday(date_str: str) -> str | None:
@@ -60,6 +63,22 @@ def get_updates(bot_token, offset):
     resp = requests.get(url, params={"offset": offset, "timeout": 25}, timeout=35)
     resp.raise_for_status()
     return resp.json().get("result", [])
+
+
+def _run_sync(bot_token, chat_id):
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-WindowStyle", "Hidden", "-File", SYNC_SCRIPT, "-Force"],
+            timeout=1800,
+        )
+        if result.returncode not in (0, 1):
+            send_message(bot_token, chat_id,
+                f"⚠️ Sync wrapper exited with code {result.returncode} — process may have been killed.")
+    except subprocess.TimeoutExpired:
+        send_message(bot_token, chat_id, "⚠️ Sync timed out after 30 minutes.")
+    except Exception as exc:
+        send_message(bot_token, chat_id, f"⚠️ Could not start sync: {exc}")
 
 
 def handle_command(cmd, bot_token, chat_id):
@@ -108,13 +127,18 @@ def handle_command(cmd, bot_token, chat_id):
             lines.append(f"\n🗓 Tomorrow is a market holiday: {tomorrow_holiday}")
         send_message(bot_token, chat_id, "\n".join(lines))
 
+    elif cmd == "sync":
+        send_message(bot_token, chat_id, "⏳ B2 sync started — I'll notify you when done.")
+        threading.Thread(target=_run_sync, args=(bot_token, chat_id), daemon=True).start()
+
     else:
         send_message(bot_token, chat_id,
             f"❓ Unknown command: '{cmd}'\n"
             "Available commands:\n"
             "  holiday — pause all trading scripts\n"
             "  resume  — re-enable trading scripts\n"
-            "  status  — show current state")
+            "  status  — show current state\n"
+            "  sync    — trigger B2 daily sync immediately")
 
 
 def main():

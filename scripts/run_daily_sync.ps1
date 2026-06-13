@@ -59,7 +59,7 @@ Add-Content -Path $LogFile -Value "======================================"
 # --- Run the sync ---
 $ExitCode = 1
 try {
-    & $PythonExe "scripts\daily_sync.py" *>> $LogFile
+    & $PythonExe "scripts\daily_sync.py" "--force" *>> $LogFile
     $ExitCode = $LASTEXITCODE
 } catch {
     Add-Content -Path $LogFile -Value "[wrapper] Exception running Python: $_"

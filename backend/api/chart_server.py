@@ -2,6 +2,8 @@
 
 import asyncio
 import asyncpg
+import subprocess
+import threading
 import datetime as _dt
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -225,5 +227,33 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
     except (WebSocketDisconnect, Exception):
         manager.disconnect(symbol, websocket)
 
+
+_sync_state = {"status": "idle"}
+
+def _run_sync_thread():
+    global _sync_state
+    try:
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+             "-File", r"D:\projects\options-trading-platform\scripts\run_daily_sync.ps1"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=1800,
+        )
+        _sync_state = {"status": "done" if proc.returncode in (0, 1) else "error"}
+    except Exception:
+        _sync_state = {"status": "error"}
+
+@app.post("/api/sync")
+async def trigger_sync():
+    global _sync_state
+    if _sync_state["status"] == "running":
+        return {"status": "running"}
+    _sync_state = {"status": "running"}
+    threading.Thread(target=_run_sync_thread, daemon=True).start()
+    return {"status": "started"}
+
+@app.get("/api/sync/status")
+async def sync_status():
+    return _sync_state
 
 app.mount("/", StaticFiles(directory="frontend/ui", html=True), name="static")

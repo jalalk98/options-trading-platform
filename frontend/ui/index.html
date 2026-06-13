@@ -1091,7 +1091,7 @@
             <span id="layoutBtnArrow">▾</span>
         </button>
         <button id="archiveBtn" title="Archive Manager" onclick="openArchiveModal()" style="font-size:11px;padding:3px 7px;background:#0D2137;border:1px solid #1565C0;border-radius:4px;cursor:pointer;color:#42A5F5;transition:all 0.2s;">🗄 Archive</button>
-        <button id="syncBtn" title="Download missing data from B2 to laptop" onclick="triggerB2Sync()" style="font-size:11px;padding:3px 7px;background:#0D2137;border:1px solid #1565C0;border-radius:4px;cursor:pointer;color:#42A5F5;transition:all 0.2s;">⬇ Sync</button>
+        <button id="b2SyncBtn" title="Download missing data from B2 to laptop" onclick="triggerB2Sync()" style="font-size:11px;font-weight:bold;padding:3px 7px;background:#0D2137;border:1px solid #1565C0;border-radius:4px;cursor:pointer;color:#ffffff;transition:all 0.2s;">⬇ Sync</button>
         <script>
             (function() {
                 const now = new Date();
@@ -2425,9 +2425,10 @@ function createPanel(id) {
         candleSeries.setData(candles);
         refreshMarkers();
         if (candles.length > 0) {
-            const halfBars = Math.max(10, Math.floor(chartAreaEl.offsetWidth / 12));
-            chart.timeScale().applyOptions({ rightOffset: halfBars });
-            chart.timeScale().scrollToRealTime();
+            const w = chartAreaEl.offsetWidth || 400;
+            const visibleBars = Math.max(20, Math.floor(w / 6));
+            chart.priceScale('right').applyOptions({ autoScale: true });
+            chart.timeScale().setVisibleLogicalRange({ from: 0, to: visibleBars - 1 });
         }
         if (candles.length > 0) {
             currentCandle = { ...candles[candles.length - 1] };
@@ -2567,6 +2568,13 @@ function createPanel(id) {
             labelEl.className = 'panel-label no-label';
             noDataEl.textContent = 'No Data';
             noDataEl.style.display = 'flex';
+        },
+        setInvert(val) {
+            if (invertScale === val) return;
+            invertScale = val;
+            invertBtn.classList.toggle('active', val);
+            if (allCandles.length)
+                candleSeries.setData(val ? allCandles.map(invertCandle) : allCandles);
         },
         redoLastAction() {
             if (!lineRedoStack.length) return 'Nothing to redo';
@@ -3431,27 +3439,62 @@ function toggleMaximize() {
 function showLoadingBar() { document.getElementById('loadingBar').classList.add('active'); }
 function hideLoadingBar() { document.getElementById('loadingBar').classList.remove('active'); }
 
+let _syncPollTimer = null;
+
+function _syncBtnSet(text, color) {
+    const btn = document.getElementById('b2SyncBtn');
+    if (!btn) return;
+    btn.textContent = text;
+    btn.style.color = color || '#ffffff';
+    btn.style.borderColor = color || '#1565C0';
+    btn.style.fontWeight = 'bold';
+    btn.disabled = text.startsWith('⏳');
+}
+
+function _syncPollStart() {
+    if (_syncPollTimer) return;
+    _syncPollTimer = setInterval(async () => {
+        try {
+            const data = await fetch('/api/sync/status').then(r => r.json());
+            if (data.status === 'done') {
+                clearInterval(_syncPollTimer); _syncPollTimer = null;
+                _syncBtnSet('✓ Done', '#28a745');
+                setTimeout(() => _syncBtnSet('⬇ Sync'), 4000);
+            } else if (data.status === 'error') {
+                clearInterval(_syncPollTimer); _syncPollTimer = null;
+                _syncBtnSet('✗ Failed', '#dc3545');
+                setTimeout(() => _syncBtnSet('⬇ Sync'), 4000);
+            }
+        } catch {}
+    }, 3000);
+}
+
 async function triggerB2Sync() {
     const btn = document.getElementById('syncBtn');
-    const orig = btn.textContent;
-    btn.textContent = '⏳ Starting…';
-    btn.disabled = true;
+    if (!btn || btn.disabled) return;
+    _syncBtnSet('⏳ Starting…');
     try {
-        const r = await fetch('/api/sync', { method: 'POST' });
-        if (r.ok) {
-            btn.textContent = '✓ Started';
-            btn.style.borderColor = '#28a745';
-            btn.style.color = '#28a745';
-            setTimeout(() => { btn.textContent = orig; btn.style.borderColor = ''; btn.style.color = ''; btn.disabled = false; }, 4000);
+        const data = await fetch('/api/sync', { method: 'POST' }).then(r => r.json());
+        if (data.status === 'started' || data.status === 'running') {
+            _syncBtnSet('⏳ Syncing…');
+            _syncPollStart();
         } else {
-            btn.textContent = 'Error';
-            setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            _syncBtnSet('✗ Failed', '#dc3545');
+            setTimeout(() => _syncBtnSet('⬇ Sync'), 4000);
         }
     } catch {
-        btn.textContent = 'Error';
-        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+        _syncBtnSet('✗ Failed', '#dc3545');
+        setTimeout(() => _syncBtnSet('⬇ Sync'), 4000);
     }
 }
+
+// Restore running state if page is reloaded mid-sync
+(async () => {
+    try {
+        const data = await fetch('/api/sync/status').then(r => r.json());
+        if (data.status === 'running') { _syncBtnSet('⏳ Syncing…'); _syncPollStart(); }
+    } catch {}
+})();
 
 async function resetPositionCache() {
     const btn = document.getElementById('resetPositionsBtn');
@@ -3803,8 +3846,10 @@ async function autoPopulatePanels(mode) {
         const atm     = atmMap[idxName];
         if (!atm) { hideLoadingBar(); toast('ATM not available for ' + idxName, 'warn'); return; }
 
-        const itmCount = Math.floor(total / 2);
-        const otmCount = total - itmCount;
+        // Last panel is reserved for the index chart; option strikes fill the rest
+        const optionCount = total - 1;
+        const itmCount = Math.floor(optionCount / 2);
+        const otmCount = optionCount - itmCount;
 
         // CE: ascending strikes — ITM (low) on left, OTM (high) on right
         // PE: descending strikes — ITM (high) on left, OTM (low) on right
@@ -3819,14 +3864,23 @@ async function autoPopulatePanels(mode) {
             strikes = [...itm, ...otm];
         }
 
+        const optionPanels = panels.slice(0, optionCount);
         const panelSymbols = strikes.map(strike => findSymbol(strike, type, idxName));
         const activeSingle = panelSymbols
-            .map((sym, i) => sym ? panels[i] : null)
+            .map((sym, i) => sym ? optionPanels[i] : null)
             .filter(Boolean);
-        await loadPanelsBatched(activeSingle, p => panelSymbols[panels.indexOf(p)], true, loadHistDate);
+        await loadPanelsBatched(activeSingle, p => panelSymbols[optionPanels.indexOf(p)], true, loadHistDate);
         panelSymbols.forEach((sym, i) => {
-            if (!sym && panels[i]) panels[i].showNoData(strikes[i] ? `${strikes[i]} ${type}` : 'No Data');
+            if (!sym && optionPanels[i]) optionPanels[i].showNoData(strikes[i] ? `${strikes[i]} ${type}` : 'No Data');
         });
+
+        // Last panel: index chart with invert on for PE
+        const lastPanel = panels[total - 1];
+        if (lastPanel) {
+            await lastPanel.loadSymbol(idxName, null, true, loadHistDate);
+            lastPanel.setInvert(type === 'PE');
+        }
+
         hideLoadingBar();
         saveViewState();
         prefetchJumps(panelSymbols.filter(Boolean), loadHistDate || undefined);

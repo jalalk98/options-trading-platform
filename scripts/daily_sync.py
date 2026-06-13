@@ -265,6 +265,7 @@ def main():
             msg = "Daily sync: nothing to download (laptop is up to date)"
             log.info(msg)
             print(msg)
+            send_telegram(msg)
             return 0
 
         # Limit to MAX_DATES_PER_RUN, prioritizing oldest first
