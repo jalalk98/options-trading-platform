@@ -3453,9 +3453,11 @@ function _syncBtnSet(text, color) {
 
 function _syncPollStart() {
     if (_syncPollTimer) return;
+    let _failCount = 0;
     _syncPollTimer = setInterval(async () => {
         try {
             const data = await fetch('/api/sync/status').then(r => r.json());
+            _failCount = 0;
             if (data.status === 'done') {
                 clearInterval(_syncPollTimer); _syncPollTimer = null;
                 _syncBtnSet('✓ Done', '#28a745');
@@ -3464,8 +3466,16 @@ function _syncPollStart() {
                 clearInterval(_syncPollTimer); _syncPollTimer = null;
                 _syncBtnSet('✗ Failed', '#dc3545');
                 setTimeout(() => _syncBtnSet('⬇ Sync'), 4000);
+            } else if (data.status === 'idle') {
+                clearInterval(_syncPollTimer); _syncPollTimer = null;
+                _syncBtnSet('⬇ Sync');
             }
-        } catch {}
+        } catch {
+            if (++_failCount >= 5) {
+                clearInterval(_syncPollTimer); _syncPollTimer = null;
+                _syncBtnSet('⬇ Sync');
+            }
+        }
     }, 3000);
 }
 
