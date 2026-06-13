@@ -165,35 +165,6 @@ async def startup():
 
     asyncio.create_task(_b2_refresh_loop())
 
-@app.post("/api/sync")
-async def trigger_sync():
-    """
-    Run B2 → laptop sync in the background:
-      1. daily_sync.py  — downloads missing tick/candle parquet files
-      2. sync_from_b2.py --journal — refreshes trade_journal/latest.parquet
-    Returns immediately; sync runs as a background task.
-    """
-    import sys
-    import subprocess
-    python = sys.executable
-    project = str(__import__('pathlib').Path(__file__).parent.parent.parent)
-
-    def _run():
-        # Tick data sync
-        subprocess.run(
-            [python, "scripts/daily_sync.py"],
-            cwd=project, capture_output=True,
-        )
-        # Trade journal snapshot
-        subprocess.run(
-            [python, "scripts/sync_from_b2.py", "--journal"],
-            cwd=project, capture_output=True,
-        )
-
-    asyncio.create_task(asyncio.to_thread(_run))
-    return {"status": "started"}
-
-
 @app.get("/api/replay/ticks")
 async def replay_ticks(symbol: str = Query(...), date: str = Query(...)):
     """Return all raw ticks for a symbol/date for client-side tick-level replay."""
