@@ -1247,6 +1247,7 @@
 </button>
 <div id="tooltip"></div>
 <div id="jumpTooltip" style="display:none;position:fixed;z-index:1000;pointer-events:none;min-width:160px;"></div>
+<div id="tradeTooltip" style="display:none;position:fixed;z-index:1000;pointer-events:none;min-width:180px;"></div>
 <div id="undoToast"></div>
 <div id="toastContainer"></div>
 
@@ -1896,6 +1897,7 @@ function createPanel(id) {
     chart.subscribeCrosshairMove(param => {
         if (!param.point) {
             document.getElementById('tooltip').style.display = 'none';
+            const _tt = document.getElementById('tradeTooltip'); if (_tt) _tt.style.display = 'none';
             return;
         }
         // crosshairPrice only tracked on active panel
@@ -1987,6 +1989,45 @@ function createPanel(id) {
             jumpTT.style.display = 'block';
         } else if (jumpTT) {
             jumpTT.style.display = 'none';
+        }
+
+        // ── Trade marker tooltip ───────────────────────────────
+        const tradeTT    = document.getElementById('tradeTooltip');
+        const tradeHits  = _tradeMarkers.filter(m => m.chartTime === param.time || m.time === param.time);
+        if (tradeHits.length && param.point && tradeTT) {
+            // Find full trade data for each matching marker
+            const matchedTrades = tradeHits.map(m => {
+                return _drawerTrades.find(t => {
+                    const ct = Math.floor(new Date(t.entry_time).getTime() / 1000 / 5) * 5;
+                    return ct === (m.chartTime ?? m.time) && t.direction === (m.shape === 'arrowUp' ? 'BUY' : 'SELL');
+                });
+            }).filter(Boolean);
+
+            const rows = (matchedTrades.length ? matchedTrades : tradeHits).map(t => {
+                const isBuy   = (t.direction || t.shape) === 'BUY' || t.shape === 'arrowUp';
+                const dir     = isBuy ? 'BUY' : 'SELL';
+                const color   = isBuy ? '#22c55e' : '#ef4444';
+                const price   = t.entry_price != null ? t.entry_price.toFixed(1) : '—';
+                const qty     = t.quantity != null ? t.quantity : '—';
+                const idx     = t.underlying_price_at_entry != null ? t.underlying_price_at_entry.toFixed(0) : '—';
+                const pnlStr  = t.pnl != null ? `<div>P&amp;L:&nbsp;<b style="color:${t.pnl>=0?'#22c55e':'#ef4444'}">₹${t.pnl.toFixed(0)}</b></div>` : '';
+                const noteStr = t.notes ? `<div style="color:#94a3b8;font-size:10px;margin-top:2px;">${t.notes}</div>` : '';
+                return `
+                    <div style="margin-bottom:${matchedTrades.length>1?'6px':'0'};padding-bottom:${matchedTrades.length>1?'6px':'0'};border-bottom:${matchedTrades.length>1?'1px solid #334155':'none'}">
+                        <div style="font-weight:bold;color:${color};margin-bottom:3px;">${isBuy?'▲':'▼'} ${dir} &nbsp;#${t.trade_no??''}</div>
+                        <div>Price:&nbsp;<b>${price}</b></div>
+                        <div>Qty:&nbsp;<b>${qty}</b></div>
+                        <div>Index:&nbsp;<b>${idx}</b></div>
+                        ${pnlStr}${noteStr}
+                    </div>`;
+            }).join('');
+
+            tradeTT.innerHTML = `<div style="font-size:11px;color:#e2e8f0;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:4px;line-height:1.7;">${rows}</div>`;
+            tradeTT.style.left    = (rect.left + param.point.x + 15) + 'px';
+            tradeTT.style.top     = (rect.top  + param.point.y + 15) + 'px';
+            tradeTT.style.display = 'block';
+        } else if (tradeTT) {
+            tradeTT.style.display = 'none';
         }
     });
 
