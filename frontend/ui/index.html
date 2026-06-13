@@ -1613,6 +1613,7 @@ function createPanel(id) {
     let _convictionFired         = false;
     let _historicalConvictions   = [];
     let _jumpMarkers             = [];
+    let _tradeMarkers            = [];
     let _panelHistDate           = null;
     let slTriggerBuffer  = 1;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
@@ -1997,7 +1998,7 @@ function createPanel(id) {
             text    : '',
             size    : 1,
         }));
-        const allMarkers = [...markers, ...jumpMarks].sort((a, b) => a.time - b.time);
+        const allMarkers = [...markers, ...jumpMarks, ..._tradeMarkers].sort((a, b) => a.time - b.time);
         candleSeries.setMarkers(allMarkers);
     }
 
@@ -2059,6 +2060,31 @@ function createPanel(id) {
             refreshMarkers();
         } catch(e) {
             console.warn('fetchJumpHistory failed:', e);
+        }
+    }
+
+    async function fetchTradeHistory(sym, dateStr) {
+        _tradeMarkers = [];
+        if (!dateStr || !sym) return;
+        try {
+            const res  = await fetch(`/api/journal?date=${dateStr}&symbol=${encodeURIComponent(sym)}`);
+            const data = await res.json();
+            (data.trades || []).forEach(t => {
+                if (!t.entry_time) return;
+                const isBuy = t.direction === 'BUY';
+                const chartTime = Math.floor(new Date(t.entry_time).getTime() / 1000 / 5) * 5;
+                _tradeMarkers.push({
+                    time    : chartTime,
+                    position: isBuy ? 'belowBar' : 'aboveBar',
+                    color   : isBuy ? '#22c55e' : '#ef4444',
+                    shape   : isBuy ? 'arrowUp' : 'arrowDown',
+                    text    : `${t.trade_no ?? ''}`,
+                    size    : 1,
+                });
+            });
+            refreshMarkers();
+        } catch(e) {
+            console.warn('fetchTradeHistory failed:', e);
         }
     }
 
@@ -2378,7 +2404,7 @@ function createPanel(id) {
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = [];
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _tradeMarkers = [];
         stopSLPoll();
         let history, gapsRaw;
         if (prefetched) {
@@ -2443,6 +2469,7 @@ function createPanel(id) {
         }
         historyLoaded = true;
         const jumpPromise = fetchJumpHistory(sym, histDate || null);
+        if (histDate) fetchTradeHistory(sym, histDate);
         const convHist = await fetchConvictionHistory(sym, histDate || null);
         _historicalConvictions = (convHist || [])
             .map(s => ({ ...s, bucket: s.bucket - 19800 }));
@@ -2608,7 +2635,7 @@ function createPanel(id) {
             candleSeries.setData([]);
             currentCandle = null; lastCandleTime = null; allCandles = [];
             gapDetails.clear(); _unfilledGapCount = 0;
-            _jumpMarkers = []; _convictionMarker = null; _convictionData = null;
+            _jumpMarkers = []; _tradeMarkers = []; _convictionMarker = null; _convictionData = null;
             _convictionFired = false; _historicalConvictions = [];
             // _pendingGaps / _pendingJumps are NOT cleared here —
             // replaySetPendingMarkers() sets them after replayClear() is called.
