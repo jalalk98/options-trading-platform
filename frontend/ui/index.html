@@ -673,6 +673,31 @@
             pointer-events: none;
             z-index: 9999;
         }
+        body.modal-open .chart-panel.active::after { display: none; }
+        .panel-trade-badge {
+            pointer-events: all;
+            background: rgba(59,130,246,0.20);
+            border: 1px solid rgba(59,130,246,0.45);
+            color: #93c5fd;
+            font-size: 10px;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            padding: 1px 6px;
+            border-radius: 3px;
+            cursor: pointer;
+            display: none;
+            white-space: nowrap;
+            line-height: 1.6;
+        }
+        .panel-trade-badge:hover { background: rgba(59,130,246,0.38); }
+        .panel-trade-popup {
+            position: fixed; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: #0f172a; border: 1px solid #1e293b;
+            border-radius: 8px; box-shadow: 0 16px 48px rgba(0,0,0,0.85);
+            z-index: 9500; min-width: 500px; max-width: 640px;
+            max-height: 70vh; overflow-y: auto; font-family: Arial,sans-serif;
+        }
         .panel-chart-area {
             flex: 1;
             position: relative;
@@ -1519,7 +1544,16 @@ function createPanel(id) {
         userLines.forEach(l => l.priceLine.applyOptions({ price: ip(l.price) }));
     });
 
+    const tradeBadgeEl = document.createElement('span');
+    tradeBadgeEl.className = 'panel-trade-badge';
+    tradeBadgeEl.addEventListener('mousedown', e => e.stopPropagation());
+    tradeBadgeEl.addEventListener('click', e => {
+        e.stopPropagation();
+        if (_drawerTrades.length) openPanelTradePopup(symbol, _drawerTrades);
+    });
+
     topBarEl.appendChild(labelEl);
+    topBarEl.appendChild(tradeBadgeEl);
     topBarEl.appendChild(legToggleWrapEl);
     topBarEl.appendChild(invertBtn);
     topBarEl.appendChild(refreshBtn);
@@ -2063,13 +2097,17 @@ function createPanel(id) {
         }
     }
 
+    let _drawerTrades = [];
+
     async function fetchTradeHistory(sym, dateStr) {
         _tradeMarkers = [];
-        if (!dateStr || !sym) return;
+        _drawerTrades = [];
+        if (!dateStr || !sym) { tradeBadgeEl.style.display = 'none'; return; }
         try {
             const res  = await fetch(`/api/journal?date=${dateStr}&symbol=${encodeURIComponent(sym)}`);
             const data = await res.json();
-            (data.trades || []).forEach(t => {
+            _drawerTrades = data.trades || [];
+            _drawerTrades.forEach(t => {
                 if (!t.entry_time) return;
                 const isBuy = t.direction === 'BUY';
                 const chartTime = Math.floor(new Date(t.entry_time).getTime() / 1000 / 5) * 5;
@@ -2083,6 +2121,13 @@ function createPanel(id) {
                 });
             });
             refreshMarkers();
+            // Update badge
+            if (_drawerTrades.length > 0) {
+                tradeBadgeEl.textContent = `${_drawerTrades.length}T`;
+                tradeBadgeEl.style.display = 'inline-block';
+            } else {
+                tradeBadgeEl.style.display = 'none';
+            }
         } catch(e) {
             console.warn('fetchTradeHistory failed:', e);
         }
@@ -2404,7 +2449,7 @@ function createPanel(id) {
         if (livePriceLine) { candleSeries.removePriceLine(livePriceLine); livePriceLine = null; }
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _tradeMarkers = [];
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _tradeMarkers = []; _drawerTrades = []; tradeBadgeEl.style.display = 'none';
         stopSLPoll();
         let history, gapsRaw;
         if (prefetched) {
@@ -2635,7 +2680,7 @@ function createPanel(id) {
             candleSeries.setData([]);
             currentCandle = null; lastCandleTime = null; allCandles = [];
             gapDetails.clear(); _unfilledGapCount = 0;
-            _jumpMarkers = []; _tradeMarkers = []; _convictionMarker = null; _convictionData = null;
+            _jumpMarkers = []; _tradeMarkers = []; _drawerTrades = []; tradeBadgeEl.style.display = 'none'; _convictionMarker = null; _convictionData = null;
             _convictionFired = false; _historicalConvictions = [];
             // _pendingGaps / _pendingJumps are NOT cleared here —
             // replaySetPendingMarkers() sets them after replayClear() is called.
@@ -2846,6 +2891,91 @@ function toggleSyncCharts() {
     }
 }
 // ─────────────────────────────────────────────────────────────────────────────
+
+function _fmtJournalTime(isoStr) {
+    if (!isoStr) return '—';
+    return new Date(isoStr).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function openPanelTradePopup(sym, trades) {
+    document.querySelectorAll('.panel-trade-popup').forEach(el => el.remove());
+    document.body.classList.add('modal-open');
+    const popup = document.createElement('div');
+    popup.className = 'panel-trade-popup';
+
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid #1e293b;background:#0a0f1a;border-radius:8px 8px 0 0;cursor:grab;';
+    hdr.innerHTML = `<span style="color:#e2e8f0;font-weight:bold;font-size:13px;">${sym}</span>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none;border:none;color:#64748b;cursor:pointer;font-size:14px;padding:0 2px;';
+    hdr.appendChild(closeBtn);
+    popup.appendChild(hdr);
+
+    const tbl = document.createElement('table');
+    tbl.style.cssText = 'width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;';
+    tbl.innerHTML = `<thead><tr style="color:#475569;font-size:10px;text-transform:uppercase;background:#0a0f1a;">
+        <th style="padding:6px 8px;text-align:center;font-weight:600;">#</th>
+        <th style="padding:6px 10px;text-align:left;font-weight:600;">Time</th>
+        <th style="padding:6px 4px;text-align:center;font-weight:600;">Dir</th>
+        <th style="padding:6px 8px;text-align:right;font-weight:600;">Price</th>
+        <th style="padding:6px 8px;text-align:right;font-weight:600;">Qty</th>
+        <th style="padding:6px 8px;text-align:right;font-weight:600;">Index@Entry</th>
+        <th style="padding:6px 8px;text-align:right;font-weight:600;">P&amp;L</th>
+        <th style="padding:6px 8px;text-align:center;font-weight:600;">Notes</th>
+    </tr></thead>`;
+    const tbody = document.createElement('tbody');
+    const _bg = ['rgba(255,255,255,0.02)', 'rgba(99,102,241,0.06)'];
+    trades.forEach(t => {
+        const dirColor = t.direction === 'BUY' ? '#22c55e' : '#ef4444';
+        const pnlHtml  = t.pnl != null ? `<span style="color:${t.pnl>=0?'#22c55e':'#ef4444'}">₹${t.pnl.toFixed(0)}</span>` : '—';
+        const idxPrice = t.underlying_price_at_entry != null ? t.underlying_price_at_entry.toFixed(0) : '—';
+        const rowBg    = t.trade_no != null ? _bg[(t.trade_no - 1) % 2] : 'transparent';
+        const tr = document.createElement('tr');
+        tr.style.cssText = `border-bottom:1px solid #0a0f1a;background:${rowBg};`;
+        tr.innerHTML = `
+            <td style="padding:7px 8px;text-align:center;color:#64748b;font-size:11px;font-weight:600;">${t.trade_no ?? ''}</td>
+            <td style="padding:7px 10px;color:#94a3b8;">${_fmtJournalTime(t.entry_time)}</td>
+            <td style="padding:7px 4px;text-align:center;font-weight:bold;color:${dirColor};">${t.direction}</td>
+            <td style="padding:7px 8px;text-align:right;color:#e2e8f0;">${t.entry_price!=null?t.entry_price.toFixed(1):'—'}</td>
+            <td style="padding:7px 8px;text-align:right;color:#94a3b8;">${t.quantity}</td>
+            <td style="padding:7px 8px;text-align:right;color:#64748b;">${idxPrice}</td>
+            <td style="padding:7px 8px;text-align:right;">${pnlHtml}</td>
+            <td style="padding:7px 8px;text-align:center;color:#475569;font-size:11px;">${t.notes||'—'}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+    popup.appendChild(tbl);
+    popup.addEventListener('mousedown', e => e.stopPropagation());
+    document.body.appendChild(popup);
+
+    const close = () => {
+        popup.remove();
+        document.body.classList.remove('modal-open');
+        document.removeEventListener('keydown', onEsc);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+    };
+    const onEsc = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onEsc);
+    closeBtn.addEventListener('click', close);
+
+    let dragging = false, dragX = 0, dragY = 0;
+    hdr.addEventListener('mousedown', e => {
+        if (e.target === closeBtn) return;
+        dragging = true;
+        const r = popup.getBoundingClientRect();
+        popup.style.transform = 'none';
+        popup.style.left = r.left + 'px'; popup.style.top = r.top + 'px';
+        dragX = e.clientX - r.left; dragY = e.clientY - r.top;
+        hdr.style.cursor = 'grabbing';
+    });
+    const onDragMove = e => { if (!dragging) return; popup.style.left = (e.clientX - dragX) + 'px'; popup.style.top = (e.clientY - dragY) + 'px'; };
+    const onDragEnd  = () => { dragging = false; hdr.style.cursor = 'grab'; };
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+}
 
 // ── Historical analysis mode ──────────────────────────────────────────────
 let _histMode = false;
