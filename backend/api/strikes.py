@@ -1297,6 +1297,75 @@ async def get_hist_symbols(date: str, request: Request):
     return result
 
 
+@router.get("/hist-index-gap")
+async def get_hist_index_gap(date: str, request: Request):
+    """Returns opening gap (today's 9:15 open vs prev trading day's close) for each index."""
+    if DATA_SOURCE == "duckdb":
+        from backend.services.duckdb_adapter import query_index_gap as _ddb_igap
+        return await _ddb_igap(date)
+
+    pool = request.app.state.pool
+    date_obj = PyDate.fromisoformat(date)
+    indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
+    result = {}
+    async with pool.acquire() as conn:
+        for idx in indices:
+            today_open_row = await conn.fetchrow("""
+                SELECT open FROM candles_5s
+                WHERE symbol = $1
+                  AND bucket >= EXTRACT(EPOCH FROM $2::date + TIME '09:15:00')::BIGINT
+                  AND bucket <= EXTRACT(EPOCH FROM $2::date + TIME '09:15:05')::BIGINT
+                ORDER BY bucket ASC LIMIT 1
+            """, idx, date_obj)
+            if today_open_row is None:
+                continue
+            today_open = float(today_open_row['open'])
+
+            prev_close_row = await conn.fetchrow("""
+                SELECT close FROM candles_5s
+                WHERE symbol = $1
+                  AND bucket < EXTRACT(EPOCH FROM $2::date + TIME '09:15:00')::BIGINT
+                ORDER BY bucket DESC LIMIT 1
+            """, idx, date_obj)
+            if prev_close_row is None or prev_close_row['close'] == 0:
+                continue
+            prev_close = float(prev_close_row['close'])
+
+            gap_pts = round(today_open - prev_close, 2)
+            gap_pct = round((gap_pts / prev_close) * 100, 3)
+            result[idx] = {
+                'open':       today_open,
+                'prev_close': prev_close,
+                'gap_pts':    gap_pts,
+                'gap_pct':    gap_pct,
+                'direction':  'UP' if gap_pts > 0 else ('DOWN' if gap_pts < 0 else 'FLAT'),
+            }
+
+        # GIFT Nifty: 9:10 AM price vs NIFTY's previous day close
+        nifty_prev_close = result.get('NIFTY', {}).get('prev_close')
+        if nifty_prev_close:
+            gift_row = await conn.fetchrow("""
+                SELECT open FROM candles_5s
+                WHERE symbol = 'GIFTNIFTY'
+                  AND bucket >= EXTRACT(EPOCH FROM $1::date + TIME '09:10:00')::BIGINT
+                  AND bucket <= EXTRACT(EPOCH FROM $1::date + TIME '09:10:05')::BIGINT
+                ORDER BY bucket ASC LIMIT 1
+            """, date_obj)
+            if gift_row:
+                gift_price = float(gift_row['open'])
+                gap_pts = round(gift_price - nifty_prev_close, 2)
+                gap_pct = round((gap_pts / nifty_prev_close) * 100, 3)
+                result['GIFTNIFTY'] = {
+                    'open':          gift_price,
+                    'prev_close':    nifty_prev_close,
+                    'gap_pts':       gap_pts,
+                    'gap_pct':       gap_pct,
+                    'direction':     'UP' if gap_pts > 0 else ('DOWN' if gap_pts < 0 else 'FLAT'),
+                    'snapshot_time': '9:10',
+                }
+    return result
+
+
 class BatchRequest(BaseModel):
     symbols: list[str]
     nocache: bool = False

@@ -352,6 +352,39 @@
             min-width: 190px; cursor: pointer;
         }
         #histNoData { color: #b45309; font-size: 10px; }
+        #histGapBtn {
+            font-size: 11px; padding: 2px 8px;
+            background: #fff; color: #92400e;
+            border: 1px solid #d97706; border-radius: 4px; cursor: pointer;
+            white-space: nowrap; margin-left: 4px;
+        }
+        #histGapBtn:hover { background: #fef9c3; }
+        #histGapBtn.has-data { display: inline-block; }
+        #histGapBtn { display: none; }
+        #histGapDropdown {
+            display: none;
+            position: fixed;
+            z-index: 500;
+            background: #fff;
+            border: 1px solid #d97706;
+            border-radius: 6px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+            min-width: 220px;
+            padding: 4px 0;
+            font-size: 11px;
+        }
+        #histGapDropdown.open { display: block; }
+        .hig-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 4px 12px; gap: 12px; white-space: nowrap;
+        }
+        .hig-row:hover { background: #fef3c7; }
+        .hig-row .hig-name { font-weight: 700; color: #44403c; min-width: 80px; }
+        .hig-row .hig-val  { font-weight: 600; }
+        .hig-row.up  .hig-val { color: #15803d; }
+        .hig-row.down .hig-val { color: #b91c1c; }
+        .hig-row.flat .hig-val { color: #64748b; }
+        .hig-divider { border: none; border-top: 1px solid #fde68a; margin: 3px 0; }
         #histClearBtn {
             font-size: 11px; padding: 2px 9px;
             background: #d97706; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-left: 4px;
@@ -1146,6 +1179,8 @@
         <option value="">— select date first —</option>
     </select>
     <span id="histNoData" style="display:none">No data for this date</span>
+    <button id="histGapBtn" onclick="toggleHistGapDropdown(event)">Index Gaps ▾</button>
+    <div id="histGapDropdown"></div>
     <div id="replayControls">
         <button id="replayPlayBtn" title="Replay day candle by candle" onclick="startReplay()">▶ Play</button>
         <button id="replayLiveBtn" title="Replay using raw ticks — candle forms like live market" onclick="startTickReplay()">▶ Live</button>
@@ -1614,7 +1649,7 @@ function createPanel(id) {
 
     // ── Chart ─────────────────────────────────────
     const chart = LightweightCharts.createChart(chartAreaEl, makeChartOptions(400, 300));
-    const candleSeries = chart.addBarSeries({ upColor: '#22c55e', downColor: '#ef4444', thinBars: true, lastValueVisible: false });
+    const candleSeries = chart.addBarSeries({ upColor: '#089981', downColor: '#F23645', thinBars: true, lastValueVisible: false });
 
     // ── Scroll-left button ────────────────────────
     scrollLeftBtn.addEventListener('click', e => {
@@ -2450,7 +2485,7 @@ function createPanel(id) {
             if (currentCandle && !isNaN(currentCandle.open)) candleSeries.update(currentCandle);
             if (livePriceLine) livePriceLine.applyOptions({
                 price,
-                color: price >= currentCandle.open ? '#22c55e' : '#ef4444'
+                color: price >= currentCandle.open ? '#089981' : '#F23645'
             });
             checkGapFill(currentCandle);
         };
@@ -2584,7 +2619,7 @@ function createPanel(id) {
             if (!histDate) {
                 livePriceLine = candleSeries.createPriceLine({
                     price: currentCandle.close,
-                    color: currentCandle.close >= currentCandle.open ? '#22c55e' : '#ef4444',
+                    color: currentCandle.close >= currentCandle.open ? '#089981' : '#F23645',
                     lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: ''
                 });
             }
@@ -3075,12 +3110,16 @@ async function onHistDateChange(date) {
     const noData = document.getElementById('histNoData');
     sel.innerHTML = '<option value="">Loading...</option>';
     noData.style.display = 'none';
+    _renderIndexGap({});
     // Pre-warm jump cache for current panel symbols on this historical date
     const currentSyms = panels.map(p => p.symbol).filter(Boolean);
     if (currentSyms.length) prefetchJumps(currentSyms, date);
     try {
-        const res = await fetch(`/api/hist-symbols?date=${date}`);
-        const symbols = await res.json();
+        const [symRes, gapRes] = await Promise.all([
+            fetch(`/api/hist-symbols?date=${date}`),
+            fetch(`/api/hist-index-gap?date=${date}`),
+        ]);
+        const symbols = await symRes.json();
         if (!symbols.length) {
             sel.innerHTML = '<option value="">— no data for this date —</option>';
             noData.style.display = 'inline';
@@ -3109,10 +3148,61 @@ async function onHistDateChange(date) {
             });
             sel.appendChild(grp);
         });
+        const gapData = gapRes.ok ? await gapRes.json() : {};
+        _renderIndexGap(gapData);
     } catch (e) {
         sel.innerHTML = '<option value="">Error loading symbols</option>';
     }
 }
+
+function _renderIndexGap(data) {
+    const dropdown = document.getElementById('histGapDropdown');
+    const btn = document.getElementById('histGapBtn');
+    dropdown.innerHTML = '';
+    dropdown.classList.remove('open');
+
+    const ORDER = ['GIFTNIFTY', 'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX'];
+    let hasAny = false;
+    ORDER.forEach((key, i) => {
+        const d = data[key];
+        if (!d) return;
+        if (hasAny && key === 'NIFTY') {
+            const hr = document.createElement('hr');
+            hr.className = 'hig-divider';
+            dropdown.appendChild(hr);
+        }
+        hasAny = true;
+        const cls = d.direction === 'UP' ? 'up' : d.direction === 'DOWN' ? 'down' : 'flat';
+        const arrow = d.direction === 'UP' ? '▲' : d.direction === 'DOWN' ? '▼' : '—';
+        const sign = d.gap_pts > 0 ? '+' : '';
+        const label = key === 'GIFTNIFTY' ? 'GIFT @9:10' : key;
+        const row = document.createElement('div');
+        row.className = `hig-row ${cls}`;
+        row.title = `Price: ${d.open.toFixed(2)}  Prev close: ${d.prev_close.toFixed(2)}`;
+        row.innerHTML = `<span class="hig-name">${label}</span><span class="hig-val">${arrow} ${sign}${d.gap_pts.toFixed(1)} (${sign}${d.gap_pct.toFixed(2)}%)</span>`;
+        dropdown.appendChild(row);
+    });
+
+    btn.style.display = hasAny ? 'inline-block' : 'none';
+}
+
+function toggleHistGapDropdown(e) {
+    e.stopPropagation();
+    const dropdown = document.getElementById('histGapDropdown');
+    const btn = document.getElementById('histGapBtn');
+    if (dropdown.classList.contains('open')) {
+        dropdown.classList.remove('open');
+        return;
+    }
+    const rect = btn.getBoundingClientRect();
+    dropdown.style.top  = (rect.bottom + 4) + 'px';
+    dropdown.style.left = rect.left + 'px';
+    dropdown.classList.add('open');
+}
+
+document.addEventListener('click', () => {
+    document.getElementById('histGapDropdown')?.classList.remove('open');
+});
 
 function onHistSymbolSelect(symbol) {
     if (!symbol || !_histDate) return;
@@ -3132,6 +3222,7 @@ function clearHistMode() {
     document.getElementById('histSymbolPicker').innerHTML = '<option value="">— select date first —</option>';
     document.getElementById('histNoData').style.display = 'none';
     document.getElementById('replayControls').classList.remove('visible');
+    _renderIndexGap({});
     requestAnimationFrame(updateLayout);
 }
 // ── Replay ───────────────────────────────────────────────────────────────────

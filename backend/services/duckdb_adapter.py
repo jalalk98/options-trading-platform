@@ -17,7 +17,7 @@ Supports:
 import asyncio
 import calendar
 import threading
-from datetime import date as PyDate, datetime
+from datetime import date as PyDate, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -518,3 +518,101 @@ def _sync_query_trade_journal(date_str: str, symbol: Optional[str] = None) -> di
 async def query_trade_journal(date_str: str, symbol: Optional[str] = None) -> dict:
     """DuckDB replacement for GET /api/journal — reads from trade_journal/latest.parquet."""
     return await asyncio.to_thread(_sync_query_trade_journal, date_str, symbol)
+
+
+# ── Index opening gap ──────────────────────────────────────────────────────────
+
+_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
+
+
+def _sync_query_index_gap(d: PyDate) -> dict:
+    """Return opening gap (today's 9:15 open vs prev trading day's close) for each index."""
+    today_path = _date_path(_CANDLES_ROOT, d)
+    if not today_path.exists():
+        return {}
+
+    # Walk back up to 7 calendar days to find the previous trading day's Parquet.
+    prev_d = None
+    for offset in range(1, 8):
+        candidate = d - timedelta(days=offset)
+        if _date_path(_CANDLES_ROOT, candidate).exists():
+            prev_d = candidate
+            break
+    if prev_d is None:
+        return {}
+
+    prev_path = _date_path(_CANDLES_ROOT, prev_d)
+    today_open_ep = calendar.timegm(datetime(d.year, d.month, d.day, 9, 15, 0).timetuple())
+    prev_end_ep   = calendar.timegm(datetime(prev_d.year, prev_d.month, prev_d.day, 16, 0, 0).timetuple())
+
+    result = {}
+    db = _get_db()
+    nifty_prev_close = None
+
+    for idx in _INDICES:
+        try:
+            open_row = db.execute("""
+                SELECT open FROM read_parquet(?)
+                WHERE symbol = ? AND bucket >= ? AND bucket <= ?
+                ORDER BY bucket ASC LIMIT 1
+            """, [str(today_path), idx, today_open_ep, today_open_ep + 5]).fetchone()
+            if open_row is None:
+                continue
+            today_open = float(open_row[0])
+
+            close_row = db.execute("""
+                SELECT close FROM read_parquet(?)
+                WHERE symbol = ? AND bucket <= ?
+                ORDER BY bucket DESC LIMIT 1
+            """, [str(prev_path), idx, prev_end_ep]).fetchone()
+            if close_row is None or close_row[0] == 0:
+                continue
+            prev_close = float(close_row[0])
+
+            if idx == 'NIFTY':
+                nifty_prev_close = prev_close
+
+            gap_pts = round(today_open - prev_close, 2)
+            gap_pct = round((gap_pts / prev_close) * 100, 3)
+            result[idx] = {
+                'open':       today_open,
+                'prev_close': prev_close,
+                'gap_pts':    gap_pts,
+                'gap_pct':    gap_pct,
+                'direction':  'UP' if gap_pts > 0 else ('DOWN' if gap_pts < 0 else 'FLAT'),
+            }
+        except Exception:
+            continue
+
+    # GIFT Nifty: 9:10 AM price vs NIFTY's previous day close.
+    # Uses open of the 9:10:00 bucket (pre-market indicator of expected NIFTY open).
+    if nifty_prev_close:
+        try:
+            gift_ep = calendar.timegm(datetime(d.year, d.month, d.day, 9, 10, 0).timetuple())
+            gift_row = db.execute("""
+                SELECT open FROM read_parquet(?)
+                WHERE symbol = 'GIFTNIFTY' AND bucket >= ? AND bucket <= ?
+                ORDER BY bucket ASC LIMIT 1
+            """, [str(today_path), gift_ep, gift_ep + 5]).fetchone()
+            if gift_row:
+                gift_price = float(gift_row[0])
+                gap_pts = round(gift_price - nifty_prev_close, 2)
+                gap_pct = round((gap_pts / nifty_prev_close) * 100, 3)
+                result['GIFTNIFTY'] = {
+                    'open':       gift_price,
+                    'prev_close': nifty_prev_close,
+                    'gap_pts':    gap_pts,
+                    'gap_pct':    gap_pct,
+                    'direction':  'UP' if gap_pts > 0 else ('DOWN' if gap_pts < 0 else 'FLAT'),
+                    'snapshot_time': '9:10',
+                }
+        except Exception:
+            pass
+
+    return result
+
+
+async def query_index_gap(date_str: str) -> dict:
+    """DuckDB replacement for GET /api/hist-index-gap."""
+    d = PyDate.fromisoformat(date_str)
+    return await asyncio.to_thread(_sync_query_index_gap, d)

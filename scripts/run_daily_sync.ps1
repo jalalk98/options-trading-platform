@@ -77,6 +77,16 @@ try {
 $EndTs = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 Add-Content -Path $LogFile -Value "[$EndTs] Exit code: $ExitCode"
 
+# --- Sync trade journal (always runs independently of tick data sync) ---
+Add-Content -Path $LogFile -Value ""
+Add-Content -Path $LogFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Syncing trade journal from B2..."
+try {
+    & $PythonExe "scripts\sync_from_b2.py" "--journal" *>> $LogFile
+} catch {
+    Add-Content -Path $LogFile -Value "[wrapper] Exception syncing trade journal: $_"
+}
+Add-Content -Path $LogFile -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Trade journal sync done"
+
 if ($ExitCode -eq 0 -or $ExitCode -eq 1) {
     Write-SyncState "done"
 } else {
