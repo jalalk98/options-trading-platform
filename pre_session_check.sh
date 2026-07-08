@@ -130,14 +130,21 @@ else
 fi
 
 # 9. Order API test — fetch SBIN LTP, place 1-qty regular limit-buy at 5% below LTP, cancel immediately
-AMO_RESULT=$(cd "$SCRIPT_DIR" && ./venv/bin/python scripts/test_amo_order.py 2>/dev/null)
-AMO_EXIT=$?
-if [ $AMO_EXIT -eq 0 ]; then
-    AMO_ORDER_ID=$(echo "$AMO_RESULT" | grep -o '"order_id": "[^"]*"' | cut -d'"' -f4)
-    AMO_STATUS="✅ placed + cancelled (order ${AMO_ORDER_ID})"
+# Zerodha pre-open order collection closes at 09:08; regular trading starts 09:15.
+# Skip the order test during this dead zone to avoid a known false alarm.
+CURRENT_HHMM=$(date +%H%M)
+if [ "$CURRENT_HHMM" -ge 908 ] && [ "$CURRENT_HHMM" -lt 915 ]; then
+    AMO_STATUS="⏭ skipped — pre-open dead zone (09:08–09:14); regular trading starts 09:15"
 else
-    AMO_ERROR=$(echo "$AMO_RESULT" | grep -o '"error": "[^"]*"' | cut -d'"' -f4)
-    AMO_STATUS="❌ FAILED — ${AMO_ERROR:-unknown error}"
+    AMO_RESULT=$(cd "$SCRIPT_DIR" && ./venv/bin/python scripts/test_amo_order.py 2>/dev/null)
+    AMO_EXIT=$?
+    if [ $AMO_EXIT -eq 0 ]; then
+        AMO_ORDER_ID=$(echo "$AMO_RESULT" | grep -o '"order_id": "[^"]*"' | cut -d'"' -f4)
+        AMO_STATUS="✅ placed + cancelled (order ${AMO_ORDER_ID})"
+    else
+        AMO_ERROR=$(echo "$AMO_RESULT" | grep -o '"error": "[^"]*"' | cut -d'"' -f4)
+        AMO_STATUS="❌ FAILED — ${AMO_ERROR:-unknown error}"
+    fi
 fi
 
 # ── Overall result ─────────────────────────────────────────────────────────────

@@ -43,6 +43,8 @@ DEAD_TUPLES=$(_pg  "SELECT COALESCE(SUM(n_dead_tup), 0) FROM pg_stat_user_tables
 LAST_ANALYZE_DATE=$(_pg  "SELECT COALESCE(DATE(MAX(GREATEST(last_analyze, last_autoanalyze)))::text, '1970-01-01') FROM pg_stat_user_tables WHERE relname LIKE 'gap_ticks_%' AND n_live_tup > 0;")
 
 # ── Today's tick data (computed early — used in growth comparison below) ──────
+TODAY_PARTITION="gap_ticks_$(echo "$TODAY" | tr '-' '_')"
+TODAY_PART_BYTES=$(_pg "SELECT COALESCE(pg_total_relation_size(relid), 0) FROM pg_stat_user_tables WHERE relname = '${TODAY_PARTITION}';")
 SYMBOLS_TODAY=$(_pg "SELECT COUNT(DISTINCT symbol) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
 TICKS_TODAY=$(_pg   "SELECT COUNT(*) FROM gap_ticks WHERE timestamp >= '${TODAY} 03:30:00'::timestamp;")
 CANDLES_TODAY=$(_pg "SELECT COUNT(*) FROM candles_5s WHERE bucket >= EXTRACT(EPOCH FROM '${TODAY} 03:30:00'::timestamp)::bigint;")
@@ -72,7 +74,7 @@ elif [ -f "$STATS_FILE" ]; then
         PREV_TICKS=$(echo "$PREV" | cut -d',' -f2)
         PREV_BYTES=$(echo "$PREV" | cut -d',' -f3)
         DELTA_TICKS=$(( ${TICKS_TODAY:-0} - ${PREV_TICKS:-0} ))
-        DELTA_BYTES=$(( ${TABLE_SIZE_BYTES:-0} - ${PREV_BYTES:-0} ))
+        DELTA_BYTES=$(( ${TODAY_PART_BYTES:-0} - ${PREV_BYTES:-0} ))
         DELTA_TICKS_FMT=$(printf "%'+d" "$DELTA_TICKS" 2>/dev/null || echo "$DELTA_TICKS")
         DELTA_MB=$(awk "BEGIN {printf \"%.0f\", $DELTA_BYTES/1048576}")
         if [ "$DELTA_MB" -ge 0 ] 2>/dev/null; then
@@ -178,12 +180,14 @@ _tg "$MESSAGE"
 echo "$(date): Daily summary sent."
 
 # ── Persist today's stats for tomorrow's trend comparison ────────────────────
-# Format: DATE,TICKS_TODAY,TABLE_SIZE_BYTES
+# Format: DATE,TICKS_TODAY,TODAY_PART_BYTES
+#   Both values are per-session (today's partition only) so the delta comparison
+#   is always apples-to-apples: today's session vs yesterday's session.
 touch "$STATS_FILE"
 _TMP=$(mktemp)
 { grep -v "^${TODAY}," "$STATS_FILE" 2>/dev/null || true; } > "$_TMP"
 cat "$_TMP" > "$STATS_FILE"; rm -f "$_TMP"
-echo "${TODAY},${TICKS_TODAY:-0},${TABLE_SIZE_BYTES:-0}" >> "$STATS_FILE"
+echo "${TODAY},${TICKS_TODAY:-0},${TODAY_PART_BYTES:-0}" >> "$STATS_FILE"
 # Keep only last 30 days of history
 _TMP=$(mktemp)
 tail -30 "$STATS_FILE" > "$_TMP"

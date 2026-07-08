@@ -16,8 +16,12 @@ from datetime import timezone, timedelta, datetime
 from backend.api.strikes import router as strikes_router, prewarm_strikes_cache, refresh_b2_cache
 from backend.api.sl import router as sl_router
 from backend.api.hedge import router as hedge_router
+from backend.api.journal import router as journal_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
+from fastapi import Body
+from backend.services import ghost_detector
+from backend.services import reverse_snipper
 
     
 app = FastAPI()
@@ -25,6 +29,7 @@ app = FastAPI()
 app.include_router(strikes_router, prefix="/api")
 app.include_router(sl_router, prefix="/api")
 app.include_router(hedge_router, prefix="/api")
+app.include_router(journal_router, prefix="/api")
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
@@ -192,6 +197,43 @@ async def startup():
             )
     asyncio.create_task(_ensure_hedge_pairs_table())
 
+    async def _ensure_reverse_snipper_table():
+        async with app.state.pool.acquire() as _conn:
+            await _conn.execute("""
+                CREATE TABLE IF NOT EXISTS reverse_snipper_trades (
+                    id                      SERIAL PRIMARY KEY,
+                    symbol                  VARCHAR(50)    NOT NULL,
+                    entry_price             NUMERIC(10,2)  NOT NULL,
+                    entry_time              TIMESTAMPTZ    NOT NULL,
+                    exit_price              NUMERIC(10,2)  NOT NULL,
+                    exit_time               TIMESTAMPTZ    NOT NULL,
+                    pnl_pts                 NUMERIC(10,2)  NOT NULL,
+                    pnl_inr                 NUMERIC(12,2)  NOT NULL,
+                    close_reason            VARCHAR(20)    NOT NULL,
+                    spike_low               NUMERIC(10,2)  NOT NULL,
+                    spike_distance          NUMERIC(8,2)   NOT NULL,
+                    spike_window_secs       NUMERIC(6,2)   NOT NULL,
+                    recovery_buffer         NUMERIC(8,2)   NOT NULL,
+                    sl_buffer               NUMERIC(8,2)   NOT NULL,
+                    lookback_secs           NUMERIC(6,2)   NOT NULL,
+                    spike_timeout_secs      NUMERIC(6,2)   NOT NULL,
+                    qty                     INTEGER        NOT NULL,
+                    cooldown_secs           NUMERIC(6,2)   NOT NULL,
+                    auto_increment_sl       BOOLEAN        NOT NULL DEFAULT FALSE,
+                    increment_step          NUMERIC(8,2)   NOT NULL DEFAULT 5,
+                    increment_interval_secs NUMERIC(6,2)   NOT NULL DEFAULT 30,
+                    sl_at_cost              BOOLEAN        NOT NULL DEFAULT FALSE
+                )
+            """)
+            await _conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rsnip_symbol_entry "
+                "ON reverse_snipper_trades (symbol, entry_time DESC)"
+            )
+    asyncio.create_task(_ensure_reverse_snipper_table())
+
+    # Inject DB pool into reverse_snipper so it can persist trades
+    reverse_snipper.set_pool(app.state.pool)
+
     # B2 manifest is slow (blocking S3 call) — skip during market hours to
     # avoid stalling the event loop while charts are actively being used.
     def _in_market_hours() -> bool:
@@ -211,6 +253,76 @@ async def startup():
             await asyncio.sleep(300)  # check every 5 minutes
 
     asyncio.create_task(_b2_refresh_loop())
+
+@app.post("/api/ghost-detector/start")
+async def ghost_detector_start(payload: dict = Body(...)):
+    symbol = payload.get("symbol", "").strip()
+    config = payload.get("config", {})
+    if not symbol:
+        return {"status": "error", "message": "symbol required"}
+    required = {"distance", "buffer", "qty", "direction", "cycle_time"}
+    missing = required - config.keys()
+    if missing:
+        return {"status": "error", "message": f"missing config keys: {missing}"}
+    started = ghost_detector.start_detector(symbol, config)
+    return {"status": "ok", "started": started}
+
+
+@app.post("/api/ghost-detector/stop")
+async def ghost_detector_stop(payload: dict = Body(...)):
+    symbol = payload.get("symbol", "").strip()
+    if not symbol:
+        return {"status": "error", "message": "symbol required"}
+    stopped = ghost_detector.stop_detector(symbol)
+    return {"status": "ok", "stopped": stopped}
+
+
+@app.get("/api/ghost-detector/active")
+async def ghost_detector_active():
+    return {"active": ghost_detector.get_active()}
+
+
+@app.post("/api/reverse-snipper/start")
+async def reverse_snipper_start(payload: dict = Body(...)):
+    symbol = payload.get("symbol", "").strip()
+    config = payload.get("config", {})
+    if not symbol:
+        return {"status": "error", "message": "symbol required"}
+    required = {
+        "spike_distance", "spike_window_secs", "recovery_buffer", "sl_buffer",
+        "spike_timeout_secs", "qty", "cooldown_secs",
+    }
+    missing = required - config.keys()
+    if missing:
+        return {"status": "error", "message": f"missing config keys: {missing}"}
+    started = reverse_snipper.start_snipper(symbol, config)
+    return {"status": "ok", "started": started}
+
+
+@app.post("/api/reverse-snipper/stop")
+async def reverse_snipper_stop(payload: dict = Body(...)):
+    symbol = payload.get("symbol", "").strip()
+    if not symbol:
+        return {"status": "error", "message": "symbol required"}
+    stopped = reverse_snipper.stop_snipper(symbol)
+    return {"status": "ok", "stopped": stopped}
+
+
+@app.get("/api/reverse-snipper/active")
+async def reverse_snipper_active():
+    return {"active": reverse_snipper.get_active()}
+
+
+@app.get("/api/reverse-snipper/trades")
+async def reverse_snipper_trades(symbol: str = None, date: str = None):
+    trades = await reverse_snipper.get_trades(app.state.pool, symbol=symbol, date=date)
+    # Convert datetime objects to ISO strings for JSON serialisation
+    for t in trades:
+        for k, v in t.items():
+            if hasattr(v, "isoformat"):
+                t[k] = v.isoformat()
+    return {"trades": trades}
+
 
 @app.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):

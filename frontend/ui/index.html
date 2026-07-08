@@ -146,6 +146,45 @@
         #slCmCancel  { background: #374151; color: #e5e7eb; }
         #slCmConfirm { background: #06b6d4; color: #fff; font-weight: bold; }
 
+        /* ── Cursor-price order context menu ── */
+        #cursorOrderMenu {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            background: #1e2330;
+            border: 1px solid #374151;
+            border-radius: 6px;
+            padding: 10px 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+            font-size: 12px;
+            color: #e5e7eb;
+            min-width: 160px;
+            user-select: none;
+        }
+        #cursorOrderMenu .com-sym {
+            font-size: 10px;
+            color: #64748b;
+            text-align: center;
+            margin-bottom: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #cursorOrderMenu .com-price {
+            font-size: 16px;
+            font-weight: bold;
+            color: #f1f5f9;
+            text-align: center;
+            margin-bottom: 10px;
+            letter-spacing: 0.02em;
+        }
+        .com-btns { display: flex; gap: 8px; }
+        .com-btn { flex: 1; border: none; border-radius: 4px; padding: 7px 0; font-size: 12px; font-weight: bold; cursor: pointer; }
+        .com-btn-buy  { background: #16a34a; color: #fff; }
+        .com-btn-sell { background: #dc2626; color: #fff; }
+        .com-btn-buy:hover  { background: #15803d; }
+        .com-btn-sell:hover { background: #b91c1c; }
+
         #chartLabel {
             position: absolute;
             top: 12px;
@@ -305,6 +344,33 @@
         #slConfigClose { margin-top: 8px; width: 100%; background: #0f172a; border: 1px solid #334155; color: #94a3b8; border-radius: 4px; padding: 3px 0; cursor: pointer; font-size: 10px; }
         #slConfigClose:hover { background: #1e293b; }
         .slcfg-divider { border: none; border-top: 1px solid #334155; margin: 7px 0; }
+
+        /* ── Partial close modal ── */
+        #partialCloseModal {
+            display: none; position: fixed; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); z-index: 500;
+            background: #1e293b; border: 1px solid #334155; border-radius: 7px;
+            padding: 14px 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+            color: #e2e8f0; font-family: Arial, sans-serif; min-width: 200px;
+        }
+        #partialCloseModal h4 { margin: 0 0 4px; font-size: 10px; color: #94a3b8; font-weight: normal; letter-spacing: 0.4px; }
+        #partialCloseSymbolLabel { font-size: 12px; font-weight: bold; color: #f1f5f9; margin-bottom: 10px; }
+        .pc-action-row { display: flex; gap: 6px; margin-top: 8px; }
+        #partialCloseMarket {
+            flex: 1; background: #7c2d12; border: 1px solid #dc2626; color: #fca5a5;
+            border-radius: 4px; padding: 5px 0; cursor: pointer; font-size: 11px; font-weight: bold;
+        }
+        #partialCloseMarket:hover { background: #991b1b; }
+        #partialCloseLimit {
+            flex: 1; background: #1e3a5f; border: 1px solid #3b82f6; color: #93c5fd;
+            border-radius: 4px; padding: 5px 0; cursor: pointer; font-size: 11px; font-weight: bold;
+        }
+        #partialCloseLimit:hover { background: #1d4ed8; }
+        #partialCloseCancel {
+            margin-top: 4px; width: 100%; background: #0f172a; border: 1px solid #334155;
+            color: #94a3b8; border-radius: 4px; padding: 3px 0; cursor: pointer; font-size: 10px;
+        }
+        #partialCloseCancel:hover { background: #1e293b; }
         .slcfg-check {
             display: flex; align-items: center; gap: 7px;
             margin-bottom: 5px; cursor: pointer;
@@ -664,6 +730,7 @@
             pointer-events: none;
             z-index: 9999;
         }
+        body.modal-open .chart-panel.active::after { display: none; }
         .panel-chart-area {
             flex: 1;
             position: relative;
@@ -845,6 +912,204 @@
         }
         .panel-invert-btn:hover { opacity: 1; }
         .panel-invert-btn.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; opacity: 1; }
+
+        /* ── Ghost spike detector ── */
+        .ghost-det-btn {
+            pointer-events: all;
+            height: 20px;
+            padding: 0 6px;
+            border-radius: 10px;
+            border: 2px solid #4b5563;
+            background: #0f172a;
+            color: #9ca3af;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.8;
+            transition: opacity 0.15s, background 0.15s, border-color 0.15s, color 0.15s;
+            font-size: 9px;
+            font-weight: 600;
+            font-family: Arial, sans-serif;
+            white-space: nowrap;
+            line-height: 1;
+        }
+        .ghost-det-btn:hover { opacity: 1; }
+        .ghost-det-btn.active { background: #3b0f0f; border-color: #ef4444; color: #fca5a5; opacity: 1; }
+        .ghost-cfg-btn {
+            pointer-events: all;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            border: 2px solid #4b5563;
+            background: #0f172a;
+            color: #9ca3af;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s;
+            font-size: 10px;
+            line-height: 1;
+            padding: 0;
+        }
+        .ghost-cfg-btn:hover { opacity: 1; }
+        .ghost-config-panel {
+            position: absolute;
+            bottom: 26px;
+            left: 0;
+            z-index: 200;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 8px 10px;
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            min-width: 190px;
+            font-size: 11px;
+            color: #cbd5e1;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        .ghost-config-panel.open { display: flex; }
+        .ghost-config-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .ghost-config-row label { flex: 1; color: #94a3b8; }
+        .ghost-config-row input, .ghost-config-row select {
+            width: 72px;
+            padding: 2px 5px;
+            background: #0f172a;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            color: #e2e8f0;
+            font-size: 11px;
+        }
+
+        /* ── Reverse snipper button ── */
+        .rsnip-btn {
+            pointer-events: all;
+            height: 20px;
+            padding: 0 6px;
+            border-radius: 10px;
+            border: 2px solid #4b5563;
+            background: #0f172a;
+            color: #9ca3af;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.8;
+            transition: opacity 0.15s, background 0.15s, border-color 0.15s, color 0.15s;
+            font-size: 9px;
+            font-weight: 600;
+            font-family: Arial, sans-serif;
+            white-space: nowrap;
+            line-height: 1;
+        }
+        .rsnip-btn:hover { opacity: 1; }
+        .rsnip-btn.active { background: #0f3b1f; border-color: #22c55e; color: #86efac; opacity: 1; }
+
+        /* ── Trade journal badge & drawer ── */
+        .panel-trade-badge {
+            pointer-events: all;
+            background: rgba(59,130,246,0.20);
+            border: 1px solid rgba(59,130,246,0.45);
+            color: #93c5fd;
+            font-size: 10px;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            padding: 1px 6px;
+            border-radius: 3px;
+            cursor: pointer;
+            display: none;
+            white-space: nowrap;
+            line-height: 1.6;
+        }
+        .panel-trade-badge:hover { background: rgba(59,130,246,0.38); }
+        .panel-trade-popup {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.85);
+            z-index: 9500;
+            min-width: 500px;
+            max-width: 640px;
+            max-height: 70vh;
+            overflow-y: auto;
+            font-family: Arial, sans-serif;
+        }
+        .tc-buy  { color: #22c55e; }
+        .tc-sell { color: #ef4444; }
+        .trade-notes-popup {
+            position: fixed;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 10px;
+            z-index: 10000;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.7);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 250px;
+        }
+        .trade-notes-popup label { color: #94a3b8; font-size: 10px; font-family: Arial, sans-serif; }
+        .trade-notes-popup textarea {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            color: #e2e8f0;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            padding: 6px;
+            resize: vertical;
+            min-height: 68px;
+            width: 100%;
+            box-sizing: border-box;
+            outline: none;
+        }
+        .trade-notes-popup select {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            color: #e2e8f0;
+            font-size: 11px;
+            font-family: Arial, sans-serif;
+            padding: 3px 6px;
+            outline: none;
+            cursor: pointer;
+            width: 100%;
+        }
+        .trade-notes-popup-row { display: flex; justify-content: space-between; align-items: center; }
+        .trade-notes-save-btn {
+            background: #3b82f6;
+            border: none;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 11px;
+            font-family: Arial, sans-serif;
+            padding: 4px 12px;
+            cursor: pointer;
+        }
+        .trade-notes-save-btn:hover { background: #2563eb; }
+        .trade-notes-close-btn {
+            background: transparent;
+            border: none;
+            color: #64748b;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+        }
+        .trade-notes-close-btn:hover { color: #e2e8f0; }
 
         /* ── Saved Layouts modal ── */
         #layoutsOverlay {
@@ -1055,16 +1320,27 @@
     <div id="topbarRight">
         <div id="loadingBar"></div>
         <!-- Layout picker button -->
-        <button id="checkSlBtn" title="Reconcile SL orders against open positions — place any missing SL orders" onclick="checkSlOrders()" style="font-size:11px;padding:3px 7px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#ffffff;">🔍 Check SL</button>
-        <button id="closeAllBtn" title="Close ALL open positions on the account" onclick="closeAllPositions()" style="font-size:11px;padding:3px 7px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#ffffff;">⬛ Close All</button>
-        <button id="resetPositionsBtn" title="Reset position cache — use before placing order from mobile" onclick="resetPositionCache()" style="font-size:11px;padding:3px 7px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#ffffff;">Reset Cache</button>
-        <button id="refreshAutoPopBtn"
-            onclick="refreshAutoPopulate()"
-            title="Select an auto populate mode first"
-            disabled
-            style="padding:3px 7px;border-radius:4px;border:1px solid #374151;background:#1f2937;color:#ffffff;cursor:not-allowed;font-size:11px;display:inline-flex;align-items:center;gap:3px;transition:all 0.2s;">
-            🔄 Refresh Panels
-        </button>
+        <!-- SL / order action group -->
+        <div style="display:flex;align-items:center;gap:3px;background:#0f172a;border:1px solid #1e293b;border-radius:5px;padding:2px 4px;">
+            <button id="checkSlBtn" title="Reconcile SL orders against open positions — place any missing SL orders" onclick="checkSlOrders()" style="font-size:11px;padding:3px 8px;background:#0c4a6e;border:1px solid #0284c7;border-radius:4px;cursor:pointer;color:#7dd3fc;white-space:nowrap;">⚡ Check SL</button>
+            <div style="width:1px;height:16px;background:#1e293b;margin:0 1px;"></div>
+            <button id="cancelAllOrdersBtn" title="Cancel ALL pending orders on the account (OPEN + TRIGGER PENDING)" onclick="cancelAllOrders()" style="font-size:11px;padding:3px 8px;background:#422006;border:1px solid #d97706;border-radius:4px;cursor:pointer;color:#fbbf24;white-space:nowrap;">✕ Cancel All</button>
+            <button id="closeAllBtn" title="Close ALL open positions on the account" onclick="closeAllPositions()" style="font-size:11px;padding:3px 8px;background:#450a0a;border:1px solid #dc2626;border-radius:4px;cursor:pointer;color:#fca5a5;white-space:nowrap;">✕ Close All</button>
+        </div>
+        <!-- Utility group -->
+        <div style="display:flex;align-items:center;gap:3px;background:#0f172a;border:1px solid #1e293b;border-radius:5px;padding:2px 4px;">
+            <button id="resetPositionsBtn" title="Reset position cache — use before placing order from mobile" onclick="resetPositionCache()" style="font-size:11px;padding:3px 8px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#94a3b8;white-space:nowrap;">↺ Reset Cache</button>
+            <div style="width:1px;height:16px;background:#1e293b;margin:0 1px;"></div>
+            <button id="jumpToggleBtn" onclick="toggleJumpMarkers()" title="Toggle jump circle markers on/off — defaults OFF each session" style="font-size:11px;padding:3px 8px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#94a3b8;white-space:nowrap;">Jumps: OFF</button>
+            <div style="width:1px;height:16px;background:#1e293b;margin:0 1px;"></div>
+            <button id="refreshAutoPopBtn"
+                onclick="refreshAutoPopulate()"
+                title="Select an auto populate mode first"
+                disabled
+                style="padding:3px 8px;border-radius:4px;border:1px solid #374151;background:#1f2937;color:#94a3b8;cursor:not-allowed;font-size:11px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap;transition:all 0.2s;">
+                🔄 Refresh Panels
+            </button>
+        </div>
         <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
             <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="0" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
@@ -1100,6 +1376,8 @@
         <button id="drawHlineBtn" title="Draw horizontal line (H) — click chart to place, right-click line to delete" onclick="toggleDrawHline()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="6" x2="6" y2="6" stroke-width="1.2" opacity="0.4"/><line x1="2" y1="18" x2="6" y2="18" stroke-width="1.2" opacity="0.4"/></svg>
         </button>
+        <button id="syncTradesBtn" title="Sync trades from Zerodha" onclick="syncTradesFromZerodha()" style="font-size:11px;padding:3px 8px;background:#0f172a;border:1px solid rgba(59,130,246,0.45);border-radius:4px;cursor:pointer;color:#93c5fd;font-family:Arial,sans-serif;transition:all 0.2s;">↓ Sync</button>
+        <button id="journalBtn" title="Trade Journal" onclick="openJournalOverlay()" style="font-size:11px;padding:3px 8px;background:#0f172a;border:1px solid rgba(99,102,241,0.45);border-radius:4px;cursor:pointer;color:#a5b4fc;font-family:Arial,sans-serif;transition:all 0.2s;">📒 Journal</button>
         <button id="histBtn" title="Historical analysis" onclick="toggleHistMode()">📅</button>
         <button id="savedLayoutsBtn" title="Saved layouts (Ctrl+S)" onclick="openLayoutsModal()">
             <svg width="13" height="12" viewBox="0 0 24 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -1147,6 +1425,17 @@
         <button id="slCmCancel">Cancel</button>
         <button id="slCmRemove" style="background:#ef4444;color:#fff;font-weight:bold;">Remove</button>
         <button id="slCmConfirm">Set</button>
+    </div>
+</div>
+
+<!-- Cursor-price order context menu -->
+<div id="cursorOrderMenu">
+    <button onclick="document.getElementById('cursorOrderMenu').style.display='none'" style="position:absolute;top:5px;right:6px;background:none;border:none;color:#64748b;font-size:14px;cursor:pointer;line-height:1;padding:0;">✕</button>
+    <div class="com-sym" id="comSym">—</div>
+    <div class="com-price" id="comPrice">—</div>
+    <div class="com-btns">
+        <button class="com-btn com-btn-buy"  onclick="execCursorOrder('BUY')">BUY</button>
+        <button class="com-btn com-btn-sell" onclick="execCursorOrder('SELL')">SELL</button>
     </div>
 </div>
 
@@ -1223,8 +1512,45 @@
 </button>
 <div id="tooltip"></div>
 <div id="jumpTooltip" style="display:none;position:fixed;z-index:1000;pointer-events:none;min-width:160px;"></div>
+<div id="ghostTooltip" style="display:none;position:fixed;z-index:1001;pointer-events:none;min-width:180px;"></div>
+<div id="rsnipTooltip" style="display:none;position:fixed;z-index:1001;pointer-events:none;min-width:200px;"></div>
 <div id="undoToast"></div>
 <div id="toastContainer"></div>
+
+<!-- ── Trade Journal Overlay ── -->
+<div id="journalOverlay" onclick="if(event.target===this)closeJournalOverlay()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9000;align-items:flex-start;justify-content:center;padding-top:40px;">
+  <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;width:min(96vw,900px);max-height:82vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,0.8);">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #1e293b;flex-shrink:0;">
+      <span style="color:#e2e8f0;font-size:14px;font-weight:bold;font-family:Arial,sans-serif;">📒 Trade Journal</span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <label style="color:#94a3b8;font-size:12px;font-family:Arial,sans-serif;">Date:
+          <input type="date" id="journalDatePicker" onchange="loadJournalForDate(this.value)" style="margin-left:6px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:12px;padding:3px 8px;outline:none;cursor:pointer;">
+        </label>
+        <button onclick="closeJournalOverlay()" style="background:transparent;border:none;color:#64748b;font-size:18px;cursor:pointer;line-height:1;padding:0 4px;">✕</button>
+      </div>
+    </div>
+    <div id="journalSummaryBar" style="padding:8px 16px;background:#0a0f1a;border-bottom:1px solid #1e293b;font-family:Arial,sans-serif;font-size:12px;color:#94a3b8;flex-shrink:0;display:flex;gap:20px;"></div>
+    <div style="overflow-y:auto;flex:1;">
+      <table id="journalTable" style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">
+        <thead style="position:sticky;top:0;background:#0a0f1a;z-index:1;">
+          <tr style="color:#475569;font-size:10px;text-transform:uppercase;">
+            <th style="padding:6px 8px;text-align:center;font-weight:600;">#</th>
+            <th style="padding:6px 10px;text-align:left;font-weight:600;">Time</th>
+            <th style="padding:6px 10px;text-align:left;font-weight:600;">Symbol</th>
+            <th style="padding:6px 4px;font-weight:600;">Dir</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">Price</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">Qty</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">Index@Entry</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">P&L</th>
+            <th style="padding:6px 8px;text-align:center;font-weight:600;">Notes</th>
+          </tr>
+        </thead>
+        <tbody id="journalTableBody"></tbody>
+      </table>
+      <div id="journalEmpty" style="display:none;text-align:center;color:#334155;padding:40px;font-family:Arial,sans-serif;font-size:13px;">No trades recorded for this date.</div>
+    </div>
+  </div>
+</div>
 
 <!-- Buy / Sell order bar -->
 <div id="orderBar">
@@ -1301,6 +1627,26 @@
         SL at Cost
     </label>
     <button id="slConfigClose" onclick="closeSlConfig()">Done</button>
+</div>
+
+<!-- Partial close modal -->
+<div id="partialCloseModal">
+    <h4>PARTIAL CLOSE</h4>
+    <div id="partialCloseSymbolLabel"></div>
+    <div class="slcfg-row" style="margin-top:8px;">
+        <label style="font-size:9px;color:#94a3b8;">Qty to close</label>
+        <input id="partialCloseQty" class="slcfg-input" type="number" min="1" step="1" value="1000">
+    </div>
+    <div class="slcfg-row">
+        <label style="font-size:9px;color:#94a3b8;">Limit price</label>
+        <input id="partialClosePrice" class="slcfg-input" type="number" min="0.05" step="0.05"
+               onkeydown="if(event.key==='Enter') confirmPartialClose('LIMIT')">
+    </div>
+    <div class="pc-action-row">
+        <button id="partialCloseMarket" onclick="confirmPartialClose('MARKET')">Market</button>
+        <button id="partialCloseLimit"  onclick="confirmPartialClose('LIMIT')">Limit</button>
+    </div>
+    <button id="partialCloseCancel" onclick="closePartialModal()">Cancel</button>
 </div>
 
 <!-- Hedge config popup -->
@@ -1466,6 +1812,7 @@ function toggleDrawHline() {
     document.getElementById('chartGrid').style.cursor = drawHlineMode ? 'crosshair' : '';
 }
 document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { const cm = document.getElementById('cursorOrderMenu'); if (cm) cm.style.display = 'none'; closePartialModal(); }
     if (e.key === 'Escape' && drawHlineMode) { drawHlineMode = false; document.getElementById('drawHlineBtn').classList.remove('active'); document.getElementById('chartGrid').style.cursor = ''; }
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -1489,16 +1836,27 @@ let orderType      = 'L';
 let limitBuffer        = parseFloat(localStorage.getItem('limitBuffer')        ?? '0.20');
 let limitAutoCancelSecs = localStorage.getItem('limitAutoCancelSecs') === null
     ? 3 : parseInt(localStorage.getItem('limitAutoCancelSecs'));
+// Jump circle marker toggle — key includes today's date so it resets OFF each new trading day
+const _jumpToggleDate   = new Date().toISOString().slice(0, 10);
+const _jumpToggleKey    = 'jumpMarkersEnabled_' + _jumpToggleDate;
+let _jumpMarkersEnabled = localStorage.getItem(_jumpToggleKey) === 'true';
 let limitDefaultSL = 10;
 const SL_INDEX_DEFAULTS = {
-    SENSEX:   { slBuffer: 0.5,  slDistance: 9, slDefaultDist: 20 },
-    NIFTY:    { slBuffer: 0.25, slDistance: 5, slDefaultDist: 10 },
-    _default: { slBuffer: 0.25, slDistance: 5, slDefaultDist: 10 },
+    SENSEX:   { slBuffer: 1.75, slDistance: 9, slDefaultDist: 20, triggerBuffer: 1.75 },
+    NIFTY:    { slBuffer: 0.85, slDistance: 5, slDefaultDist: 10, triggerBuffer: 0.85 },
+    _default: { slBuffer: 0.85, slDistance: 5, slDefaultDist: 10, triggerBuffer: 0.85 },
 };
+function _loadSlIndexConfigFromStorage(key) {
+    try {
+        const raw = localStorage.getItem('slIndexConfig_' + key);
+        if (raw) return { ...SL_INDEX_DEFAULTS[key], ...JSON.parse(raw) };
+    } catch(e) {}
+    return { ...SL_INDEX_DEFAULTS[key] };
+}
 const SL_INDEX_CONFIG = {
-    SENSEX:   { ...SL_INDEX_DEFAULTS.SENSEX },
-    NIFTY:    { ...SL_INDEX_DEFAULTS.NIFTY },
-    _default: { ...SL_INDEX_DEFAULTS._default },
+    SENSEX:   _loadSlIndexConfigFromStorage('SENSEX'),
+    NIFTY:    _loadSlIndexConfigFromStorage('NIFTY'),
+    _default: _loadSlIndexConfigFromStorage('_default'),
 };
 function _slIndexKey(sym) {
     if (!sym) return '_default';
@@ -1506,15 +1864,19 @@ function _slIndexKey(sym) {
     if (sym.startsWith('NIFTY')) return 'NIFTY';
     return '_default';
 }
+function _saveSlIndexConfig(key) {
+    try { localStorage.setItem('slIndexConfig_' + key, JSON.stringify(SL_INDEX_CONFIG[key])); } catch(e) {}
+}
 function _loadSlConfig(sym) {
     const cfg = SL_INDEX_CONFIG[_slIndexKey(sym)];
     slBuffer      = cfg.slBuffer;
     slDistance    = cfg.slDistance;
     slDefaultDist = cfg.slDefaultDist;
+    return cfg;  // caller uses cfg.triggerBuffer for per-panel slTriggerBuffer
 }
-let slBuffer          = SL_INDEX_DEFAULTS._default.slBuffer;
-let slDistance        = SL_INDEX_DEFAULTS._default.slDistance;
-let slDefaultDist     = SL_INDEX_DEFAULTS._default.slDefaultDist;
+let slBuffer          = SL_INDEX_CONFIG._default.slBuffer;
+let slDistance        = SL_INDEX_CONFIG._default.slDistance;
+let slDefaultDist     = SL_INDEX_CONFIG._default.slDefaultDist;
 let slAutoCancelCount = 1;
 let slAutoSlIncCount  = 1;
 let slAtCost          = false;
@@ -1544,6 +1906,20 @@ function isKnownSymbol(sym) {
    PANEL FACTORY
 ====================== */
 function createPanel(id) {
+    // ── Ghost detector state (declared first — used in DOM building below) ──
+    let _ghostOn     = false;
+    let _ghostSpikes = [];
+    let _ghostConfig = { distance: 20, buffer: 1.5, qty: 10, direction: 'BUY', cycle_time: 0.5 };
+
+    // ── Reverse snipper state ──────────────────────
+    let _rsnipOn     = false;
+    let _rsnipTrades = [];
+    let _rsnipConfig = {
+        spike_distance: 12, spike_window_secs: 1, recovery_buffer: 10, sl_buffer: 3,
+        spike_timeout_secs: 4, qty: 10, cooldown_secs: 60,
+        auto_increment_sl: false, increment_step: 2, increment_interval_secs: 0.25,
+    };
+
     // ── DOM ───────────────────────────────────────
     const panelEl = document.createElement('div');
     panelEl.className = 'chart-panel';
@@ -1591,9 +1967,14 @@ function createPanel(id) {
         userLines.forEach(l => l.priceLine.applyOptions({ price: ip(l.price) }));
     });
 
+    const tradeBadgeEl = document.createElement('button');
+    tradeBadgeEl.className = 'panel-trade-badge';
+    tradeBadgeEl.title = 'View today\'s trades';
+
     topBarEl.appendChild(labelEl);
     topBarEl.appendChild(legToggleWrapEl);
     topBarEl.appendChild(invertBtn);
+    topBarEl.appendChild(tradeBadgeEl);
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
 
@@ -1609,6 +1990,175 @@ function createPanel(id) {
     rightGapBtn.title = 'Lock right gap to 20 candles';
     rightGapBtn.textContent = '⊐ 20';
     bottomBarEl.appendChild(rightGapBtn);
+
+    // ── Ghost detector toggle + config ────────────
+    const ghostWrapEl = document.createElement('div');
+    ghostWrapEl.style.cssText = 'position:relative;display:flex;gap:2px;align-items:center;';
+
+    const ghostConfigPanel = document.createElement('div');
+    ghostConfigPanel.className = 'ghost-config-panel';
+
+    // Header row with title + ✕ close button
+    const _cfgHeader = document.createElement('div');
+    _cfgHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;';
+    const _cfgTitle = document.createElement('span');
+    _cfgTitle.textContent = 'Ghost Detector Config';
+    _cfgTitle.style.cssText = 'font-size:10px;font-weight:700;color:#e2e8f0;letter-spacing:0.3px;';
+    const _cfgCloseBtn = document.createElement('button');
+    _cfgCloseBtn.textContent = '✕';
+    _cfgCloseBtn.style.cssText = 'background:none;border:none;color:#94a3b8;cursor:pointer;font-size:12px;line-height:1;padding:0;margin-left:8px;';
+    _cfgCloseBtn.addEventListener('click', e => { e.stopPropagation(); ghostConfigPanel.classList.remove('open'); });
+    _cfgHeader.appendChild(_cfgTitle);
+    _cfgHeader.appendChild(_cfgCloseBtn);
+    ghostConfigPanel.appendChild(_cfgHeader);
+
+    const _cfgDefs = [
+        { label: 'Distance',    key: 'distance',   step: '1' },
+        { label: 'Buffer',      key: 'buffer',     step: '0.5' },
+        { label: 'Qty',         key: 'qty',        step: '1' },
+        { label: 'Interval (s)',key: 'cycle_time', step: '0.1' },
+    ];
+    _cfgDefs.forEach(f => {
+        const row = document.createElement('div');
+        row.className = 'ghost-config-row';
+        const lbl = document.createElement('label');
+        lbl.textContent = f.label;
+        const inp = document.createElement('input');
+        inp.type = 'number'; inp.step = f.step;
+        inp.value = _ghostConfig[f.key];
+        inp.addEventListener('change', () => {
+            _ghostConfig[f.key] = f.key === 'qty' ? parseInt(inp.value, 10) : parseFloat(inp.value);
+        });
+        row.appendChild(lbl); row.appendChild(inp);
+        ghostConfigPanel.appendChild(row);
+    });
+    const _dirRow = document.createElement('div');
+    _dirRow.className = 'ghost-config-row';
+    const _dirLbl = document.createElement('label'); _dirLbl.textContent = 'Direction';
+    const _dirSel = document.createElement('select');
+    ['BUY','SELL','BOTH'].forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d; opt.textContent = d;
+        if (d === _ghostConfig.direction) opt.selected = true;
+        _dirSel.appendChild(opt);
+    });
+    _dirSel.addEventListener('change', () => { _ghostConfig.direction = _dirSel.value; });
+    _dirRow.appendChild(_dirLbl); _dirRow.appendChild(_dirSel);
+    ghostConfigPanel.appendChild(_dirRow);
+
+    // Done button
+    const _cfgDoneBtn = document.createElement('button');
+    _cfgDoneBtn.textContent = 'Done';
+    _cfgDoneBtn.style.cssText = 'margin-top:4px;width:100%;padding:4px 0;background:#1e3a5f;border:1px solid #3b82f6;border-radius:4px;color:#93c5fd;font-size:11px;font-weight:600;cursor:pointer;';
+    _cfgDoneBtn.addEventListener('click', e => { e.stopPropagation(); ghostConfigPanel.classList.remove('open'); });
+    _cfgDoneBtn.addEventListener('mouseenter', () => { _cfgDoneBtn.style.background = '#1d4ed8'; });
+    _cfgDoneBtn.addEventListener('mouseleave', () => { _cfgDoneBtn.style.background = '#1e3a5f'; });
+    ghostConfigPanel.appendChild(_cfgDoneBtn);
+
+    const ghostBtn = document.createElement('button');
+    ghostBtn.className = 'ghost-det-btn';
+    ghostBtn.title = 'Ghost spike detector — click to toggle';
+    ghostBtn.textContent = '👻 OFF';
+
+    const ghostCfgBtn = document.createElement('button');
+    ghostCfgBtn.className = 'ghost-cfg-btn';
+    ghostCfgBtn.title = 'Ghost detector config';
+    ghostCfgBtn.textContent = '⚙';
+
+    ghostWrapEl.appendChild(ghostConfigPanel);
+    ghostWrapEl.appendChild(ghostBtn);
+    ghostWrapEl.appendChild(ghostCfgBtn);
+    bottomBarEl.appendChild(ghostWrapEl);
+
+    // ── Reverse snipper toggle + config ──────────
+    const rsnipWrapEl = document.createElement('div');
+    rsnipWrapEl.style.cssText = 'position:relative;display:flex;gap:2px;align-items:center;';
+
+    const rsnipConfigPanel = document.createElement('div');
+    rsnipConfigPanel.className = 'ghost-config-panel';
+
+    const _rCfgHeader = document.createElement('div');
+    _rCfgHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;';
+    const _rCfgTitle = document.createElement('span');
+    _rCfgTitle.textContent = 'Reverse Snipper Config';
+    _rCfgTitle.style.cssText = 'font-size:10px;font-weight:700;color:#e2e8f0;letter-spacing:0.3px;';
+    const _rCfgClose = document.createElement('button');
+    _rCfgClose.textContent = '✕';
+    _rCfgClose.style.cssText = 'background:none;border:none;color:#94a3b8;cursor:pointer;font-size:12px;line-height:1;padding:0;margin-left:8px;';
+    _rCfgClose.addEventListener('click', e => { e.stopPropagation(); rsnipConfigPanel.classList.remove('open'); });
+    _rCfgHeader.appendChild(_rCfgTitle);
+    _rCfgHeader.appendChild(_rCfgClose);
+    rsnipConfigPanel.appendChild(_rCfgHeader);
+
+    const _rNumFields = [
+        { label: 'Spike Dist (pts)',    key: 'spike_distance',          step: '1',   desc: 'Minimum point drop to qualify as a spike (e.g. 40 = price must fall 40 pts)' },
+        { label: 'Spike Window (s)',     key: 'spike_window_secs',       step: '0.5', desc: 'Drop must happen within this many seconds — filters slow grind-downs' },
+        { label: 'Recovery Buf (pts)',   key: 'recovery_buffer',         step: '0.5', desc: 'Points above spike low to trigger entry SL-B order (e.g. 8 = enter at low+8)' },
+        { label: 'SL Buffer (pts)',      key: 'sl_buffer',               step: '0.5', desc: 'Points below spike low for stop-loss placement — breathing room below the bottom' },
+{ label: 'Spike Timeout (s)',    key: 'spike_timeout_secs',      step: '5',   desc: 'Cancel entry order and reset if no recovery happens within this time' },
+        { label: 'Qty',                  key: 'qty',                     step: '1',   desc: 'Number of lots to buy on entry' },
+        { label: 'Cooldown (s)',         key: 'cooldown_secs',           step: '5',   desc: 'Wait this many seconds before re-arming after a trade closes (toggle stays ON)' },
+        { label: 'SL Step (pts)',        key: 'increment_step',          step: '0.5', desc: 'Points added to SL on each auto-increment tick (stops at entry price)' },
+        { label: 'SL Interval (s)',      key: 'increment_interval_secs', step: '5',   desc: 'How often (in seconds) to increment the SL — time-based, not price-based' },
+    ];
+    _rNumFields.forEach(f => {
+        const row = document.createElement('div');
+        row.className = 'ghost-config-row';
+        const lbl = document.createElement('label');
+        lbl.style.cssText = 'flex:1;color:#94a3b8;cursor:help;border-bottom:1px dotted #475569;';
+        lbl.textContent = f.label;
+        lbl.title = f.desc;
+        const inp = document.createElement('input');
+        inp.type = 'number'; inp.step = f.step;
+        inp.value = _rsnipConfig[f.key];
+        inp.addEventListener('change', () => {
+            _rsnipConfig[f.key] = f.key === 'qty' ? parseInt(inp.value, 10) : parseFloat(inp.value);
+        });
+        row.appendChild(lbl); row.appendChild(inp);
+        rsnipConfigPanel.appendChild(row);
+    });
+
+    // Auto-increment SL toggle row
+    const _rAutoRow = document.createElement('div');
+    _rAutoRow.className = 'ghost-config-row';
+    const _rAutoLbl = document.createElement('label');
+    _rAutoLbl.textContent = 'Auto Incr SL';
+    _rAutoLbl.style.cssText = 'flex:1;color:#94a3b8;cursor:help;border-bottom:1px dotted #475569;';
+    _rAutoLbl.title = 'When ON: SL is moved up by SL Step every SL Interval seconds after entry — stops at entry price (breakeven)';
+    const _rAutoSel = document.createElement('select');
+    ['OFF', 'ON'].forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d === 'ON' ? 'true' : 'false'; opt.textContent = d;
+        if ((d === 'ON') === _rsnipConfig.auto_increment_sl) opt.selected = true;
+        _rAutoSel.appendChild(opt);
+    });
+    _rAutoSel.addEventListener('change', () => { _rsnipConfig.auto_increment_sl = _rAutoSel.value === 'true'; });
+    _rAutoRow.appendChild(_rAutoLbl); _rAutoRow.appendChild(_rAutoSel);
+    rsnipConfigPanel.appendChild(_rAutoRow);
+
+    const _rCfgDone = document.createElement('button');
+    _rCfgDone.textContent = 'Done';
+    _rCfgDone.style.cssText = 'margin-top:4px;width:100%;padding:4px 0;background:#0f3b1f;border:1px solid #22c55e;border-radius:4px;color:#86efac;font-size:11px;font-weight:600;cursor:pointer;';
+    _rCfgDone.addEventListener('click', e => { e.stopPropagation(); rsnipConfigPanel.classList.remove('open'); });
+    _rCfgDone.addEventListener('mouseenter', () => { _rCfgDone.style.background = '#166534'; });
+    _rCfgDone.addEventListener('mouseleave', () => { _rCfgDone.style.background = '#0f3b1f'; });
+    rsnipConfigPanel.appendChild(_rCfgDone);
+
+    const rsnipBtn = document.createElement('button');
+    rsnipBtn.className = 'rsnip-btn';
+    rsnipBtn.title = 'Reverse Snipper — click to toggle';
+    rsnipBtn.textContent = '⚡ OFF';
+
+    const rsnipCfgBtn = document.createElement('button');
+    rsnipCfgBtn.className = 'ghost-cfg-btn';
+    rsnipCfgBtn.title = 'Reverse snipper config';
+    rsnipCfgBtn.textContent = '⚙';
+
+    rsnipWrapEl.appendChild(rsnipConfigPanel);
+    rsnipWrapEl.appendChild(rsnipBtn);
+    rsnipWrapEl.appendChild(rsnipCfgBtn);
+    bottomBarEl.appendChild(rsnipWrapEl);
+
     chartAreaEl.appendChild(bottomBarEl);
 
     const noDataEl = document.createElement('div');
@@ -1652,6 +2202,96 @@ function createPanel(id) {
             chart.timeScale().applyOptions({ rightOffset: 0 });
         }
     });
+
+    // ── Ghost detector button handlers ────────────
+    function _setGhostOff() {
+        _ghostOn = false;
+        ghostBtn.textContent = '👻 OFF';
+        ghostBtn.classList.remove('active');
+    }
+
+    ghostBtn.addEventListener('click', async e => {
+        e.stopPropagation();
+        if (!symbol) return;
+        if (_ghostOn) {
+            await fetch('/api/ghost-detector/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol }),
+            });
+            _setGhostOff();
+        } else {
+            const res = await fetch('/api/ghost-detector/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, config: _ghostConfig }),
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                _ghostOn = true;
+                ghostBtn.textContent = '👻 ON';
+                ghostBtn.classList.add('active');
+            }
+        }
+    });
+
+    ghostCfgBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        ghostConfigPanel.classList.toggle('open');
+    });
+
+    // Close config panel on outside click
+    document.addEventListener('click', () => ghostConfigPanel.classList.remove('open'));
+    ghostConfigPanel.addEventListener('click', e => e.stopPropagation());
+
+    // ── Reverse snipper button handlers ──────────
+    function _setRsnipOff() {
+        _rsnipOn = false;
+        rsnipBtn.textContent = '⚡ OFF';
+        rsnipBtn.classList.remove('active');
+    }
+
+    rsnipBtn.addEventListener('click', async e => {
+        e.stopPropagation();
+        if (!symbol) { console.warn('[rsnip] toggle clicked but no symbol loaded'); return; }
+        if (_rsnipOn) {
+            console.log('[rsnip] stopping symbol=%s', symbol);
+            await fetch('/api/reverse-snipper/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol }),
+            });
+            _setRsnipOff();
+        } else {
+            console.log('[rsnip] starting symbol=%s config=%o', symbol, _rsnipConfig);
+            try {
+                const res = await fetch('/api/reverse-snipper/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, config: _rsnipConfig }),
+                });
+                const data = await res.json();
+                console.log('[rsnip] start response=%o', data);
+                if (data.status === 'ok') {
+                    _rsnipOn = true;
+                    rsnipBtn.textContent = '⚡ ON';
+                    rsnipBtn.classList.add('active');
+                } else {
+                    console.error('[rsnip] start failed:', data);
+                }
+            } catch (err) {
+                console.error('[rsnip] start fetch error:', err);
+            }
+        }
+    });
+
+    rsnipCfgBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        rsnipConfigPanel.classList.toggle('open');
+    });
+
+    document.addEventListener('click', () => rsnipConfigPanel.classList.remove('open'));
+    rsnipConfigPanel.addEventListener('click', e => e.stopPropagation());
 
     // ── Axis sync + lazy historical load ──────────
     chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
@@ -1708,7 +2348,7 @@ function createPanel(id) {
     let _historicalConvictions   = [];
     let _jumpMarkers             = [];
     let _panelHistDate           = null;
-    let slTriggerBuffer  = 1;
+    let slTriggerBuffer  = 0.85;
     let panelLots        = 1;   // per-panel lot count, preserved across focus switches
     let openPositionQty  = null; // null=unknown, 0=flat, positive=long, negative=short
     // ── Lazy history load state ───────────────────
@@ -1721,6 +2361,107 @@ function createPanel(id) {
     let _wsIsReconnect  = false;  // true after first onopen — gap-fill on subsequent opens only
     let _lastMsgAt      = 0;      // ms timestamp of last received WS message — used by watchdog
     let _watchdogTimer  = null;   // setInterval ID for 35s silence watchdog
+    // ── Trade journal per-panel state ─────────────
+    let _drawerTrades = [];
+
+    // _ghostOn, _ghostSpikes, _ghostConfig declared at top of createPanel
+
+    function _istDateStr() {
+        return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Kolkata' });
+    }
+
+    function _fmtTime(isoStr) {
+        if (!isoStr) return '—';
+        const d = new Date(isoStr);
+        return d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    function _openNotesPopup(trade, notesIconEl, onSaved) {
+        document.querySelectorAll('.trade-notes-popup').forEach(el => el.remove());
+        const popup = document.createElement('div');
+        popup.className = 'trade-notes-popup';
+        const rect = notesIconEl.getBoundingClientRect();
+        popup.style.top  = (rect.bottom + 4) + 'px';
+        popup.style.left = Math.min(rect.left, window.innerWidth - 270) + 'px';
+
+        const setupOpts = ['', 'breakout', 'reversal', 'hedge', 'momentum', 'scalp', 'other'];
+        const setupSel = document.createElement('select');
+        setupOpts.forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o; opt.textContent = o || '— setup tag —';
+            if (o === (trade.setup || '')) opt.selected = true;
+            setupSel.appendChild(opt);
+        });
+
+        const ta = document.createElement('textarea');
+        ta.placeholder = 'Notes / reason for this trade…';
+        ta.value = trade.notes || '';
+
+        const row = document.createElement('div');
+        row.className = 'trade-notes-popup-row';
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'trade-notes-save-btn';
+        saveBtn.textContent = 'Save';
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'trade-notes-close-btn';
+        closeBtn.textContent = '✕';
+
+        row.appendChild(closeBtn);
+        row.appendChild(saveBtn);
+        popup.appendChild(setupSel);
+        popup.appendChild(ta);
+        popup.appendChild(row);
+        document.body.appendChild(popup);
+        ta.focus();
+
+        const remove = () => popup.remove();
+        closeBtn.addEventListener('click', remove);
+        saveBtn.addEventListener('click', async () => {
+            try {
+                await fetch(`/api/journal/${trade.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ setup: setupSel.value || null, notes: ta.value || null }),
+                });
+                trade.setup = setupSel.value || null;
+                trade.notes = ta.value || null;
+                onSaved(trade);
+            } catch(e) { console.warn('Notes save failed', e); }
+            remove();
+        });
+        const outsideClick = e => {
+            if (!popup.contains(e.target) && e.target !== notesIconEl) { remove(); document.removeEventListener('mousedown', outsideClick); }
+        };
+        setTimeout(() => document.addEventListener('mousedown', outsideClick), 0);
+    }
+
+    async function refreshTradeBadge(overrideDate) {
+        if (!symbol) {
+            tradeBadgeEl.style.display = 'none';
+            _drawerTrades = [];
+            return;
+        }
+        try {
+            const date = overrideDate || _panelHistDate || _histDate || _istDateStr();
+            const res  = await fetch(`/api/journal?date=${date}&symbol=${encodeURIComponent(symbol)}`);
+            const data = await res.json();
+            _drawerTrades = data.trades || [];
+            const count = _drawerTrades.length;
+            if (count > 0) {
+                tradeBadgeEl.textContent = `${count}T`;
+                tradeBadgeEl.style.display = 'inline-block';
+            } else {
+                tradeBadgeEl.style.display = 'none';
+            }
+        } catch(e) { /* silently ignore */ }
+    }
+
+    tradeBadgeEl.addEventListener('mousedown', e => e.stopPropagation());
+    tradeBadgeEl.addEventListener('click', e => {
+        e.stopPropagation();
+        openPanelTradePopup(symbol, _drawerTrades, _openNotesPopup, refreshTradeBadge);
+    });
+
 
     function invertCandle(c) { return { time: c.time, open: -c.open, high: -c.low, low: -c.high, close: -c.close }; }
     function ip(price) { return invertScale ? -price : price; }
@@ -2014,6 +2755,61 @@ function createPanel(id) {
         } else if (jumpTT) {
             jumpTT.style.display = 'none';
         }
+
+        // ── Ghost spike tooltip ───────────────────────────────
+        const ghostTT   = document.getElementById('ghostTooltip');
+        const ghostData = _ghostSpikes.find(g => g.chartTime === param.time);
+        if (ghostData && param.point && ghostTT) {
+            const color     = ghostData.is_ghost ? '#FF6B35' : '#FFD700';
+            const typeLabel = ghostData.is_ghost ? '👻 Ghost Spike' : '⚡ Real Move';
+            const ist = new Date(ghostData.timestamp + 'Z').toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+            ghostTT.innerHTML = `
+              <div style="font-size:11px;color:#fff;padding:8px 10px;background:#1a1a2e;border:1px solid ${color};border-radius:4px;line-height:1.8;">
+                <div style="font-weight:bold;color:${color};margin-bottom:3px;">${typeLabel}</div>
+                <div>Symbol:&nbsp;<b>${ghostData.symbol || symbol}</b></div>
+                <div>Side:&nbsp;<b style="color:${ghostData.side==='BUY'?'#4ade80':'#f87171'}">${ghostData.side}</b></div>
+                <div>Spike price:&nbsp;<b>${ghostData.spike_price}</b></div>
+                <div>Last LTP:&nbsp;<b>${ghostData.ltp_before}</b></div>
+                <div>Distance:&nbsp;<b>${ghostData.distance}</b></div>
+                <div>Time:&nbsp;<b>${ist}</b></div>
+              </div>`;
+            ghostTT.style.left    = (rect.left + param.point.x + 15) + 'px';
+            ghostTT.style.top     = (rect.top  + param.point.y - 60) + 'px';
+            ghostTT.style.display = 'block';
+        } else if (ghostTT) {
+            ghostTT.style.display = 'none';
+        }
+
+        // ── Reverse snipper tooltip ───────────────────────────────
+        const rsnipTT   = document.getElementById('rsnipTooltip');
+        const rsnipData = _rsnipTrades.find(t => t.chartTime === param.time);
+        if (rsnipData && param.point && rsnipTT) {
+            const pnlColor = rsnipData.pnl_pts > 0 ? '#22c55e' : rsnipData.pnl_pts < 0 ? '#ef4444' : '#94a3b8';
+            const pnlSign  = rsnipData.pnl_pts > 0 ? '+' : '';
+            const autoSlInfo = rsnipData.auto_increment_sl
+                ? `ON (step=${rsnipData.increment_step} every ${rsnipData.increment_interval_secs}s)`
+                : 'OFF';
+            rsnipTT.innerHTML = `
+              <div style="font-size:11px;color:#fff;padding:8px 10px;background:#1a1a2e;border:1px solid ${pnlColor};border-radius:4px;line-height:1.9;">
+                <div style="font-weight:bold;color:${pnlColor};margin-bottom:3px;">⚡ Reverse Snipper</div>
+                <div>Entry:&nbsp;<b>${rsnipData.entry_price}</b>&nbsp;@&nbsp;${rsnipData.entry_time}</div>
+                <div>Exit:&nbsp;<b>${rsnipData.exit_price}</b>&nbsp;@&nbsp;${rsnipData.exit_time}</div>
+                <div>P&amp;L:&nbsp;<b style="color:${pnlColor}">${pnlSign}${rsnipData.pnl_pts} pts&nbsp;(${pnlSign}₹${rsnipData.pnl_inr})</b></div>
+                <div>Close:&nbsp;<b>${rsnipData.close_reason}</b>${rsnipData.sl_at_cost ? '&nbsp;— SL at cost' : ''}</div>
+                <hr style="border:none;border-top:1px solid #334155;margin:4px 0;">
+                <div>Spike Low:&nbsp;<b>${rsnipData.spike_low}</b></div>
+                <div>Spike Dist:&nbsp;<b>${rsnipData.spike_distance} pts</b></div>
+                <div>Rec Buffer:&nbsp;<b>${rsnipData.recovery_buffer} pts</b></div>
+                <div>SL Buffer:&nbsp;<b>${rsnipData.sl_buffer} pts</b></div>
+                <div>Qty:&nbsp;<b>${rsnipData.qty}</b></div>
+                <div>Auto SL:&nbsp;<b>${autoSlInfo}</b></div>
+              </div>`;
+            rsnipTT.style.left    = (rect.left + param.point.x + 15) + 'px';
+            rsnipTT.style.top     = (rect.top  + param.point.y - 80) + 'px';
+            rsnipTT.style.display = 'block';
+        } else if (rsnipTT) {
+            rsnipTT.style.display = 'none';
+        }
     });
 
     function updateGoToLiveBtn() {
@@ -2093,7 +2889,25 @@ function createPanel(id) {
             text    : '',
             size    : 1,
         }));
-        const allMarkers = [...markers, ...jumpMarks].sort((a, b) => a.time - b.time);
+        const ghostMarks = _ghostSpikes
+            .filter(g => g.is_ghost)
+            .map(g => ({
+                time    : g.chartTime,
+                position: g.side === 'BUY' ? 'aboveBar' : 'belowBar',
+                color   : '#FF6B35',
+                shape   : 'text',
+                text    : '👻',
+                size    : 2,
+            }));
+        const rsnipMarks = _rsnipTrades.map(t => ({
+            time    : t.chartTime,
+            position: 'belowBar',
+            color   : t.pnl_pts > 0 ? '#22c55e' : t.pnl_pts < 0 ? '#ef4444' : '#94a3b8',
+            shape   : 'text',
+            text    : 'R',
+            size    : 2,
+        }));
+        const allMarkers = [...markers, ...jumpMarks, ...ghostMarks, ...rsnipMarks].sort((a, b) => a.time - b.time);
         candleSeries.setMarkers(allMarkers);
     }
 
@@ -2141,6 +2955,7 @@ function createPanel(id) {
     }
 
     async function fetchJumpHistory(sym, dateStr) {
+        if (!_jumpMarkersEnabled) return;
         try {
             const url = dateStr
                 ? `/api/jumps/${encodeURIComponent(sym)}?date=${dateStr}`
@@ -2203,7 +3018,6 @@ function createPanel(id) {
                         updateSLLineLocal(price, data.state);
                         slOrderId = data.order_id || null;
                     }
-                    if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
                     if (data.state === 'hit') setTimeout(() => updateSLLineLocal(null, 'none'), 2000);
                 }
             } catch (e) { console.warn('SL poll failed:', e); }
@@ -2218,7 +3032,6 @@ function createPanel(id) {
             if (data.state && data.state !== 'none' && data.price) {
                 updateSLLineLocal(data.price, data.state);
                 slOrderId = data.order_id || null;
-                if (data.trigger_buffer != null) slTriggerBuffer = data.trigger_buffer;
             }
         } catch (_) {}
     }
@@ -2331,7 +3144,7 @@ function createPanel(id) {
         if (!symbol || crosshairPrice === null) return;
         const p = Math.round(crosshairPrice * 20) / 20;
         updateSLLineLocal(p, 'pending');
-        await fetch('/api/sl/set', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, price: p }) });
+        await fetch('/api/sl/set', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ symbol, price: p, trigger_buffer: slTriggerBuffer }) });
     });
 
     chartAreaEl.addEventListener('contextmenu', e => {
@@ -2349,6 +3162,24 @@ function createPanel(id) {
         menu._panel  = panel;
         menu._symbol = symbol;
         setTimeout(() => { const el = document.getElementById('slCmBuffer'); el.focus(); el.select(); }, 0);
+    });
+
+    // ── Cursor-price order context menu (right-click anywhere else) ──
+    chartAreaEl.addEventListener('contextmenu', e => {
+        if (panel !== activePanel) return;
+        if (!symbol || crosshairPrice === null) return;
+        if (slPrice && isNearSL(e.clientY)) return;  // let the SL handler take it
+        const price = Math.round(crosshairPrice * 20) / 20;
+        const menu  = document.getElementById('cursorOrderMenu');
+        document.getElementById('comSym').textContent   = symbol;
+        document.getElementById('comPrice').textContent = price.toFixed(2);
+        menu._price  = price;
+        menu._symbol = symbol;
+        menu._panel  = panel;
+        const mw = 165, mh = 105;
+        menu.style.left    = Math.min(e.clientX, window.innerWidth  - mw - 8) + 'px';
+        menu.style.top     = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+        menu.style.display = 'block';
     });
 
     // ── WebSocket ─────────────────────────────────
@@ -2401,6 +3232,51 @@ function createPanel(id) {
             if (!historyLoaded || !symbol) return;
             const tick = JSON.parse(event.data);
             if (tick.type === 'ping') return;
+
+            // broadcast_all events (fill, ghost_detector_triggered) arrive on every
+            // panel socket — handle before the per-symbol filter.
+            if (tick.type === 'ghost_detector_triggered') {
+                panels.forEach(p => {
+                    if (!p.symbol || p.symbol !== tick.symbol) return;
+                    const chartTime = getBucketTime(Math.floor(Date.now() / 1000));
+                    p._ghostSpikes.push({
+                        chartTime  : chartTime,
+                        symbol     : tick.symbol,
+                        side       : tick.side,
+                        spike_price: tick.spike_price,
+                        ltp_before : tick.ltp_before,
+                        distance   : tick.distance,
+                        timestamp  : tick.timestamp,
+                        is_ghost   : tick.is_ghost,
+                    });
+                    p.setGhostOff();
+                    p.refreshMarkers();
+                });
+                return;
+            }
+
+            if (tick.type === 'reverse_snipper_stopped') {
+                panels.forEach(p => {
+                    if (!p.symbol || p.symbol !== tick.symbol) return;
+                    console.warn('[rsnip] loop stopped symbol=%s reason=%s', tick.symbol, tick.reason);
+                    p.setRsnipOff();
+                });
+                return;
+            }
+
+            if (tick.type === 'reverse_snipper_trade_closed') {
+                panels.forEach(p => {
+                    if (!p.symbol || p.symbol !== tick.symbol) return;
+                    // chartTime anchored to the exit candle bucket
+                    const exitEpoch = tick.exit_time
+                        ? Math.floor(new Date('1970-01-01T' + tick.exit_time + '+05:30').getTime() / 1000)
+                        : Math.floor(Date.now() / 1000);
+                    const chartTime = getBucketTime(exitEpoch);
+                    p._rsnipTrades.push({ chartTime, ...tick });
+                    p.refreshMarkers();
+                });
+                return;
+            }
 
             // Fill events arrive via broadcast_all for ANY symbol.
             // Handle before the per-symbol filter so all panels can receive them.
@@ -2549,8 +3425,7 @@ function createPanel(id) {
             document.getElementById('symbolSelect').value = histDate ? sym : display;
             resetOrderBar(sym);
             if (!isSameSymbol) panelLots = 1;  // new symbol → reset this panel's saved lot count
-            if (!isSameSymbol) slTriggerBuffer = sym.startsWith('SENSEX') ? 2 : 1;
-            if (!isSameSymbol) _loadSlConfig(sym);
+            if (!isSameSymbol) { const _cfg = _loadSlConfig(sym); slTriggerBuffer = _cfg.triggerBuffer; }
         }
         if (socket) { socket._intentionalClose = true; socket.close(); socket = null; _wsIsReconnect = false; }
         if (reconnectTimeout) { clearTimeout(reconnectTimeout); reconnectTimeout = null; }
@@ -2558,7 +3433,9 @@ function createPanel(id) {
         clearUserLines();
         candleSeries.setData([]); currentCandle = null; gapDetails.clear(); lastCandleTime = null; _unfilledGapCount = 0;
         stopSLPoll(); stopConvictionPoll();
-        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _panelHistDate = null; _markedBuckets.clear();
+        _convictionMarker = null; _convictionData = null; _convictionFired = false; _historicalConvictions = []; _jumpMarkers = []; _markedBuckets.clear();
+        _ghostSpikes = []; _setGhostOff();
+        _rsnipTrades = []; _setRsnipOff();
         let history, gapsRaw;
         if (prefetched) {
             history  = prefetched.history;
@@ -2614,6 +3491,20 @@ function createPanel(id) {
             }
         }
         historyLoaded = true;
+
+        // Load historical reverse snipper trades for this symbol/date so markers render on chart load
+        const _rsnipDate = histDate || new Date().toISOString().split('T')[0];
+        fetch(`/api/reverse-snipper/trades?symbol=${encodeURIComponent(sym)}&date=${_rsnipDate}`)
+            .then(r => r.json())
+            .then(data => {
+                _rsnipTrades = (data.trades || []).map(t => ({
+                    ...t,
+                    chartTime: getBucketTime(Math.floor(new Date(t.exit_time).getTime() / 1000) - 19800),
+                }));
+                if (_rsnipTrades.length) refreshMarkers();
+            })
+            .catch(e => console.warn('[rsnip] failed to load trades:', e));
+
         const jumpPromise = fetchJumpHistory(sym, histDate || null);
         const convHist = await fetchConvictionHistory(sym, histDate || null);
         const signals = convHist || [];
@@ -2633,6 +3524,7 @@ function createPanel(id) {
             connectWebSocket(sym);
             refreshPosition();
         }
+        refreshTradeBadge();
     }
 
     // ── Activate on click ─────────────────────────
@@ -2701,10 +3593,17 @@ function createPanel(id) {
         get chart()             { return chart; },
         get _jumpMarkers()    { return _jumpMarkers; },
         set _jumpMarkers(v)   { _jumpMarkers = v; },
+        get _ghostSpikes()    { return _ghostSpikes; },
+        get _rsnipTrades()    { return _rsnipTrades; },
+        set _rsnipTrades(v)   { _rsnipTrades = v; },
         get _histDate()       { return _panelHistDate; },
+        setGhostOff: _setGhostOff,
+        setRsnipOff: _setRsnipOff,
         refreshMarkers,
+        fetchJumpMarkers: fetchJumpHistory,
         updateGoToLiveBtn,
         refreshPosition,
+        refreshTradeBadge,
         loadSymbol: panelLoadSymbol,
         updateSLLine: updateSLLineLocal,
         scrollToEnd,
@@ -2803,7 +3702,7 @@ function activatePanel(p) {
         // Restore this panel's lot count — don't reset to 1 on focus switch
         orderLotSize = getLotSize(sym);
         orderLots    = p.panelLots;
-        _loadSlConfig(sym);
+        p.slTriggerBuffer = _loadSlConfig(sym).triggerBuffer;
         currentLTP   = null;
         document.getElementById('qtyPopupTitle').textContent =
             `Quantity (${getIndexName(sym)} · ${orderLotSize}/lot)`;
@@ -2955,6 +3854,8 @@ async function onHistDateChange(date) {
     const noData = document.getElementById('histNoData');
     sel.innerHTML = '<option value="">Loading...</option>';
     noData.style.display = 'none';
+    // Refresh trade badges on all panels for the newly selected date
+    panels.forEach(p => p.refreshTradeBadge && p.refreshTradeBadge(date));
     // Pre-warm jump cache for current panel symbols on this historical date
     const currentSyms = panels.map(p => p.symbol).filter(Boolean);
     if (currentSyms.length) prefetchJumps(currentSyms, date);
@@ -3002,6 +3903,7 @@ function onHistSymbolSelect(symbol) {
 function clearHistMode() {
     _histMode = false;
     _histDate = null;
+    panels.forEach(p => p.refreshTradeBadge && p.refreshTradeBadge());
     document.getElementById('histBar').classList.remove('active');
     document.getElementById('histBtn').classList.remove('active');
     document.getElementById('orderBar').style.display = '';
@@ -3310,6 +4212,49 @@ async function checkSlOrders() {
     }
 }
 
+async function cancelAllOrders() {
+    const btn  = document.getElementById('cancelAllOrdersBtn');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '⏳ Cancelling...';
+    btn.disabled  = true;
+    btn.style.color = '#9ca3af';
+
+    try {
+        const res  = await fetch('/api/cancel-all-orders', { method: 'POST' });
+        const data = await res.json();
+
+        if (data.cancelled_count === 0 && data.failed_count === 0) {
+            toast('No pending orders found', 'info', 4000);
+            btn.innerHTML = '— None';
+        } else if (data.status === 'ok') {
+            toast(`✅ Cancelled ${data.cancelled_count} order(s)`, 'success', 6000);
+            btn.innerHTML = `✅ ${data.cancelled_count} cancelled`;
+            btn.style.background  = '#14532d';
+            btn.style.borderColor = '#16a34a';
+            btn.style.color       = '#86efac';
+            // Refresh order bar qty after cancellations (SL orders gone, position unchanged)
+            setTimeout(() => activePanel?.refreshPosition(), 1000);
+        } else {
+            toast(`⚠️ ${data.cancelled_count} cancelled, ${data.failed_count} failed`, 'warn', 8000);
+            btn.innerHTML = `⚠️ ${data.cancelled_count}/${data.cancelled_count + data.failed_count}`;
+            btn.style.background  = '#422006';
+            btn.style.borderColor = '#d97706';
+            btn.style.color       = '#fbbf24';
+        }
+    } catch (e) {
+        toast(`❌ Cancel all error: ${e.message}`, 'error', 8000);
+        btn.innerHTML = '❌ Error';
+    }
+
+    setTimeout(() => {
+        btn.innerHTML         = orig;
+        btn.style.background  = '#1f2937';
+        btn.style.borderColor = '#374151';
+        btn.style.color       = '#ffffff';
+        btn.disabled = false;
+    }, 5000);
+}
+
 async function closeAllPositions() {
     const btn  = document.getElementById('closeAllBtn');
     const orig = btn.innerHTML;
@@ -3361,6 +4306,77 @@ async function closeAllPositions() {
     }, 5000);
 }
 
+/* ======================
+   PARTIAL CLOSE
+====================== */
+let _partialCloseSymbol = null;
+
+function openPartialClose(sym, posQty) {
+    _partialCloseSymbol = sym;
+    document.getElementById('partialCloseSymbolLabel').textContent = sym;
+    // Default qty = full open position so user edits down to partial amount
+    const defaultQty = posQty != null ? Math.abs(posQty)
+                     : sym.startsWith('SENSEX') ? 1000
+                     : sym.startsWith('BANKNIFTY') ? 600
+                     : sym.startsWith('FINNIFTY') ? 1200
+                     : sym.startsWith('MIDCPNIFTY') ? 2800
+                     : 1755;
+    document.getElementById('partialCloseQty').value = defaultQty;
+    // Pre-fill limit price: LTP ± limitBuffer (same logic as order bar LIMIT)
+    if (currentLTP != null && posQty != null) {
+        const isLong = posQty > 0;
+        const buf    = typeof limitBuffer !== 'undefined' ? limitBuffer : 0.20;
+        const price  = roundTick(isLong ? currentLTP - buf : currentLTP + buf);
+        document.getElementById('partialClosePrice').value = price;
+    }
+    document.getElementById('partialCloseModal').style.display = 'block';
+    setTimeout(() => {
+        const inp = document.getElementById('partialCloseQty');
+        inp.focus(); inp.select();
+    }, 50);
+}
+
+function closePartialModal() {
+    document.getElementById('partialCloseModal').style.display = 'none';
+    _partialCloseSymbol = null;
+}
+
+async function confirmPartialClose(type) {
+    const qty = parseInt(document.getElementById('partialCloseQty').value, 10);
+    if (!qty || qty <= 0) { toast('Enter a valid quantity', 'warn'); return; }
+    const sym = _partialCloseSymbol;
+    if (!sym) return;
+
+    let price = null;
+    if (type === 'LIMIT') {
+        price = parseFloat(document.getElementById('partialClosePrice').value);
+        if (!price || price <= 0) { toast('Enter a valid limit price', 'warn'); return; }
+    }
+
+    closePartialModal();
+    toast(`⏳ Partial close ${type}: ${qty} qty of ${sym}…`, 'info', 3000);
+    try {
+        const body = { symbol: sym, qty, order_type: type };
+        if (type === 'LIMIT') body.price = price;
+        const res  = await fetch('/api/sl/partial-close', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            const note = type === 'LIMIT' ? ' — SL unchanged until fill' : '';
+            toast(`✅ Partial close ${type}: ${qty} qty of ${sym}${note}`, 'success', 6000);
+            // MARKET fills instantly → refresh position qty after a short delay
+            // LIMIT may not fill immediately → do not refresh (no position change yet)
+            if (type === 'MARKET') setTimeout(() => activePanel?.refreshPosition(), 1500);
+        } else {
+            toast(`❌ Partial close failed: ${data.message || ''}`, 'error', 8000);
+        }
+    } catch (e) {
+        toast(`❌ Partial close error: ${e.message}`, 'error', 8000);
+    }
+}
+
 async function refreshAutoPopulate() {
     const select = document.getElementById('autoPopulateSelect');
     const mode   = select ? select.value : '';
@@ -3409,6 +4425,7 @@ async function loadPanelsBatched(panelList, sym_getter, nocache, prefetched = {}
 // Pre-warm jump cache for all active panels.
 // Fires with a 2s delay so panel loads finish first.
 async function prefetchJumps(symbols, date) {
+    if (!_jumpMarkersEnabled) return;
     if (!symbols || !symbols.length) return;
     const unique = [...new Set(symbols.filter(Boolean))].slice(0, 12);
     if (!unique.length) return;
@@ -3421,6 +4438,39 @@ async function prefetchJumps(symbols, date) {
             body   : JSON.stringify(body),
         }).catch(e => console.warn('Prefetch failed:', e));
     }, 2000);
+}
+
+function _syncJumpToggleBtn() {
+    const btn = document.getElementById('jumpToggleBtn');
+    if (!btn) return;
+    if (_jumpMarkersEnabled) {
+        btn.textContent      = 'Jumps: ON';
+        btn.style.color      = '#00C853';
+        btn.style.borderColor = '#00C853';
+    } else {
+        btn.textContent      = 'Jumps: OFF';
+        btn.style.color      = '#ffffff';
+        btn.style.borderColor = '#374151';
+    }
+}
+
+async function toggleJumpMarkers() {
+    _jumpMarkersEnabled = !_jumpMarkersEnabled;
+    localStorage.setItem(_jumpToggleKey, String(_jumpMarkersEnabled));
+    _syncJumpToggleBtn();
+    if (_jumpMarkersEnabled) {
+        await Promise.all(
+            panels
+                .filter(p => p.symbol)
+                .map(p => p.fetchJumpMarkers(p.symbol, p._histDate || null))
+        );
+    } else {
+        panels.forEach(p => {
+            if (!p.symbol) return;
+            p._jumpMarkers = [];
+            p.refreshMarkers();
+        });
+    }
 }
 
 async function refreshAllPanels() {
@@ -3735,6 +4785,10 @@ function updateSLBadge() {}
         const sym = menu._symbol;
         closeMenu();
         if (!p || !sym) return;
+        // Persist to per-index config so all panels of same index stay consistent across refreshes
+        const _tbKey = _slIndexKey(sym);
+        SL_INDEX_CONFIG[_tbKey].triggerBuffer = buffer;
+        _saveSlIndexConfig(_tbKey);
         // Update trigger buffer locally and on backend for ALL panels
         for (const panel of panels) {
             panel.slTriggerBuffer = buffer;
@@ -3783,6 +4837,78 @@ function updateSLBadge() {}
         if (e.key === 'Escape') closeMenu();
     });
 })();
+
+/* ======================
+   CURSOR-PRICE ORDER
+====================== */
+(function() {
+    const menu = document.getElementById('cursorOrderMenu');
+    // Close on outside click
+    document.addEventListener('mousedown', e => {
+        if (menu.style.display !== 'none' && !menu.contains(e.target)) menu.style.display = 'none';
+    });
+})();
+
+async function execCursorOrder(side) {
+    const menu = document.getElementById('cursorOrderMenu');
+    menu.style.display = 'none';
+    const price = menu._price;
+    const sym   = menu._symbol;
+    const panel = menu._panel;
+    if (!price || !sym || !panel) return;
+
+    const qty = side === 'BUY'
+        ? (defaultBuyQty  != null ? defaultBuyQty  : orderLots * orderLotSize)
+        : (defaultSellQty != null ? defaultSellQty : orderLots * orderLotSize);
+
+    const label = `${side} ${qty} ${sym} @ ${price} [L]`;
+    toast(`⏳ Placing ${label}…`, 'info', 2000);
+
+    const res = await fetch('/api/place-limit-order', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            symbol:      sym,
+            price:       price,
+            side:        side,
+            qty:         qty,
+            exchange:    sym.startsWith('SENSEX') ? 'BFO' : 'NFO',
+            order_type:  'L',
+            sl_buffer:   slBuffer,
+            sl_distance: slDistance,
+        }),
+    });
+    const data = await res.json();
+    toastOrder(data, label);
+
+    if (data.status === 'success') {
+        _savedBuyQty = defaultBuyQty; _savedSellQty = defaultSellQty;
+        const pollTimeout = limitAutoCancelSecs > 0 ? (limitAutoCancelSecs + 2) * 1000 : 30000;
+        pollUntilFilled(sym, panel, qty => side === 'BUY' ? qty > 0 : qty < 0, pollTimeout);
+
+        // Auto-cancel unfilled order after configured seconds
+        if (data.order_id && limitAutoCancelSecs > 0) {
+            const cancelIds = Array.isArray(data.order_ids) && data.order_ids.length > 0
+                ? data.order_ids : [data.order_id];
+            setTimeout(async () => {
+                let anyCancelled = false;
+                for (const oid of cancelIds) {
+                    try {
+                        const cr = await fetch('/api/cancel-order', {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ order_id: oid }),
+                        });
+                        const cd = await cr.json();
+                        if (cd.status === 'cancelled') anyCancelled = true;
+                    } catch (_) {}
+                }
+                if (anyCancelled) {
+                    toast(`Limit order cancelled — not filled within ${limitAutoCancelSecs}s`, 'warn', 5000);
+                    if (activePanel?.symbol === sym) activePanel.refreshPosition();
+                }
+            }, limitAutoCancelSecs * 1000);
+        }
+    }
+}
 
 /* ======================
    BUY / SELL ORDER BAR
@@ -4094,11 +5220,12 @@ function closeSlConfig() {
     if (!isNaN(cancel)  && cancel >= 1) slAutoCancelCount = cancel;
     if (!isNaN(inc)    && inc    >= 1) slAutoSlIncCount  = inc;
     slAtCost = document.getElementById('slCfgSlAtCost').checked;
-    // Persist changes within this session for the active index
+    // Persist changes for the active index (in-memory + localStorage)
     const _cfgKey = _slIndexKey(activePanel?.symbol);
     SL_INDEX_CONFIG[_cfgKey].slBuffer      = slBuffer;
     SL_INDEX_CONFIG[_cfgKey].slDistance    = slDistance;
     SL_INDEX_CONFIG[_cfgKey].slDefaultDist = slDefaultDist;
+    _saveSlIndexConfig(_cfgKey);
     document.getElementById('slConfigPopup').style.display = 'none';
 }
 function openLimitConfig(anchorEl, type) {
@@ -4362,6 +5489,13 @@ async function placeOrder(side) {
                 ? (limitAutoCancelSecs + 2) * 1000
                 : 30000;
             pollUntilFilled(sym, panel, qty => side === 'BUY' ? qty > 0 : qty < 0, pollTimeout);
+
+            // High-qty entries get sliced into several chunks and can race the
+            // auto-SL-on-fill logic into a rate limit — reconcile via Check SL
+            // shortly after so any dropped SL coverage gets caught automatically.
+            if (qty > 5000) {
+                setTimeout(() => { checkSlOrders(); }, 2000);
+            }
         }
     }
     // Auto-cancel unfilled limit order after configured seconds.
@@ -4754,6 +5888,30 @@ document.addEventListener('DOMContentLoaded', () => {
             && !e.target.closest('.ob-type-btn[data-type="L"]')
             && !e.target.closest('.ob-type-btn[data-type="M"]'))
             closeLimitConfig();
+        // Close partial close modal on outside click
+        const pcModal = document.getElementById('partialCloseModal');
+        if (pcModal.style.display === 'block' && !pcModal.contains(e.target))
+            closePartialModal();
+    });
+
+    // Right-click on SELL button → partial close long position
+    document.getElementById('btnSell').addEventListener('contextmenu', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!activePanel || !activePanel.symbol) return;
+        const posQty = activePanel.openPositionQty;
+        if (!posQty || posQty <= 0) { toast('No long position to partially close', 'warn', 3000); return; }
+        openPartialClose(activePanel.symbol, posQty);
+    });
+
+    // Right-click on BUY button → partial close short position
+    document.getElementById('btnBuy').addEventListener('contextmenu', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!activePanel || !activePanel.symbol) return;
+        const posQty = activePanel.openPositionQty;
+        if (!posQty || posQty >= 0) { toast('No short position to partially close', 'warn', 3000); return; }
+        openPartialClose(activePanel.symbol, posQty);
     });
 });
 
@@ -5178,6 +6336,7 @@ document.addEventListener('keydown', e => {
 // Today's panels are skipped: WebSocket fill events handle them in real-time.
 // Poll is retained only for historical-date panels (no WebSocket for past dates).
 setInterval(async () => {
+    if (!_jumpMarkersEnabled) return;
     const now  = new Date();
     const ist  = new Date(now.getTime() + 5.5 * 3600000);
     const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
@@ -5248,6 +6407,7 @@ function saveViewState() {
    INITIALISE
 ====================== */
 (async function init() {
+    _syncJumpToggleBtn();
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem('otpViewState')); } catch (e) {}
 
@@ -6083,6 +7243,290 @@ async function cleanupRestore(tableName) {
 document.getElementById('archiveModal').addEventListener('click', function(e) {
     if (e.target === this) closeArchiveModal();
 });
+
+// ══════════════════════════════════════════
+//   TRADE JOURNAL — global functions
+// ══════════════════════════════════════════
+var _journalOverlayData = [];
+
+// ── Per-panel trade popup (central card, shown on badge click) ────────────────
+function openPanelTradePopup(sym, trades, openNotesPopup, onRefresh) {
+    document.querySelectorAll('.panel-trade-popup').forEach(el => el.remove());
+    document.body.classList.add('modal-open');
+
+    const popup = document.createElement('div');
+    popup.className = 'panel-trade-popup';
+
+    // Header
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid #1e293b;background:#0a0f1a;border-radius:8px 8px 0 0;';
+    hdr.innerHTML = `
+        <span style="color:#e2e8f0;font-size:13px;font-weight:bold;font-family:Arial,sans-serif;">${sym}</span>
+        <button class="ptp-close" style="background:transparent;border:none;color:#64748b;font-size:18px;cursor:pointer;line-height:1;padding:0 4px;">✕</button>
+    `;
+    popup.appendChild(hdr);
+
+    if (!trades || !trades.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:24px;text-align:center;color:#334155;font-family:Arial,sans-serif;font-size:12px;';
+        empty.textContent = 'No trades recorded for this date.';
+        popup.appendChild(empty);
+    } else {
+        const tbl = document.createElement('table');
+        tbl.style.cssText = 'width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;';
+        tbl.innerHTML = `<thead><tr style="color:#475569;font-size:10px;text-transform:uppercase;background:#0a0f1a;">
+            <th style="padding:6px 8px;text-align:center;font-weight:600;">#</th>
+            <th style="padding:6px 10px;text-align:left;font-weight:600;">Time</th>
+            <th style="padding:6px 4px;text-align:center;font-weight:600;">Dir</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">Price</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">Qty</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">Index@Entry</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:600;">P&L</th>
+            <th style="padding:6px 8px;text-align:center;font-weight:600;">Notes</th>
+        </tr></thead>`;
+        const tbody = document.createElement('tbody');
+        const _bg = ['rgba(255,255,255,0.02)', 'rgba(99,102,241,0.06)'];
+        trades.forEach((t, i) => {
+            const dirColor = t.direction === 'BUY' ? '#22c55e' : '#ef4444';
+            const pnlHtml  = t.pnl != null ? `<span style="color:${t.pnl>=0?'#22c55e':'#ef4444'}">₹${t.pnl.toFixed(0)}</span>` : '—';
+            const idxPrice = t.underlying_price_at_entry != null ? t.underlying_price_at_entry.toFixed(0) : '—';
+            const rowBg    = t.trade_no != null ? _bg[(t.trade_no - 1) % 2] : 'transparent';
+            const tr = document.createElement('tr');
+            tr.style.cssText = `border-bottom:1px solid #0a0f1a;background:${rowBg};`;
+            tr.innerHTML = `
+                <td style="padding:7px 8px;text-align:center;color:#64748b;font-size:11px;font-weight:600;">${t.trade_no ?? ''}</td>
+                <td style="padding:7px 10px;color:#94a3b8;">${_fmtJournalTime(t.entry_time)}</td>
+                <td style="padding:7px 4px;text-align:center;font-weight:bold;color:${dirColor};">${t.direction}</td>
+                <td style="padding:7px 8px;text-align:right;color:#e2e8f0;">${t.entry_price!=null?t.entry_price.toFixed(1):'—'}</td>
+                <td style="padding:7px 8px;text-align:right;color:#94a3b8;">${t.quantity}</td>
+                <td style="padding:7px 8px;text-align:right;color:#64748b;">${idxPrice}</td>
+                <td style="padding:7px 8px;text-align:right;">${pnlHtml}</td>
+                <td style="padding:7px 8px;text-align:center;cursor:pointer;opacity:0.55;font-size:13px;" class="ptp-notes" title="Edit notes">📝</td>
+            `;
+            tr.querySelector('.ptp-notes').addEventListener('click', e => {
+                e.stopPropagation();
+                openNotesPopup(t, tr.querySelector('.ptp-notes'), updatedTrade => {
+                    trades[i] = updatedTrade;
+                    onRefresh && onRefresh();
+                });
+            });
+            tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        popup.appendChild(tbl);
+    }
+
+    popup.addEventListener('mousedown', e => e.stopPropagation());
+    document.body.appendChild(popup);
+
+    const close = () => {
+        popup.remove();
+        document.body.classList.remove('modal-open');
+        document.removeEventListener('keydown', onEsc);
+        document.removeEventListener('mousemove', onDragMove);
+        document.removeEventListener('mouseup', onDragEnd);
+    };
+    popup.querySelector('.ptp-close').addEventListener('click', close);
+    const onEsc = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onEsc);
+
+    // ── Draggable ────────────────────────────────────────────────────────────
+    hdr.style.cursor = 'grab';
+    let dragging = false, dragStartX, dragStartY, popLeft, popTop;
+    hdr.addEventListener('mousedown', e => {
+        if (e.target.classList.contains('ptp-close')) return;
+        dragging = true;
+        // Convert from centered transform to fixed px so dragging works correctly
+        const rect = popup.getBoundingClientRect();
+        popup.style.transform = 'none';
+        popup.style.left = rect.left + 'px';
+        popup.style.top  = rect.top  + 'px';
+        popLeft    = rect.left;
+        popTop     = rect.top;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        hdr.style.cursor = 'grabbing';
+        e.preventDefault();
+    });
+    const onDragMove = e => {
+        if (!dragging) return;
+        popLeft += e.clientX - dragStartX;
+        popTop  += e.clientY - dragStartY;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        popup.style.left = popLeft + 'px';
+        popup.style.top  = popTop  + 'px';
+    };
+    const onDragEnd = () => { dragging = false; hdr.style.cursor = 'grab'; };
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup',   onDragEnd);
+}
+
+function _istTodayStr() {
+    return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Kolkata' });
+}
+
+function _fmtJournalTime(isoStr) {
+    if (!isoStr) return '—';
+    return new Date(isoStr).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+async function syncTradesFromZerodha() {
+    const btn = document.getElementById('syncTradesBtn');
+    const orig = btn.textContent;
+    btn.textContent = '⟳ Syncing…';
+    btn.disabled = true;
+    try {
+        const res  = await fetch('/api/journal/sync', { method: 'POST' });
+        const data = await res.json();
+        const n = data.synced || 0;
+        btn.textContent = n > 0 ? `✓ ${n} new` : '✓ Done';
+        panels.forEach(p => p.refreshTradeBadge && p.refreshTradeBadge());
+    } catch(e) {
+        btn.textContent = '✗ Error';
+    } finally {
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+    }
+}
+
+function openJournalOverlay() {
+    document.body.classList.add('modal-open');
+    const overlay = document.getElementById('journalOverlay');
+    overlay.style.display = 'flex';
+    const picker = document.getElementById('journalDatePicker');
+    if (!picker.value) picker.value = _istTodayStr();
+    loadJournalForDate(picker.value);
+}
+
+function closeJournalOverlay() {
+    document.getElementById('journalOverlay').style.display = 'none';
+    document.body.classList.remove('modal-open');
+}
+
+// journalOverlay and journalDatePicker events are wired via inline handlers in HTML
+// (elements are parsed after this script block executes, so addEventListener here returns null)
+
+async function loadJournalForDate(dateStr) {
+    const tbody  = document.getElementById('journalTableBody');
+    const empty  = document.getElementById('journalEmpty');
+    const sumBar = document.getElementById('journalSummaryBar');
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#334155;padding:20px;font-family:Arial,sans-serif;">Loading…</td></tr>';
+    empty.style.display = 'none';
+
+    let data;
+    try {
+        const res = await fetch(`/api/journal?date=${dateStr}`);
+        data = await res.json();
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ef4444;padding:20px;font-family:Arial,sans-serif;">Failed to load.</td></tr>';
+        return;
+    }
+
+    _journalOverlayData = data.trades || [];
+    const s = data.summary || {};
+    const pnlColor = (s.pnl || 0) >= 0 ? '#22c55e' : '#ef4444';
+    sumBar.innerHTML = `
+        <span>Trades: <b style="color:#e2e8f0">${s.total||0}</b></span>
+        <span>Wins: <b style="color:#22c55e">${s.wins||0}</b></span>
+        <span>Losses: <b style="color:#ef4444">${s.losses||0}</b></span>
+        <span>Net P&L: <b style="color:${pnlColor}">₹${(s.pnl||0).toFixed(0)}</b></span>
+    `;
+
+    tbody.innerHTML = '';
+    if (!_journalOverlayData.length) {
+        empty.style.display = 'block';
+        return;
+    }
+
+    // Alternate row background per trade_no for visual grouping
+    const _tradeNoBg = ['rgba(255,255,255,0.02)', 'rgba(99,102,241,0.06)'];
+    _journalOverlayData.forEach((t, i) => {
+        const dirColor = t.direction === 'BUY' ? '#22c55e' : '#ef4444';
+        const pnl = t.pnl != null ? `<span style="color:${t.pnl>=0?'#22c55e':'#ef4444'}">₹${t.pnl.toFixed(0)}</span>` : '—';
+        const idxPrice = t.underlying_price_at_entry != null ? t.underlying_price_at_entry.toFixed(0) : '—';
+        const tradeNo = t.trade_no != null ? t.trade_no : '';
+        const rowBg = t.trade_no != null ? _tradeNoBg[(t.trade_no - 1) % 2] : 'transparent';
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid #0a0f1a';
+        tr.style.background = rowBg;
+        tr.innerHTML = `
+            <td style="padding:6px 8px;text-align:center;color:#64748b;font-size:11px;font-weight:600">${tradeNo}</td>
+            <td style="padding:6px 10px;color:#94a3b8">${_fmtJournalTime(t.entry_time)}</td>
+            <td style="padding:6px 10px;color:#e2e8f0;white-space:nowrap">${t.symbol}</td>
+            <td style="padding:6px 4px;text-align:center;font-weight:bold;color:${dirColor}">${t.direction}</td>
+            <td style="padding:6px 8px;text-align:right;color:#e2e8f0">${t.entry_price!=null?t.entry_price.toFixed(1):'—'}</td>
+            <td style="padding:6px 8px;text-align:right;color:#94a3b8">${t.quantity}</td>
+            <td style="padding:6px 8px;text-align:right;color:#64748b">${idxPrice}</td>
+            <td style="padding:6px 8px;text-align:right">${pnl}</td>
+            <td style="padding:6px 8px;max-width:180px;text-align:center;">
+                <div style="display:flex;align-items:center;justify-content:center;gap:6px;">
+                    ${t.notes ? `<span style="color:#64748b;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(t.notes||'').replace(/"/g,'&quot;')}">${t.notes}</span>` : ''}
+                    <span style="cursor:pointer;opacity:0.5;font-size:13px;flex-shrink:0;" class="jnl-notes-icon" data-idx="${i}" title="Edit notes">📝</span>
+                </div>
+            </td>
+        `;
+        tr.querySelector('.jnl-notes-icon').addEventListener('click', function(e) {
+            e.stopPropagation();
+            const trade = _journalOverlayData[parseInt(this.dataset.idx)];
+            _openJournalNotesPopup(trade, this, () => loadJournalForDate(dateStr));
+        });
+        tbody.appendChild(tr);
+    });
+}
+
+function _openJournalNotesPopup(trade, anchorEl, onSaved) {
+    document.querySelectorAll('.trade-notes-popup').forEach(el => el.remove());
+    const popup = document.createElement('div');
+    popup.className = 'trade-notes-popup';
+    const rect = anchorEl.getBoundingClientRect();
+    popup.style.top  = (rect.bottom + 4) + 'px';
+    popup.style.left = Math.min(rect.left, window.innerWidth - 270) + 'px';
+
+    const setupOpts = ['', 'breakout', 'reversal', 'hedge', 'momentum', 'scalp', 'other'];
+    const setupSel = document.createElement('select');
+    setupOpts.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o; opt.textContent = o || '— setup tag —';
+        if (o === (trade.setup || '')) opt.selected = true;
+        setupSel.appendChild(opt);
+    });
+    const ta = document.createElement('textarea');
+    ta.placeholder = 'Notes / reason for this trade…';
+    ta.value = trade.notes || '';
+    const row = document.createElement('div');
+    row.className = 'trade-notes-popup-row';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'trade-notes-save-btn';
+    saveBtn.textContent = 'Save';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'trade-notes-close-btn';
+    closeBtn.textContent = '✕';
+    row.appendChild(closeBtn);
+    row.appendChild(saveBtn);
+    popup.appendChild(setupSel);
+    popup.appendChild(ta);
+    popup.appendChild(row);
+    document.body.appendChild(popup);
+    ta.focus();
+
+    const remove = () => popup.remove();
+    closeBtn.addEventListener('click', remove);
+    saveBtn.addEventListener('click', async () => {
+        try {
+            await fetch(`/api/journal/${trade.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ setup: setupSel.value || null, notes: ta.value || null }),
+            });
+            onSaved();
+        } catch(e) { console.warn('Notes save failed', e); }
+        remove();
+    });
+    const outsideClick = e => {
+        if (!popup.contains(e.target) && e.target !== anchorEl) { remove(); document.removeEventListener('mousedown', outsideClick); }
+    };
+    setTimeout(() => document.addEventListener('mousedown', outsideClick), 0);
+}
 
 </script>
 

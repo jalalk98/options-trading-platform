@@ -4,10 +4,14 @@ import math
 import time
 import logging
 import datetime
+from collections import deque
 from backend.core.redis_client import redis_client
 from backend.api.streaming import manager
+import backend.state as state
 
 logger = logging.getLogger(__name__)
+
+_TICK_HISTORY_WINDOW = 1.5  # seconds of tick history kept per symbol
 
 _STREAM = "ticks_stream"
 
@@ -78,17 +82,30 @@ async def redis_streamer():
                     curr_price = float(row["curr_price"])
                     price_jump = float(row.get("price_jump") or 0)
 
+                    # ── LTP cache + tick history (used by ghost detector) ─
+                    state.latest_ltp[symbol] = curr_price
+                    now_mono = time.monotonic()
+                    if symbol not in state.tick_history:
+                        state.tick_history[symbol] = deque()
+                    hist = state.tick_history[symbol]
+                    hist.append((now_mono, curr_price))
+                    # prune entries older than the history window
+                    cutoff = now_mono - _TICK_HISTORY_WINDOW
+                    while hist and hist[0][0] < cutoff:
+                        hist.popleft()
+
                     # ── Jump detection ────────────────────────────────
                     price_filter  = _get_price_filter(symbol)
                     threshold     = _get_jump_threshold(symbol)
 
-                    # Opening noise window: 09:15:00–09:15:15 IST
-                    # Stored as IST wall-clock, so UTC hours match IST hours
+                    # Opening noise window: 09:15:00–09:15:02 IST
+                    # epoch_time is UTC epoch; convert to IST seconds-of-day for comparison.
                     tick_dt  = datetime.datetime.utcfromtimestamp(epoch_time)
                     utc_secs = (tick_dt.hour * 3600
                                 + tick_dt.minute * 60
                                 + tick_dt.second)
-                    opening_noise = 33300 <= utc_secs <= 33302  # 09:15:00–09:15:02 IST
+                    ist_secs = utc_secs + 19800
+                    opening_noise = 33300 <= ist_secs <= 33302  # 09:15:00–09:15:02 IST
 
                     is_jump = (
                         abs(price_jump) > threshold
@@ -169,7 +186,7 @@ async def redis_streamer():
                         "price_jump"  : price_jump,
                         "is_jump"     : is_jump,
                         "is_first"    : is_first,
-                        "bucket"      : bucket,
+                        "bucket"      : ist_bucket,
                         "fill_events" : fill_events,
                     }
 

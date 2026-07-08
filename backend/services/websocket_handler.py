@@ -82,6 +82,14 @@ active_positions = {}
 sl_covered = {}
 
 
+def _round_to_tick(price, tick_size=0.05):
+    return round(round(price / tick_size) * tick_size, 2)
+
+
+def _freeze_qty_for(symbol: str) -> int:
+    return 1000 if symbol.startswith("SENSEX") else 1755
+
+
 def _post_sl_state(symbol: str, state: str, retries: int = 3, timeout: int = 5) -> None:
     """POST sl state to chart_server with retries. Runs in calling thread (use threading for non-blocking)."""
     for attempt in range(1, retries + 1):
@@ -157,6 +165,45 @@ def setup_websocket_events():
                     continue
                 raise
         raise last_exc
+
+    async def _try_merge_sl(trade_symbol, new_qty, stored_sl_state):
+        """
+        Try to absorb new_qty into an existing SL order by modifying its qty on Kite.
+        Returns (merged: bool, merged_oid: str | None, new_total_qty: int).
+        Falls back to placing a new order if no existing order has room or if modify fails.
+        """
+        existing_orders = stored_sl_state.get("sl_orders", [])
+        if not existing_orders:
+            return False, None, 0
+
+        sl_price = stored_sl_state.get("price")
+        side     = stored_sl_state.get("side")
+        t_buf    = stored_sl_state.get("trigger_buffer", 1.75 if trade_symbol.startswith("SENSEX") else 0.85)
+
+        if not sl_price or not side:
+            return False, None, 0
+
+        trigger = _round_to_tick(sl_price + t_buf) if side == "SELL" else _round_to_tick(sl_price - t_buf)
+        freeze  = _freeze_qty_for(trade_symbol)
+
+        for order in existing_orders:
+            oid     = order.get("order_id")
+            cur_qty = order.get("qty", 0)
+            if not oid:
+                continue
+            if cur_qty + new_qty <= freeze:
+                new_total = cur_qty + new_qty
+                result = await kite1.hard_code_regular_modify_order(
+                    order_id=oid, price=sl_price, trig_price=trigger,
+                    qty=new_total,
+                    access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
+                )
+                if isinstance(result, dict) and result.get("status") == "success":
+                    return True, oid, new_total
+                logger.warning(f"SL merge modify failed for {trade_symbol} order {oid}: {result}")
+                return False, None, 0
+
+        return False, None, 0
 
     async def handle_order_update(ws, data):
 
@@ -313,7 +360,7 @@ def setup_websocket_events():
             except Exception as _e:
                 logger.warning(f"Could not fetch SL state from API for {trade_symbol}: {_e}")
 
-            trigger_buffer = stored_sl_state.get("trigger_buffer", 0.20)
+            trigger_buffer = stored_sl_state.get("trigger_buffer", 1.75 if trade_symbol.startswith("SENSEX") else 0.85)
 
             # Use SL price from dragged line if available for this symbol,
             # otherwise fall back to default distance from entry price.
@@ -350,6 +397,22 @@ def setup_websocket_events():
                     f"SL: {stop_loss_price} | Trigger: {trigger_price} | "
                     f"Source: {sl_source}"
                 )
+
+                # If an SL is already placed for this symbol, try merging into an
+                # existing order rather than creating a new one.
+                if stored_sl_state.get("state") == "placed" and stored_sl_state.get("side") == "SELL":
+                    merged, merged_oid, new_total = await _try_merge_sl(trade_symbol, qty, stored_sl_state)
+                    if merged:
+                        try:
+                            requests.post("http://localhost:8000/api/sl/set", json={
+                                "symbol":            trade_symbol,
+                                "state":             "placed",
+                                "update_order_qty":  {"order_id": merged_oid, "qty": new_total},
+                            }, timeout=2)
+                        except Exception as _e:
+                            logger.warning(f"Could not sync merged SL state for {trade_symbol}: {_e}")
+                        logger.info(f"SL SELL merged for {trade_symbol}: order_id={merged_oid} new_qty={new_total}")
+                        return {"status": "success"}
 
                 result = await _place_sl_with_retry(
                     lambda: kite1.hard_code_regular_sell_order(
@@ -411,6 +474,22 @@ def setup_websocket_events():
                     f"SL: {stop_loss_price} | Trigger: {trigger_price} | "
                     f"Source: {sl_source}"
                 )
+
+                # If an SL is already placed for this symbol, try merging into an
+                # existing order rather than creating a new one.
+                if stored_sl_state.get("state") == "placed" and stored_sl_state.get("side") == "BUY":
+                    merged, merged_oid, new_total = await _try_merge_sl(trade_symbol, qty, stored_sl_state)
+                    if merged:
+                        try:
+                            requests.post("http://localhost:8000/api/sl/set", json={
+                                "symbol":            trade_symbol,
+                                "state":             "placed",
+                                "update_order_qty":  {"order_id": merged_oid, "qty": new_total},
+                            }, timeout=2)
+                        except Exception as _e:
+                            logger.warning(f"Could not sync merged SL state for {trade_symbol}: {_e}")
+                        logger.info(f"SL BUY merged for {trade_symbol}: order_id={merged_oid} new_qty={new_total}")
+                        return {"status": "success"}
 
                 result = await _place_sl_with_retry(
                     lambda: kite1.hard_code_regular_buy_order(

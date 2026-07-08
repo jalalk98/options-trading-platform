@@ -669,12 +669,14 @@ class KiteConnect_custom(object):
                 else:
                     raise  # Raise the exception if max retries reached
 
-    async def hard_code_regular_modify_order(self, order_id, price, trig_price, access_token, api_key, max_retries=3):
-        data = {'variety': 'regular', 
+    async def hard_code_regular_modify_order(self, order_id, price, trig_price, access_token, api_key, max_retries=3, qty=None):
+        data = {'variety': 'regular',
                 'order_id': f'{order_id}',
                 'trigger_price':f'{trig_price}',
                 'price':f'{price}'
                 }
+        if qty is not None:
+            data['quantity'] = str(qty)
         headers = {'X-Kite-Version': '3',
                 'User-Agent': 'Kiteconnect-python/5.0.1',
                 'Authorization': f'token {api_key}:{access_token}'}

@@ -1004,7 +1004,20 @@ async def get_jump_history(symbol: str, request: Request, date: str = None):
             if sym.startswith("FINNIFTY"):    return 3.0
             return 5.0
 
-        query_date = PyDate.fromisoformat(date) if date else PyDate.today()
+        if date:
+            query_date = PyDate.fromisoformat(date)
+        else:
+            query_date = PyDate.today()
+            # Mirror the chart API's fallback: if today has no data, use the last
+            # available trading date so jump markers match the candles being shown.
+            pool = request.app.state.pool
+            async with pool.acquire() as conn:
+                last_bucket = await conn.fetchval(
+                    "SELECT MAX(bucket) FROM candles_5s WHERE symbol = $1", symbol)
+            if last_bucket:
+                last_date = PyDate.fromtimestamp(last_bucket)
+                if last_date < query_date:
+                    query_date = last_date
         today_str  = str(PyDate.today())
         is_today   = (str(query_date) == today_str)
         cache_key  = f"{symbol}_{query_date}"
@@ -1260,10 +1273,24 @@ async def get_chart(symbol: str, request: Request, nocache: bool = False, date: 
 
     data = {"history": history, "gaps": gaps}
     last_bucket = history[-1][0] if history else None
-    ttl = 3600 if date else 600 + random.randint(0, 60)
-    _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl, "last_bucket": last_bucket}
+
+    # When no explicit `date` was requested ("today"), _query_history silently
+    # falls back to the last trading date if today has no candles yet (thin /
+    # late-first-trade symbols in the first hour). If we cache that like real
+    # today data, the incremental-merge branch above keeps appending genuine
+    # ticks onto yesterday's array forever instead of ever re-checking whether
+    # today has real data now — so cache it briefly with no last_bucket to
+    # force a fresh full requery on the next call.
+    is_fallback = bool(history) and not date and PyDate.fromtimestamp(history[0][0]) != PyDate.today()
+
+    if is_fallback:
+        ttl = 20 + random.randint(0, 10)
+        _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl, "last_bucket": None}
+    else:
+        ttl = 3600 if date else 600 + random.randint(0, 60)
+        _chart_cache[cache_key] = {"data": data, "ts": time.monotonic(), "ttl": ttl, "last_bucket": last_bucket}
     ms = (time.monotonic() - _t0) * 1000
-    logger.info("[CHART_TIMING] ts=%s sym=%s rows=%d ms=%.1f path=full", _ist_hms(), symbol, len(history), ms)
+    logger.info("[CHART_TIMING] ts=%s sym=%s rows=%d ms=%.1f path=full%s", _ist_hms(), symbol, len(history), ms, " fallback" if is_fallback else "")
     return Response(content=orjson.dumps(data), media_type="application/json")
 
 

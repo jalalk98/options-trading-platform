@@ -102,10 +102,20 @@ GAP_EVENTS_COLS = [
     'prev_price', 'curr_price', 'vol_change',
 ]
 
+TRADE_JOURNAL_COLS = [
+    'id', 'created_at', 'trade_date', 'symbol', 'underlying',
+    'strike', 'option_type', 'expiry_date',
+    'direction', 'quantity', 'entry_price', 'exit_price',
+    'entry_time', 'exit_time',
+    'underlying_price_at_entry', 'underlying_price_at_exit',
+    'pnl', 'order_id', 'setup', 'notes', 'outcome',
+]
+
 TABLE_COLS = {
-    'gap_ticks':  GAP_TICKS_COLS,
-    'candles_5s': CANDLES_5S_COLS,
-    'gap_events': GAP_EVENTS_COLS,
+    'gap_ticks':     GAP_TICKS_COLS,
+    'candles_5s':    CANDLES_5S_COLS,
+    'gap_events':    GAP_EVENTS_COLS,
+    'trade_journal': TRADE_JOURNAL_COLS,
 }
 
 # ── Symbol group classifier (mirrors tick collector logic) ────────────────────
@@ -508,6 +518,25 @@ async def export_bucket_table(conn, table_name: str, tick_date: date,
     return total
 
 
+async def export_trade_journal(conn, out_path: str) -> int:
+    """
+    Full-snapshot export of trade_journal → parquet.
+    All rows ordered by trade_date, entry_time, id.
+    Returns row count written (may be 0 on an empty table).
+    """
+    cols_str = ', '.join(TRADE_JOURNAL_COLS)
+    rows = await conn.fetch(
+        f"SELECT {cols_str} FROM trade_journal ORDER BY trade_date, entry_time, id"
+    )
+    if not rows:
+        return 0
+    data = {col: [r[col] for r in rows] for col in TRADE_JOURNAL_COLS}
+    tbl = pa.table(data)
+    pq.write_table(tbl, out_path, compression='snappy')
+    print(f"    {len(rows):,} trade_journal rows")
+    return len(rows)
+
+
 # ── archive_status helpers ────────────────────────────────────────────────────
 async def status_set(conn, tick_date: date, table_kind: str,
                      partition_name: str, symbol_group: str = '', **kwargs):
@@ -604,7 +633,25 @@ async def run_phase_a(target_date: date, secrets: dict, s3, pa_s3, bucket: str):
             WHERE partition_date = $1
         """, target_date)
         if already_done:
-            print(f"  All table_kinds already verified/dropped — nothing to do")
+            print(f"  All table_kinds already verified/dropped — running trade_journal snapshot only")
+            with tempfile.TemporaryDirectory(prefix='archive_v3_tj_') as tmp:
+                tj_path  = os.path.join(tmp, 'trade_journal.parquet')
+                tj_b2key = 'trade_journal/latest.parquet'
+                try:
+                    print(f"  Exporting trade_journal (full snapshot)…")
+                    tj_written = await export_trade_journal(conn, tj_path)
+                    if tj_written == 0:
+                        print(f"    0 rows — skipping upload")
+                    else:
+                        upload_and_verify(s3, pa_s3, secrets, bucket, tj_path, tj_b2key, tj_written)
+                        send_telegram(
+                            f"📒 trade_journal snapshot uploaded: {tj_written:,} rows\n"
+                            f"  (tick tables for {target_date} already verified — skipped)",
+                            secrets,
+                        )
+                except Exception as e:
+                    send_telegram(f"⚠️ trade_journal export failed: {e}", secrets)
+                    print(f"  trade_journal export failed: {e}")
             return
 
         # ── Guard: gap_ticks partition must exist ─────────────────────────
@@ -785,10 +832,35 @@ async def run_phase_a(target_date: date, secrets: dict, s3, pa_s3, bucket: str):
                     )
                     raise RuntimeError(msg) from e
 
+            # ── trade_journal: full snapshot, overwrites previous file ────
+            print(f"  Exporting trade_journal (full snapshot)…")
+            tj_path  = os.path.join(tmp, 'trade_journal.parquet')
+            tj_b2key = 'trade_journal/latest.parquet'
+            try:
+                tj_written = await export_trade_journal(conn, tj_path)
+                if tj_written == 0:
+                    print(f"    0 rows — skipping upload")
+                    tbl_results['trade_journal'] = {'rows': 0}
+                else:
+                    upload_and_verify(
+                        s3, pa_s3, secrets, bucket, tj_path, tj_b2key, tj_written,
+                    )
+                    tbl_results['trade_journal'] = {'rows': tj_written}
+            except Exception as e:
+                tb = traceback.format_exc()
+                send_telegram(
+                    f"⚠️ Archive v3 Phase A: trade_journal export failed for {target_date}\n"
+                    f"{str(e)[:300]}\n{tb[-400:]}",
+                    secrets,
+                )
+                print(f"  trade_journal export failed (non-fatal): {e}")
+                tbl_results['trade_journal'] = {'rows': 0, 'error': str(e)}
+
         # ── All tables done ───────────────────────────────────────────────
         gt = tbl_results.get('gap_ticks', {})
         c5 = tbl_results.get('candles_5s', {})
         ge = tbl_results.get('gap_events', {})
+        tj = tbl_results.get('trade_journal', {})
 
         gt_groups = gt.get('groups', {})
         gt_group_lines = ''.join(
@@ -796,12 +868,18 @@ async def run_phase_a(target_date: date, secrets: dict, s3, pa_s3, bucket: str):
             for grp, cnt in sorted(gt_groups.items(), key=lambda x: -x[1])
         )
         total_rows = gt.get('rows', 0) + c5.get('rows', 0) + ge.get('rows', 0)
+        tj_line = (
+            f"  trade_jrnl: {tj.get('rows',0):>12,} rows (snapshot)\n"
+            if not tj.get('error') else
+            f"  trade_jrnl: ⚠️ export failed\n"
+        )
         msg = (
             f"✅ Archive v3 Phase A: {target_date}\n"
             f"  gap_ticks:  {gt.get('rows',0):>12,} rows\n"
             f"{gt_group_lines}"
             f"  candles_5s: {c5.get('rows',0):>12,} rows\n"
             f"  gap_events: {ge.get('rows',0):>12,} rows\n"
+            f"{tj_line}"
             f"  {'─'*26}\n"
             f"  total:      {total_rows:>12,} rows\n"
             f"  All table_kinds verified in B2."

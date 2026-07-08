@@ -2,16 +2,17 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import sys
-from datetime import datetime
 
 # Create logs directory if it doesn't exist
 log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
-# Generate a unique log filename based on the current timestamp
-log_filename = datetime.now().strftime("trade_project_%d-%m-%Y___%H-%M-%S.log")
-log_file = os.path.join(log_dir, log_filename)
+# Per-service fixed filename — set LOG_SERVICE_NAME in each systemd unit.
+# Fixed name lets RotatingFileHandler's backupCount actually prune old rotations.
+# backupCount=3 at 30MB each = 90MB max per service (covers one full trading day).
+_service_name = os.environ.get("LOG_SERVICE_NAME", "trade_project")
+log_file = os.path.join(log_dir, f"{_service_name}.log")
 
 # Configure logging
 log_formatter = logging.Formatter(
@@ -26,7 +27,7 @@ logger = logging.getLogger()
 if not logger.hasHandlers():
     # File handler for logging
     file_handler = RotatingFileHandler(
-        log_file, maxBytes=30 * 1024 * 1024, backupCount=15  # 30MB per file, 15 backups
+        log_file, maxBytes=30 * 1024 * 1024, backupCount=3  # 30MB per file, 3 backups = 90MB max
     )
     file_handler.setFormatter(log_formatter)
     file_handler.setLevel(logging.INFO)

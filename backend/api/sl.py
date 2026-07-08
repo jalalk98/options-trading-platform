@@ -4,6 +4,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List
+from collections import defaultdict
 from backend.state import sl_state, app_config
 from backend.services.websocket_handler import kite1
 from config.credentials import KITE_API_KEY, KITE_ACCESS_TOKEN
@@ -15,8 +16,19 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Serializes read-modify-write access to sl_state[symbol] per symbol.
+# Without this, an entry-time SL placement and a concurrent SL-line drag
+# can race: whichever request writes back last wins, even if it read an
+# older snapshot — silently discarding the other's order_ids/sl_orders.
+_sl_locks: dict = defaultdict(asyncio.Lock)
+
 def _round(price: float, tick: float = 0.05) -> float:
     return round(round(price / tick) * tick, 2)
+
+def _default_trigger_buffer(symbol: str) -> float:
+    if symbol.startswith("SENSEX"):
+        return 1.75
+    return 0.85
 
 
 # ─────────────────────────────────────────────
@@ -39,98 +51,111 @@ async def get_sl(symbol: str):
 class SetSLRequest(BaseModel):
     symbol:          str
     price:           Optional[float]     = None   # if None, keep existing price (state-only update)
-    trigger_buffer:  Optional[float]     = None   # if None, keep existing or default 0.20
+    trigger_buffer:  Optional[float]     = None   # if None, keep existing or use per-index default
     # Fields set by tick_collector after placing SL on Kite
     order_id:        Optional[str]       = None   # single order ID to append to list
     side:            Optional[str]       = None
     qty:             Optional[int]       = None
     exchange:        Optional[str]       = None
     state:           Optional[str]       = None
+    update_order_qty: Optional[dict]    = None   # {"order_id": str, "qty": int} — update existing entry
 
 @router.post("/sl/set")
 async def set_sl(req: SetSLRequest):
-    existing   = sl_state.get(req.symbol, {})
-    new_buffer = req.trigger_buffer if req.trigger_buffer is not None else existing.get("trigger_buffer", 0.20)
+    async with _sl_locks[req.symbol]:
+        existing   = sl_state.get(req.symbol, {})
+        new_buffer = req.trigger_buffer if req.trigger_buffer is not None else existing.get("trigger_buffer", _default_trigger_buffer(req.symbol))
 
-    # Clearing state — reset everything
-    if req.state == "none":
+        # Clearing state — reset everything
+        if req.state == "none":
+            sl_state[req.symbol] = {
+                "price":          None,
+                "trigger_buffer": new_buffer,
+                "order_id":       None,
+                "order_ids":      [],
+                "sl_orders":      [],
+                "side":           None,
+                "qty":            None,
+                "exchange":       None,
+                "state":          "none",
+            }
+            return {"status": "ok", "symbol": req.symbol, "price": None}
+
+        new_price = _round(req.price) if req.price is not None else existing.get("price")
+
+        # Build accumulated order_ids list
+        existing_ids = existing.get("order_ids") or ([existing["order_id"]] if existing.get("order_id") else [])
+        if req.order_id and req.order_id not in existing_ids:
+            new_ids = existing_ids + [req.order_id]
+        else:
+            new_ids = existing_ids
+
+        # Accumulate qty across sliced chunks
+        if req.order_id and req.qty is not None:
+            new_qty = (existing.get("qty") or 0) + req.qty
+        else:
+            new_qty = req.qty if req.qty is not None else existing.get("qty")
+
+        # Build sl_orders list: {order_id, qty} per placed SL order
+        existing_sl_orders = existing.get("sl_orders", [])
+
+        # Update qty on an existing order (used after a successful SL merge)
+        if req.update_order_qty:
+            upd_oid = req.update_order_qty.get("order_id")
+            upd_qty = req.update_order_qty.get("qty")
+            if upd_oid and upd_qty is not None:
+                existing_sl_orders = [
+                    {**o, "qty": upd_qty} if o.get("order_id") == upd_oid else o
+                    for o in existing_sl_orders
+                ]
+
+        existing_sl_ids    = {o["order_id"] for o in existing_sl_orders}
+        if req.order_id and req.qty is not None and req.order_id not in existing_sl_ids:
+            new_sl_orders = existing_sl_orders + [{"order_id": req.order_id, "qty": req.qty}]
+        else:
+            new_sl_orders = existing_sl_orders
+
         sl_state[req.symbol] = {
-            "price":          None,
+            "price":          new_price,
             "trigger_buffer": new_buffer,
-            "order_id":       None,
-            "order_ids":      [],
-            "sl_orders":      [],
-            "side":           None,
-            "qty":            None,
-            "exchange":       None,
-            "state":          "none",
+            "order_id":       new_ids[0] if new_ids else None,   # backward compat
+            "order_ids":      new_ids,
+            "sl_orders":      new_sl_orders,
+            "side":           req.side     if req.side     is not None else existing.get("side"),
+            "qty":            new_qty,
+            "exchange":       req.exchange if req.exchange is not None else existing.get("exchange"),
+            "state":          req.state    if req.state    is not None else existing.get("state", "pending"),
         }
-        return {"status": "ok", "symbol": req.symbol, "price": None}
 
-    new_price = _round(req.price) if req.price is not None else existing.get("price")
+        # If dragging (state already "placed" and price changed), modify ALL orders on Kite
+        modified_count = 0
+        trigger_price  = None
+        if existing.get("state") == "placed" and new_ids and req.price is not None and not req.order_id:
+            side          = existing.get("side")
+            trigger_price = _round(new_price + new_buffer) if side == "SELL" else _round(new_price - new_buffer)
 
-    # Build accumulated order_ids list
-    existing_ids = existing.get("order_ids") or ([existing["order_id"]] if existing.get("order_id") else [])
-    if req.order_id and req.order_id not in existing_ids:
-        new_ids = existing_ids + [req.order_id]
-    else:
-        new_ids = existing_ids
+            async def _mod(oid):
+                try:
+                    r = await kite1.hard_code_regular_modify_order(
+                        order_id=oid, price=new_price, trig_price=trigger_price,
+                        access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
+                    )
+                    logger.info(f"SL order {oid} modified to {new_price} (trigger {trigger_price}) for {req.symbol}: {r}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to modify SL order {oid}: {e}")
+                    return False
 
-    # Accumulate qty across sliced chunks
-    if req.order_id and req.qty is not None:
-        new_qty = (existing.get("qty") or 0) + req.qty
-    else:
-        new_qty = req.qty if req.qty is not None else existing.get("qty")
+            for i in range(0, len(new_ids), 9):
+                batch         = new_ids[i:i + 9]
+                batch_results = await asyncio.gather(*[_mod(oid) for oid in batch])
+                modified_count += sum(batch_results)
+                if i + 9 < len(new_ids):
+                    await asyncio.sleep(1.0)
 
-    # Build sl_orders list: {order_id, qty} per placed SL order
-    existing_sl_orders = existing.get("sl_orders", [])
-    existing_sl_ids    = {o["order_id"] for o in existing_sl_orders}
-    if req.order_id and req.qty is not None and req.order_id not in existing_sl_ids:
-        new_sl_orders = existing_sl_orders + [{"order_id": req.order_id, "qty": req.qty}]
-    else:
-        new_sl_orders = existing_sl_orders
+            sl_state[req.symbol]["state"] = "placed"
 
-    sl_state[req.symbol] = {
-        "price":          new_price,
-        "trigger_buffer": new_buffer,
-        "order_id":       new_ids[0] if new_ids else None,   # backward compat
-        "order_ids":      new_ids,
-        "sl_orders":      new_sl_orders,
-        "side":           req.side     if req.side     is not None else existing.get("side"),
-        "qty":            new_qty,
-        "exchange":       req.exchange if req.exchange is not None else existing.get("exchange"),
-        "state":          req.state    if req.state    is not None else existing.get("state", "pending"),
-    }
-
-    # If dragging (state already "placed" and price changed), modify ALL orders on Kite
-    modified_count = 0
-    trigger_price  = None
-    if existing.get("state") == "placed" and new_ids and req.price is not None and not req.order_id:
-        side          = existing.get("side")
-        trigger_price = _round(new_price + new_buffer) if side == "SELL" else _round(new_price - new_buffer)
-
-        async def _mod(oid):
-            try:
-                r = await kite1.hard_code_regular_modify_order(
-                    order_id=oid, price=new_price, trig_price=trigger_price,
-                    access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
-                )
-                logger.info(f"SL order {oid} modified to {new_price} (trigger {trigger_price}) for {req.symbol}: {r}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to modify SL order {oid}: {e}")
-                return False
-
-        for i in range(0, len(new_ids), 9):
-            batch         = new_ids[i:i + 9]
-            batch_results = await asyncio.gather(*[_mod(oid) for oid in batch])
-            modified_count += sum(batch_results)
-            if i + 9 < len(new_ids):
-                await asyncio.sleep(1.0)
-
-        sl_state[req.symbol]["state"] = "placed"
-
-    return {"status": "ok", "symbol": req.symbol, "price": new_price, "trigger_price": trigger_price, "modified_count": modified_count}
+        return {"status": "ok", "symbol": req.symbol, "price": new_price, "trigger_price": trigger_price, "modified_count": modified_count}
 
 
 # ─────────────────────────────────────────────
@@ -186,14 +211,17 @@ async def convert_to_sl(req: ConvertToSLRequest):
     state = sl_state.get(req.symbol)
     if not state:
         return {"status": "error", "message": "No active SL order for this symbol"}
-    order_ids = [o["order_id"] for o in state.get("sl_orders", [])]
-    if not order_ids:
+    sl_orders = state.get("sl_orders", [])
+    if not sl_orders:
         return {"status": "error", "message": "No active SL order for this symbol"}
 
-    price   = _round(req.price)
-    trigger = _round(req.trigger)
+    price    = _round(req.price)
+    trigger  = _round(req.trigger)
+    exchange = state.get("exchange", "BFO")
+    side     = state.get("side")   # "BUY" or "SELL"
 
-    async def _modify_one(oid):
+    async def _modify_one(oid, qty):
+        # First try the normal LIMIT → SL modify
         try:
             result = await kite1.hard_code_modify_limit_type(
                 order_id=oid, price=price, trig_price=trigger,
@@ -201,15 +229,61 @@ async def convert_to_sl(req: ConvertToSLRequest):
                 type="SL",
             )
             logger.info(f"LIMIT→SL for {req.symbol} order {oid} @ trigger={trigger} limit={price}: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"convert-to-sl error for {oid}: {e}")
-            return {"error": str(e)}
+            return result, oid
 
-    results = await asyncio.gather(*[_modify_one(oid) for oid in order_ids])
-    sl_state[req.symbol]["price"]  = price
-    sl_state[req.symbol]["state"]  = "placed"
-    return {"status": "ok", "price": price, "trigger": trigger, "results": list(results)}
+        except Exception as e:
+            # BFO exchange doesn't allow LIMIT → SL modification.
+            # Cancel the LIMIT order and place a fresh SL instead.
+            if "BFO LIMIT order cannot be modified to an SL order" in str(e):
+                logger.info(
+                    f"BFO fallback for {req.symbol} order {oid}: "
+                    f"cancelling LIMIT and placing fresh SL @ trigger={trigger} limit={price}"
+                )
+                try:
+                    await kite1.hard_code_regular_cancel_order(
+                        oid, access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
+                    )
+                except Exception as cancel_exc:
+                    logger.warning(f"Cancel {oid} failed (may already be gone): {cancel_exc}")
+
+                if side == "BUY":
+                    result = await kite1.hard_code_regular_buy_order(
+                        exchange=exchange, trade_symbol=req.symbol, qty=qty,
+                        price=price, trig_price=trigger,
+                        api_key=KITE_API_KEY, access_token=KITE_ACCESS_TOKEN,
+                    )
+                else:
+                    result = await kite1.hard_code_regular_sell_order(
+                        exchange=exchange, trade_symbol=req.symbol, qty=qty,
+                        stop_loss_price=price, trig_price=trigger,
+                        api_key=KITE_API_KEY, access_token=KITE_ACCESS_TOKEN,
+                    )
+                new_oid = (result.get("data") or {}).get("order_id") if isinstance(result, dict) else None
+                logger.info(f"BFO fallback: fresh SL placed for {req.symbol} → new order_id={new_oid}")
+                return result, new_oid
+
+            logger.error(f"convert-to-sl error for {oid}: {e}")
+            return {"error": str(e)}, oid
+
+    results_with_ids = await asyncio.gather(
+        *[_modify_one(o["order_id"], o["qty"]) for o in sl_orders]
+    )
+
+    # Rebuild sl_orders with any updated order_ids (BFO cancel+replace path)
+    updated_sl_orders = []
+    for orig, (result, new_oid) in zip(sl_orders, results_with_ids):
+        updated_sl_orders.append({**orig, "order_id": new_oid} if new_oid else orig)
+
+    sl_state[req.symbol]["price"]     = price
+    sl_state[req.symbol]["state"]     = "placed"
+    sl_state[req.symbol]["sl_orders"] = updated_sl_orders
+
+    return {
+        "status":  "ok",
+        "price":   price,
+        "trigger": trigger,
+        "results": [r for r, _ in results_with_ids],
+    }
 
 
 # POST /api/sl/convert-to-market  (M key)
@@ -516,9 +590,9 @@ async def close_all_positions():
         # Fast path: use sl_orders populated at SL placement time
         cached_sl = sl_state.get(symbol, {}).get("sl_orders", [])
 
+        sl_total = 0
         if cached_sl:
-            sl_total = sum(o["qty"] for o in cached_sl)
-            sym_logs.append(f"Using {len(cached_sl)} cached SL order(s) (total qty {sl_total})")
+            sym_logs.append(f"Using {len(cached_sl)} cached SL order(s) (total qty {sum(o['qty'] for o in cached_sl)})")
             for o in cached_sl:
                 try:
                     res = await kite1.hard_code_modify_limit_type(
@@ -526,9 +600,13 @@ async def close_all_positions():
                         access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
                         type="MARKET",
                     )
-                    sym_logs.append(f"[cache] SL {o['order_id']} ({o['qty']} qty) → MARKET: {res}")
+                    if isinstance(res, dict) and res.get("status") == "success":
+                        sl_total += o["qty"]
+                        sym_logs.append(f"[cache] SL {o['order_id']} ({o['qty']} qty) → MARKET: {res}")
+                    else:
+                        sym_logs.append(f"[cache] SL {o['order_id']} convert failed (will place MARKET exit): {res}")
                 except Exception as e:
-                    sym_logs.append(f"[cache] SL {o['order_id']} convert error: {e}")
+                    sym_logs.append(f"[cache] SL {o['order_id']} convert failed (will place MARKET exit): {e}")
         else:
             # Fallback: fetch live orders from Kite (e.g. after server restart)
             sym_logs.append("No cached SL orders — falling back to Kite orders fetch")
@@ -539,7 +617,6 @@ async def close_all_positions():
                 and o.get("order_type") == "SL"
                 and o.get("status") == "TRIGGER PENDING"
             ]
-            sl_total = sum(int(o.get("quantity", 0)) for o in kite_sl)
             for o in kite_sl:
                 try:
                     res = await kite1.hard_code_modify_limit_type(
@@ -547,9 +624,13 @@ async def close_all_positions():
                         access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY,
                         type="MARKET",
                     )
-                    sym_logs.append(f"[kite] SL {o['order_id']} ({o.get('quantity')} qty) → MARKET: {res}")
+                    if isinstance(res, dict) and res.get("status") == "success":
+                        sl_total += int(o.get("quantity", 0))
+                        sym_logs.append(f"[kite] SL {o['order_id']} ({o.get('quantity')} qty) → MARKET: {res}")
+                    else:
+                        sym_logs.append(f"[kite] SL {o['order_id']} convert failed (will place MARKET exit): {res}")
                 except Exception as e:
-                    sym_logs.append(f"[kite] SL {o['order_id']} convert error: {e}")
+                    sym_logs.append(f"[kite] SL {o['order_id']} convert failed (will place MARKET exit): {e}")
 
         remainder = abs_qty - sl_total
         if remainder <= 0:
@@ -719,6 +800,7 @@ async def place_limit_order(req: LimitOrderRequest):
     freeze    = _freeze_qty(req.symbol)
     remaining = req.qty
     order_ids = []
+    placed_qty = 0
 
     try:
         while remaining > 0:
@@ -731,10 +813,14 @@ async def place_limit_order(req: LimitOrderRequest):
             result = r.json()
             if r.status_code != 200:
                 msg = result.get("message") or result.get("error") or f"HTTP {r.status_code}"
-                logger.error(f"place-limit-order broker error: {msg}")
-                return {"status": "error", "message": msg}
+                logger.error(f"place-limit-order broker error: {msg}" + (f" (after {placed_qty}/{req.qty} already placed: {order_ids})" if order_ids else ""))
+                return {
+                    "status": "error", "message": msg,
+                    "order_ids": order_ids, "placed_qty": placed_qty, "qty": req.qty,
+                }
             order_id = (result.get("data") or {}).get("order_id")
             order_ids.append(order_id)
+            placed_qty += chunk
             remaining -= chunk
 
         sliced = len(order_ids) > 1
@@ -925,7 +1011,7 @@ async def check_sl_orders():
 
         # SL price priority: active SL price → SL line price → default dist from LTP
         sl_price       = sym_state.get("price")
-        trigger_buffer = sym_state.get("trigger_buffer", 0.20)
+        trigger_buffer = sym_state.get("trigger_buffer", _default_trigger_buffer(symbol))
 
         if sl_price is not None and active_sl:
             price_source = "cache"
@@ -1085,6 +1171,296 @@ async def set_default_sl(req: DefaultSlReq):
     app_config["default_sl_dist"] = req.distance
     logger.info(f"default_sl_dist updated to {req.distance}")
     return {"status": "ok", "default_sl_dist": req.distance}
+
+
+# ─────────────────────────────────────────────
+# POST /api/sl/partial-close
+# Close a specific qty of an open position (MARKET or LIMIT).
+# MARKET flow: cancel proportional SL orders FIRST (clears Zerodha's
+#   combined-exposure margin check), then place MARKET exit.
+#   If MARKET fails, re-places cancelled SL orders to restore coverage.
+# LIMIT flow: place LIMIT order only; SL left untouched until fill.
+# ─────────────────────────────────────────────
+class PartialCloseRequest(BaseModel):
+    symbol:     str
+    qty:        int
+    order_type: str            = "MARKET"  # "MARKET" or "LIMIT"
+    price:      Optional[float] = None     # required for LIMIT
+
+@router.post("/sl/partial-close")
+async def partial_close(req: PartialCloseRequest):
+    symbol       = req.symbol
+    qty_to_close = req.qty
+    logs         = []
+
+    if qty_to_close <= 0:
+        return {"status": "error", "message": "qty must be > 0"}
+    if req.order_type == "LIMIT" and req.price is None:
+        return {"status": "error", "message": "price required for LIMIT order"}
+
+    state    = sl_state.get(symbol, {})
+    exchange = state.get("exchange")
+    side     = state.get("side")   # SL side == exit direction
+
+    if not exchange or not side:
+        try:
+            positions = await _fetch_all_open_positions()
+            pos = next((p for p in positions if p["symbol"] == symbol), None)
+            if not pos:
+                return {"status": "error", "message": f"No open position for {symbol}"}
+            exchange = exchange or pos["exchange"]
+            if not side:
+                side = "SELL" if pos["qty"] > 0 else "BUY"
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to fetch position: {e}"}
+
+    cached_sl      = list(state.get("sl_orders", []))
+    sl_price       = state.get("price")
+    trigger_buffer = state.get("trigger_buffer", _default_trigger_buffer(symbol))
+    headers        = {
+        "X-Kite-Version": "3",
+        "User-Agent":      "Kiteconnect-python/5.0.1",
+        "Authorization":   f"token {KITE_API_KEY}:{KITE_ACCESS_TOKEN}",
+    }
+
+    # ── Step 1: Cancel proportional SL orders FIRST (both MARKET & LIMIT)
+    # Zerodha computes margin upfront treating pending SL orders + new exit
+    # order as combined exposure → can demand margin for a net short even
+    # when you are closing an existing long. Cancelling SL first removes
+    # that exposure so the exit order is accepted as a plain close.
+    # If the exit order then fails, cancelled SLs are re-placed automatically.
+
+    async def _place_sl_chunk(qty_chunk):
+        if sl_price is None:
+            return None
+        trigger = _round(sl_price + trigger_buffer) if side == "SELL" else _round(sl_price - trigger_buffer)
+        data = {
+            "variety":          "regular",
+            "exchange":         exchange,
+            "tradingsymbol":    symbol,
+            "transaction_type": side,
+            "quantity":         str(qty_chunk),
+            "product":          "NRML",
+            "order_type":       "SL",
+            "validity":         "DAY",
+            "trigger_price":    str(trigger),
+            "price":            str(sl_price),
+        }
+        r      = await kite1.reqsession.post(
+            "https://api.kite.trade/orders/regular",
+            data=data, headers=headers, timeout=7,
+        )
+        result = r.json()
+        return (result.get("data") or {}).get("order_id") if r.status_code == 200 else None
+
+    async def _restore_cancelled(cancelled):
+        """Re-place SL orders that were cancelled when exit placement failed."""
+        restored = []
+        for o in cancelled:
+            rem = o["qty"]
+            while rem > 0:
+                chunk   = min(rem, _freeze_qty(symbol))
+                new_oid = await _place_sl_chunk(chunk)
+                if new_oid:
+                    restored.append({"order_id": new_oid, "qty": chunk})
+                    logs.append(f"Restored SL {new_oid} qty={chunk}")
+                else:
+                    logs.append(f"Restore SL failed qty={chunk} — manual intervention needed")
+                rem -= chunk
+        return restored
+
+    remaining_to_cancel = qty_to_close
+    new_sl_orders       = []
+    cancelled_orders    = []
+
+    for o in sorted(cached_sl, key=lambda x: x["qty"]):
+        if remaining_to_cancel <= 0:
+            new_sl_orders.append(o)
+            continue
+
+        if o["qty"] <= remaining_to_cancel:
+            try:
+                await kite1.hard_code_regular_cancel_order(
+                    o["order_id"], access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
+                )
+                remaining_to_cancel -= o["qty"]
+                cancelled_orders.append(o)
+                logs.append(f"Cancelled SL {o['order_id']} qty={o['qty']}")
+            except Exception as e:
+                logs.append(f"Cancel {o['order_id']} failed: {e} — keeping in cache")
+                new_sl_orders.append(o)
+        else:
+            # Partial cancel: cancel full order, replace with leftover qty
+            leftover = o["qty"] - remaining_to_cancel
+            try:
+                await kite1.hard_code_regular_cancel_order(
+                    o["order_id"], access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
+                )
+                cancelled_orders.append({"order_id": o["order_id"], "qty": remaining_to_cancel})
+                logs.append(f"Cancelled SL {o['order_id']} qty={o['qty']} → replacing with {leftover}")
+                remaining_to_cancel = 0
+                rem = leftover
+                while rem > 0:
+                    chunk   = min(rem, _freeze_qty(symbol))
+                    new_oid = await _place_sl_chunk(chunk)
+                    if new_oid:
+                        new_sl_orders.append({"order_id": new_oid, "qty": chunk})
+                        logs.append(f"Replacement SL {new_oid} qty={chunk}")
+                    else:
+                        logs.append(f"Replacement SL failed qty={chunk} — position under-covered")
+                    rem -= chunk
+            except Exception as e:
+                logs.append(f"Cancel {o['order_id']} failed: {e} — keeping in cache")
+                new_sl_orders.append(o)
+
+    # ── Step 2: Place exit order (MARKET or LIMIT) ──────────────────────
+    exit_orders = []
+    if req.order_type == "LIMIT":
+        limit_price = _round(req.price)
+        freeze      = _freeze_qty(symbol)
+        remaining   = qty_to_close
+        failed_msg  = None
+        while remaining > 0:
+            chunk = min(remaining, freeze)
+            data  = {
+                "variety":          "regular",
+                "exchange":         exchange,
+                "tradingsymbol":    symbol,
+                "transaction_type": side,
+                "quantity":         str(chunk),
+                "product":          "NRML",
+                "order_type":       "LIMIT",
+                "validity":         "DAY",
+                "price":            str(limit_price),
+            }
+            try:
+                r      = await kite1.reqsession.post(
+                    "https://api.kite.trade/orders/regular",
+                    data=data, headers=headers, timeout=7,
+                )
+                result = r.json()
+                if r.status_code != 200:
+                    failed_msg = result.get("message") or f"HTTP {r.status_code}"
+                    break
+                order_id = (result.get("data") or {}).get("order_id")
+                exit_orders.append({"order_id": order_id, "qty": chunk})
+                logs.append(f"LIMIT {side} {chunk} @ {limit_price} → {order_id}")
+            except Exception as e:
+                failed_msg = str(e)
+                break
+            remaining -= chunk
+
+        if failed_msg:
+            logger.error(f"partial-close LIMIT rejected for {symbol}: {failed_msg}")
+            restored = await _restore_cancelled(cancelled_orders)
+            new_sl_orders.extend(restored)
+            _update_sl_state(symbol, state, new_sl_orders, logs)
+            return {"status": "error", "message": failed_msg, "logs": logs}
+
+        logs.append("SL reduced — if limit doesn't fill, use Check SL to restore coverage")
+
+    else:  # MARKET
+        try:
+            exit_orders = await _place_market_order_chunked(exchange, symbol, side, qty_to_close)
+            logs.append(f"MARKET {side} {qty_to_close}: {[o['order_id'] for o in exit_orders]}")
+        except _ChunkedOrderError as e:
+            logs.append(f"MARKET failed: {e} — re-placing {len(cancelled_orders)} cancelled SL order(s)")
+            restored = await _restore_cancelled(cancelled_orders)
+            new_sl_orders.extend(restored)
+            _update_sl_state(symbol, state, new_sl_orders, logs)
+            logger.error(f"partial-close MARKET failed for {symbol}: {logs}")
+            return {"status": "error", "message": str(e), "logs": logs}
+
+    # ── Step 3: Persist updated SL state ───────────────────────────────
+    _update_sl_state(symbol, state, new_sl_orders, logs)
+    logger.info(f"partial-close {req.order_type} {symbol} qty={qty_to_close}: {logs}")
+    return {
+        "status":              "ok",
+        "order_type":          req.order_type,
+        "exit_orders":         exit_orders,
+        "remaining_sl_orders": new_sl_orders,
+        "logs":                logs,
+    }
+
+
+def _update_sl_state(symbol, state, new_sl_orders, logs):
+    if new_sl_orders:
+        new_total = sum(o["qty"] for o in new_sl_orders)
+        sl_state[symbol] = {
+            **state,
+            "sl_orders": new_sl_orders,
+            "order_ids": [o["order_id"] for o in new_sl_orders],
+            "order_id":  new_sl_orders[0]["order_id"],
+            "qty":       new_total,
+        }
+        logs.append(f"SL updated: {len(new_sl_orders)} order(s), total qty={new_total}")
+    else:
+        sl_state.pop(symbol, None)
+        logs.append("All SL orders removed — sl_state cleared")
+
+
+# ─────────────────────────────────────────────
+# POST /api/cancel-all-orders
+# Cancels every OPEN and TRIGGER PENDING order
+# on the account, then clears sl_state entries
+# whose cached order IDs were just cancelled.
+# ─────────────────────────────────────────────
+@router.post("/cancel-all-orders")
+async def cancel_all_orders():
+    try:
+        orders_resp = await kite1.hardcode_orders(KITE_API_KEY, KITE_ACCESS_TOKEN)
+        all_orders  = orders_resp.get("data", []) if isinstance(orders_resp, dict) else []
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to fetch orders: {e}"}
+
+    pending = [
+        o for o in all_orders
+        if o.get("status") in ("OPEN", "TRIGGER PENDING")
+    ]
+
+    if not pending:
+        return {"status": "ok", "message": "No pending orders found", "cancelled_count": 0, "failed_count": 0}
+
+    cancelled     = []
+    failed        = []
+    cancelled_ids = set()
+
+    for o in pending:
+        oid = o["order_id"]
+        try:
+            await kite1.hard_code_regular_cancel_order(
+                oid, access_token=KITE_ACCESS_TOKEN, api_key=KITE_API_KEY
+            )
+            cancelled.append({"order_id": oid, "symbol": o.get("tradingsymbol"), "type": o.get("order_type")})
+            cancelled_ids.add(oid)
+            logger.info(f"cancel-all-orders: cancelled {oid} {o.get('tradingsymbol')} {o.get('order_type')}")
+        except Exception as e:
+            failed.append({"order_id": oid, "symbol": o.get("tradingsymbol"), "error": str(e)})
+            logger.warning(f"cancel-all-orders: failed to cancel {oid}: {e}")
+
+    # Remove cancelled order IDs from sl_state so cached state stays accurate
+    for sym, state in list(sl_state.items()):
+        old_sl = state.get("sl_orders", [])
+        new_sl = [o for o in old_sl if o["order_id"] not in cancelled_ids]
+        if len(new_sl) != len(old_sl):
+            if new_sl:
+                sl_state[sym] = {
+                    **state,
+                    "sl_orders": new_sl,
+                    "order_ids": [o["order_id"] for o in new_sl],
+                    "order_id":  new_sl[0]["order_id"],
+                }
+            else:
+                sl_state.pop(sym, None)
+
+    logger.info(f"cancel-all-orders done: {len(cancelled)} cancelled, {len(failed)} failed")
+    return {
+        "status":          "ok" if not failed else "partial",
+        "cancelled_count": len(cancelled),
+        "failed_count":    len(failed),
+        "cancelled":       cancelled,
+        "failed":          failed,
+    }
 
 
 @router.post("/positions/reset")
