@@ -103,36 +103,42 @@ _MONTH_MAP = {m: i for i, m in enumerate(
 _OPT_RE = re.compile(
     r"^(?:FY:)?(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)"
     r"(\d{2})"
-    r"([A-Z]{3}|\d{1,2}\d{2})"
+    r"([A-Z]{3}|[1-9OND]\d{2})"
     r"(\d+)"
     r"(CE|PE)$"
 )
+
+# Weekly date code: single-char month (1-9, O=Oct, N=Nov, D=Dec) + 2-digit day.
+_WEEKLY_MONTH = {"O": 10, "N": 11, "D": 12}
 
 
 def _parse_display_symbol(display_symbol: str) -> Optional[tuple]:
     """
     Parse FY:-prefixed display symbol into (strike, option_type, expiry_date).
-    Returns None if parsing fails.
+    Returns None if parsing fails — never raises, so a bad symbol can only
+    skip its tracked_symbols upsert, not block the tick insert batch.
     """
-    base = display_symbol.removeprefix("FY:")
-    m = _OPT_RE.match(base)
-    if not m:
-        return None
-    _, yy, date_code, strike_s, opt_type = m.groups()
-    year   = 2000 + int(yy)
-    strike = float(strike_s)
+    try:
+        base = display_symbol.removeprefix("FY:")
+        m = _OPT_RE.match(base)
+        if not m:
+            return None
+        _, yy, date_code, strike_s, opt_type = m.groups()
+        year   = 2000 + int(yy)
+        strike = float(strike_s)
 
-    if date_code.isalpha():
-        month  = _MONTH_MAP.get(date_code.upper(), 1)
-        expiry = date(year, month, 28)  # approximate; good enough for tracking
-    else:
-        if len(date_code) == 3:
-            month, day = int(date_code[0]), int(date_code[1:])
+        if date_code.isalpha():
+            month  = _MONTH_MAP.get(date_code.upper(), 1)
+            expiry = date(year, month, 28)  # approximate; good enough for tracking
         else:
-            month, day = int(date_code[:2]), int(date_code[2:])
-        expiry = date(year, month, day)
+            month  = _WEEKLY_MONTH.get(date_code[0]) or int(date_code[0])
+            expiry = date(year, month, int(date_code[1:]))
 
-    return (strike, opt_type, expiry)
+        return (strike, opt_type, expiry)
+    except Exception:
+        logger.warning("Unparseable display_symbol %r — skipping tracked_symbols upsert",
+                       display_symbol)
+        return None
 
 
 # ── Pool + consumer group setup ───────────────────────────────────────────────

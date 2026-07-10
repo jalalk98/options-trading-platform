@@ -28,24 +28,34 @@ if ! flock -n 9; then
 fi
 
 echo "Clearing old Redis ticks..."
-redis-cli DEL ticks_stream
+redis-cli DEL ticks_stream fyers_ticks_stream
 
-echo "Current Redis stream size:"
+echo "Current Redis stream sizes:"
 redis-cli XLEN ticks_stream
+redis-cli XLEN fyers_ticks_stream
 
-# Restart both services cleanly
+# Restart Zerodha services
 sudo systemctl restart db-writer.service
 sleep 2
 sudo systemctl restart tick-collector.service
-sleep 5
+sleep 2
 
-# Verify both services are running
+# Restart Fyers services
+sudo systemctl restart fyers-db-writer.service
+sleep 1
+sudo systemctl restart fyers-collector.service
+sleep 3
+
+# Verify all services are running
 DB_OK=$(systemctl is-active --quiet db-writer.service && echo "yes" || echo "no")
 TC_OK=$(systemctl is-active --quiet tick-collector.service && echo "yes" || echo "no")
+FDB_OK=$(systemctl is-active --quiet fyers-db-writer.service && echo "yes" || echo "no")
+FC_OK=$(systemctl is-active --quiet fyers-collector.service && echo "yes" || echo "no")
 TC_PID=$(systemctl show -p MainPID --value tick-collector.service 2>/dev/null)
+FC_PID=$(systemctl show -p MainPID --value fyers-collector.service 2>/dev/null)
 
 if [ "$DB_OK" != "yes" ] || [ "$TC_OK" != "yes" ]; then
-    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — db_writer: $DB_OK, tick_collector: $TC_OK." "$LOG_FILE"
+    "$SCRIPT_DIR/notify.sh" "❌ Trading session start FAILED — db_writer: $DB_OK, tick_collector: $TC_OK, fyers_db_writer: $FDB_OK, fyers_collector: $FC_OK." "$LOG_FILE"
     echo "Trading session start failed."
     exit 1
 fi
@@ -60,17 +70,14 @@ HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "Authorization: token ${API_KEY}:${TOKEN}" \
     "https://api.kite.trade/user/profile")
 
-if [ "$HTTP_STATUS" = "200" ]; then
-    "$SCRIPT_DIR/notify.sh" "✅ Trading session started successfully.
-- db_writer      running
-- tick_collector running (PID ${TC_PID:-unknown})
-- api_server     running via systemd (always on)
-- Kite token     valid ✅" "$LOG_FILE"
-    echo "Trading session started. Kite token verified."
-else
-    "$SCRIPT_DIR/notify.sh" "⚠️ Trading session started but Kite token is INVALID (HTTP $HTTP_STATUS).
-- db_writer      running
-- tick_collector running (but token expired ❌)
-- Run refresh_token.py then restart the session." "$LOG_FILE"
-    echo "WARNING: Kite token invalid (HTTP $HTTP_STATUS). Re-run refresh_token.py."
-fi
+KITE_STATUS="valid ✅"
+[ "$HTTP_STATUS" != "200" ] && KITE_STATUS="INVALID ❌ (HTTP $HTTP_STATUS)"
+
+"$SCRIPT_DIR/notify.sh" "✅ Trading session started.
+- db_writer        running
+- tick_collector   running (PID ${TC_PID:-unknown})
+- fyers_db_writer  ${FDB_OK}
+- fyers_collector  ${FC_OK} (PID ${FC_PID:-unknown})
+- api_server       running via systemd
+- Kite token       ${KITE_STATUS}" "$LOG_FILE"
+echo "Trading session started."

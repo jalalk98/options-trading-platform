@@ -21,9 +21,10 @@ fi
 
 echo "Stopping trading session..."
 
-sudo systemctl stop tick-collector.service db-writer.service
+sudo systemctl stop tick-collector.service db-writer.service fyers-collector.service fyers-db-writer.service
 
-if systemctl is-active --quiet tick-collector.service || systemctl is-active --quiet db-writer.service; then
+if systemctl is-active --quiet tick-collector.service || systemctl is-active --quiet db-writer.service || \
+   systemctl is-active --quiet fyers-collector.service || systemctl is-active --quiet fyers-db-writer.service; then
     "$SCRIPT_DIR/notify.sh" "⚠️ Trading session stop — one or more services still running." "$LOG_FILE"
 else
     "$SCRIPT_DIR/notify.sh" "🛑 Trading session stopped successfully at $(date '+%H:%M IST')." "$LOG_FILE"
