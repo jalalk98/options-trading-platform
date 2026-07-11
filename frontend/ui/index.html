@@ -4241,7 +4241,7 @@ async function shiftAllPanels(dir) {
             console.warn('[Shift] Batch pre-fetch failed, panels will fetch individually:', e);
         }
         const symByPanel = new Map(targets.map(t => [t.p, t.sym]));
-        await loadPanelsBatched(targets.map(t => t.p), p => symByPanel.get(p), true, prefetched);
+        await loadPanelsBatched(targets.map(t => t.p), p => symByPanel.get(p), true);
         saveViewState();
         prefetchJumps(targets.map(t => t.sym));
     } finally {
