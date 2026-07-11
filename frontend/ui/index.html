@@ -4444,11 +4444,11 @@ async function refreshAutoPopulate() {
 }
 
 // Load panels in batches of 4 to prevent DB saturation.
-async function loadPanelsBatched(panelList, sym_getter, nocache, prefetched = {}) {
+async function loadPanelsBatched(panelList, sym_getter, nocache, prefetched = {}, date_getter = null) {
     const BATCH = 4;
     for (let i = 0; i < panelList.length; i += BATCH) {
         const batch = panelList.slice(i, i + BATCH);
-        const results = await Promise.allSettled(batch.map(p => p.loadSymbol(sym_getter(p), prefetched[sym_getter(p)] || null, nocache)));
+        const results = await Promise.allSettled(batch.map(p => p.loadSymbol(sym_getter(p), prefetched[sym_getter(p)] || null, nocache, date_getter ? date_getter(p) : null)));
         results.forEach((result, i) => {
             if (result.status === 'rejected') {
                 console.error(`[Refresh] Panel ${batch[i].symbol} failed to load:`, result.reason);
@@ -4560,28 +4560,37 @@ async function shiftAllPanels(dir) {
         const parsed = parseOptionSymbol(p.symbol);
         if (!parsed) continue; // index chart (last panel in single-index modes) stays put
         const strike = parsed.strike + dir * SHIFT_STEP[parsed.index];
-        targets.push({ p, sym: `${parsed.index}${parsed.expiry}${strike}${parsed.type}` });
+        // Keep each panel's own historical date so shifting in hist mode stays on that date
+        targets.push({ p, sym: `${parsed.index}${parsed.expiry}${strike}${parsed.type}`, date: p._histDate || null });
     }
     if (!targets.length) { toast('No option panels to shift', 'warn'); return; }
     _shiftBusy = true;
     showLoadingBar();
     try {
         if (syncCharts) toggleSyncCharts();
+        // /api/batch is live-only — prefetch just the live panels; hist panels fetch
+        // individually with their date inside loadPanelsBatched (batches of 4)
+        const liveSyms = targets.filter(t => !t.date).map(t => t.sym);
         let prefetched = {};
-        try {
-            const res = await fetch('/api/batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: targets.map(t => t.sym), nocache: true }),
-            });
-            prefetched = await res.json();
-        } catch (e) {
-            console.warn('[Shift] Batch pre-fetch failed, panels will fetch individually:', e);
+        if (liveSyms.length) {
+            try {
+                const res = await fetch('/api/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: liveSyms, nocache: true }),
+                });
+                prefetched = await res.json();
+            } catch (e) {
+                console.warn('[Shift] Batch pre-fetch failed, panels will fetch individually:', e);
+            }
         }
-        const symByPanel = new Map(targets.map(t => [t.p, t.sym]));
-        await loadPanelsBatched(targets.map(t => t.p), p => symByPanel.get(p), true, prefetched);
-        saveViewState();
-        prefetchJumps(targets.map(t => t.sym));
+        const symByPanel  = new Map(targets.map(t => [t.p, t.sym]));
+        const dateByPanel = new Map(targets.map(t => [t.p, t.date]));
+        await loadPanelsBatched(targets.map(t => t.p), p => symByPanel.get(p), true, prefetched, p => dateByPanel.get(p));
+        // Hist symbols must not be persisted as the live layout (same rule as panelLoadSymbol)
+        if (targets.every(t => !t.date)) saveViewState();
+        const dates = [...new Set(targets.map(t => t.date || ''))];
+        dates.forEach(d => prefetchJumps(targets.filter(t => (t.date || '') === d).map(t => t.sym), d || null));
     } finally {
         _shiftBusy = false;
         hideLoadingBar();
