@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import boto3
 import requests as _requests
 from botocore.client import Config
+from boto3.s3.transfer import TransferConfig
 from config.credentials import (
     BACKBLAZE_KEY_ID, BACKBLAZE_APP_KEY,
     BACKBLAZE_ENDPOINT, BACKBLAZE_BUCKET,
@@ -55,7 +56,7 @@ def get_b2_client():
         endpoint_url=f'https://{BACKBLAZE_ENDPOINT}',
         aws_access_key_id=BACKBLAZE_KEY_ID,
         aws_secret_access_key=BACKBLAZE_APP_KEY,
-        config=Config(signature_version='s3v4'),
+        config=Config(signature_version='s3v4', connect_timeout=15, read_timeout=120),
     )
 
 
@@ -118,7 +119,8 @@ def download_file(s3, b2_key: str, local_path: Path, expected_md5=None):
         return True, 0, 'already-present'
 
     try:
-        s3.download_file(BACKBLAZE_BUCKET, b2_key, str(local_path))
+        s3.download_file(BACKBLAZE_BUCKET, b2_key, str(local_path),
+                         Config=TransferConfig(max_concurrency=1, multipart_chunksize=16*1024*1024))
         size = local_path.stat().st_size
 
         if expected_md5 and len(expected_md5) == 32:
@@ -173,10 +175,7 @@ def sync_dates(dates, tables, dry_run=False):
               f'threshold {DAILY_WARN_MB} MB')
         print(f'   B2 free tier allows ~1 GB/day downloads.')
         if not dry_run:
-            resp = input('   Continue anyway? (yes/no): ')
-            if resp.lower() != 'yes':
-                print('Aborted.')
-                return
+            print('   Proceeding (no interactive prompt in automated mode).')
 
     if dry_run:
         print('--- DRY RUN -- would download: ---')

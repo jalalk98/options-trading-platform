@@ -1561,8 +1561,9 @@ function isKnownSymbol(sym) {
     if (!sym) return false;
     if (Object.values(strikeMap).includes(sym)) return true;
     // In DuckDB/historical mode strikeMap only contains the loaded date's symbols,
-    // so the paired leg may be absent. Accept any symbol that looks like an option.
-    return /^(NIFTY|BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX)\d+(CE|PE)$/.test(sym);
+    // so the paired leg may be absent. Accept any symbol that looks like an option,
+    // matching the backend's _OPT_RE (YY + monthly MON3 or weekly M+DD + strike).
+    return /^(NIFTY|BANKNIFTY|MIDCPNIFTY|FINNIFTY|SENSEX)\d{2}([A-Z]{3}|\d{3})\d+(CE|PE)$/.test(sym);
 }
 
 /* ======================

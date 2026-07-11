@@ -76,7 +76,7 @@ def get_b2_client():
         endpoint_url=f'https://{BACKBLAZE_ENDPOINT}',
         aws_access_key_id=BACKBLAZE_KEY_ID,
         aws_secret_access_key=BACKBLAZE_APP_KEY,
-        config=Config(signature_version='s3v4'),
+        config=Config(signature_version='s3v4', connect_timeout=15, read_timeout=120),
     )
 
 
@@ -299,6 +299,7 @@ def main():
             capture_output=True,
             text=True,
             timeout=7200,  # 2 hours max
+            stdin=subprocess.DEVNULL,
         )
 
         if result.returncode == 0:

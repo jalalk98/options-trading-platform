@@ -218,25 +218,38 @@ def _write_sync_state(state: dict):
     except Exception:
         pass
 
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+            capture_output=True, text=True,
+        )
+        return str(pid) in result.stdout
+    except Exception:
+        return False
+
 def _run_sync_thread():
     try:
-        subprocess.run(
+        proc = subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
              "-File", r"D:\projects\options-trading-platform\scripts\run_daily_sync.ps1"],
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=1800,
         )
-        # Terminal state (done/error) is written by run_daily_sync.ps1 itself,
-        # so it survives server restarts during the sync.
+        # Store PID so trigger_sync can detect stale "running" state after crashes/restarts
+        _write_sync_state({"status": "running", "pid": proc.pid})
+        proc.wait()  # No timeout — run_daily_sync.ps1 writes "done"/"error" when finished
     except Exception:
-        # Only fires if PowerShell could not be launched at all.
         _write_sync_state({"status": "error"})
 
 @app.post("/api/sync")
 async def trigger_sync():
     state = _read_sync_state()
-    if state["status"] == "running":
-        return {"status": "running"}
+    if state.get("status") == "running":
+        pid = state.get("pid")
+        if pid and _is_pid_alive(pid):
+            return {"status": "running"}
+        # Process is gone but state wasn't updated — reset and start fresh
+        _write_sync_state({"status": "idle"})
     _write_sync_state({"status": "running"})
     threading.Thread(target=_run_sync_thread, daemon=True).start()
     return {"status": "started"}
