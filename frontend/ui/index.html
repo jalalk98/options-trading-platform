@@ -1349,27 +1349,17 @@
     <div id="topbarRight">
         <div id="loadingBar"></div>
         <!-- Layout picker button -->
-        <!-- SL / order action group -->
-        <div style="display:flex;align-items:center;gap:3px;background:#0f172a;border:1px solid #1e293b;border-radius:5px;padding:2px 4px;">
-            <button id="checkSlBtn" title="Reconcile SL orders against open positions — place any missing SL orders" onclick="checkSlOrders()" style="font-size:11px;padding:3px 8px;background:#0c4a6e;border:1px solid #0284c7;border-radius:4px;cursor:pointer;color:#7dd3fc;white-space:nowrap;">⚡ Check SL</button>
-            <div style="width:1px;height:16px;background:#1e293b;margin:0 1px;"></div>
-            <button id="cancelAllOrdersBtn" title="Cancel ALL pending orders on the account (OPEN + TRIGGER PENDING)" onclick="cancelAllOrders()" style="font-size:11px;padding:3px 8px;background:#422006;border:1px solid #d97706;border-radius:4px;cursor:pointer;color:#fbbf24;white-space:nowrap;">✕ Cancel All</button>
-            <button id="closeAllBtn" title="Close ALL open positions on the account" onclick="closeAllPositions()" style="font-size:11px;padding:3px 8px;background:#450a0a;border:1px solid #dc2626;border-radius:4px;cursor:pointer;color:#fca5a5;white-space:nowrap;">✕ Close All</button>
-        </div>
-        <!-- Utility group -->
-        <div style="display:flex;align-items:center;gap:3px;background:#0f172a;border:1px solid #1e293b;border-radius:5px;padding:2px 4px;">
-            <button id="resetPositionsBtn" title="Reset position cache — use before placing order from mobile" onclick="resetPositionCache()" style="font-size:11px;padding:3px 8px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#94a3b8;white-space:nowrap;">↺ Reset Cache</button>
-            <div style="width:1px;height:16px;background:#1e293b;margin:0 1px;"></div>
-            <button id="jumpToggleBtn" onclick="toggleJumpMarkers()" title="Toggle jump circle markers on/off — defaults OFF each session" style="font-size:11px;padding:3px 8px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#94a3b8;white-space:nowrap;">Jumps: OFF</button>
-            <div style="width:1px;height:16px;background:#1e293b;margin:0 1px;"></div>
-            <button id="refreshAutoPopBtn"
-                onclick="refreshAutoPopulate()"
-                title="Select an auto populate mode first"
-                disabled
-                style="padding:3px 8px;border-radius:4px;border:1px solid #374151;background:#1f2937;color:#94a3b8;cursor:not-allowed;font-size:11px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap;transition:all 0.2s;">
-                🔄 Refresh Panels
-            </button>
-        </div>
+        <button id="checkSlBtn" title="Reconcile SL orders against open positions — place any missing SL orders" onclick="checkSlOrders()" style="font-size:10px;padding:2px 6px;background:#0c4a6e;border:1px solid #0284c7;border-radius:4px;cursor:pointer;color:#7dd3fc;white-space:nowrap;">⚡ Check SL</button>
+        <button id="cancelAllOrdersBtn" title="Cancel ALL pending orders on the account (OPEN + TRIGGER PENDING)" onclick="cancelAllOrders()" style="font-size:10px;padding:2px 6px;background:#422006;border:1px solid #d97706;border-radius:4px;cursor:pointer;color:#fbbf24;white-space:nowrap;">✕ Cancel All</button>
+        <button id="closeAllBtn" title="Close ALL open positions on the account" onclick="closeAllPositions()" style="font-size:10px;padding:2px 6px;background:#450a0a;border:1px solid #dc2626;border-radius:4px;cursor:pointer;color:#fca5a5;white-space:nowrap;">✕ Close All</button>
+        <button id="jumpToggleBtn" onclick="toggleJumpMarkers()" title="Toggle jump circle markers on/off — defaults OFF each session" style="font-size:10px;padding:2px 6px;background:#1f2937;border:1px solid #374151;border-radius:4px;cursor:pointer;color:#94a3b8;white-space:nowrap;">Jumps: OFF</button>
+        <button id="refreshAutoPopBtn"
+            onclick="refreshAutoPopulate()"
+            title="Select an auto populate mode first"
+            disabled
+            style="padding:2px 6px;border-radius:4px;border:1px solid #374151;background:#1f2937;color:#94a3b8;cursor:not-allowed;font-size:10px;display:inline-flex;align-items:center;gap:2px;white-space:nowrap;transition:all 0.2s;">
+            🔄 Refresh
+        </button>
         <button id="layoutBtn" title="Select layout" onclick="toggleLayoutPopup(event)">
             <svg width="14" height="12" viewBox="0 0 14 12" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="0" y="0" width="6" height="5" rx="0.5" fill="currentColor"/>
@@ -1946,7 +1936,7 @@ function createPanel(id) {
     let _rsnipConfig = {
         spike_distance: 12, spike_window_secs: 1, recovery_buffer: 10, sl_buffer: 3,
         spike_timeout_secs: 4, qty: 10, cooldown_secs: 60,
-        auto_increment_sl: false, increment_step: 2, increment_interval_secs: 0.25,
+        auto_increment_sl: true, increment_step: 2, increment_interval_secs: 0.25,
     };
 
     // ── DOM ───────────────────────────────────────

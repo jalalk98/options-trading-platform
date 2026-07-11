@@ -1438,20 +1438,19 @@ async def cancel_all_orders():
             failed.append({"order_id": oid, "symbol": o.get("tradingsymbol"), "error": str(e)})
             logger.warning(f"cancel-all-orders: failed to cancel {oid}: {e}")
 
-    # Remove cancelled order IDs from sl_state so cached state stays accurate
+    # Remove cancelled order IDs from sl_state so cached state stays accurate.
+    # When all SL orders are gone, preserve price/side/exchange/trigger_buffer so
+    # Check SL can still use the user's SL line price instead of falling back to default dist.
     for sym, state in list(sl_state.items()):
         old_sl = state.get("sl_orders", [])
         new_sl = [o for o in old_sl if o["order_id"] not in cancelled_ids]
         if len(new_sl) != len(old_sl):
-            if new_sl:
-                sl_state[sym] = {
-                    **state,
-                    "sl_orders": new_sl,
-                    "order_ids": [o["order_id"] for o in new_sl],
-                    "order_id":  new_sl[0]["order_id"],
-                }
-            else:
-                sl_state.pop(sym, None)
+            sl_state[sym] = {
+                **state,
+                "sl_orders": new_sl,
+                "order_ids": [o["order_id"] for o in new_sl],
+                "order_id":  new_sl[0]["order_id"] if new_sl else None,
+            }
 
     logger.info(f"cancel-all-orders done: {len(cancelled)} cancelled, {len(failed)} failed")
     return {
