@@ -913,6 +913,35 @@
         .panel-invert-btn:hover { opacity: 1; }
         .panel-invert-btn.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; opacity: 1; }
 
+        /* ── Strike shift arrows (first panel only) ── */
+        .panel-shift-bar {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 10;
+            display: flex;
+            gap: 4px;
+        }
+        .panel-shift-btn {
+            pointer-events: all;
+            height: 20px;
+            padding: 0 8px;
+            border-radius: 10px;
+            border: 2px solid #fff;
+            background: #0f172a;
+            color: #fff;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s;
+            font-size: 10px;
+            line-height: 1;
+        }
+        .panel-shift-btn:hover { opacity: 1; }
+        .panel-shift-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
         /* ── Ghost spike detector ── */
         .ghost-det-btn {
             pointer-events: all;
@@ -1977,6 +2006,22 @@ function createPanel(id) {
     topBarEl.appendChild(tradeBadgeEl);
     topBarEl.appendChild(refreshBtn);
     chartAreaEl.appendChild(topBarEl);
+
+    // Strike-shift arrows — first panel only; shifts every option panel one strike step
+    if (id === 0) {
+        const shiftBarEl = document.createElement('div');
+        shiftBarEl.className = 'panel-shift-bar';
+        [['◀', -1, 'Shift all panels to previous strike'],
+         ['▶', +1, 'Shift all panels to next strike']].forEach(([txt, dir, title]) => {
+            const b = document.createElement('button');
+            b.className = 'panel-shift-btn';
+            b.textContent = txt;
+            b.title = title;
+            b.addEventListener('click', e => { e.stopPropagation(); shiftAllPanels(dir); });
+            shiftBarEl.appendChild(b);
+        });
+        chartAreaEl.appendChild(shiftBarEl);
+    }
 
     const bottomBarEl = document.createElement('div');
     bottomBarEl.className = 'panel-bottom-bar';
@@ -4495,6 +4540,60 @@ async function refreshAllPanels() {
         await loadPanelsBatched(activePanels, p => p.symbol, true, prefetched);
     } finally {
         btn.classList.remove('spinning');
+        hideLoadingBar();
+    }
+}
+
+/* ======================
+   SHIFT ALL PANELS BY ONE STRIKE
+====================== */
+const SHIFT_STEP = { NIFTY: 50, SENSEX: 100, BANKNIFTY: 100, MIDCPNIFTY: 25 };
+
+// Parse an option symbol like NIFTY2631723300PE → { index, expiry, strike, type }.
+// Returns null for bare index symbols (NIFTY, SENSEX, …) so index-chart panels are skipped.
+function parseOptionSymbol(sym) {
+    for (const idx of ['BANKNIFTY', 'MIDCPNIFTY', 'SENSEX', 'NIFTY']) {
+        if (!sym.startsWith(idx)) continue;
+        // Expiry is always 5 chars after index (weekly YYMDD or monthly YYMMM)
+        const m = sym.slice(idx.length).match(/^(.{5})(\d+)(CE|PE)$/);
+        return m ? { index: idx, expiry: m[1], strike: parseInt(m[2], 10), type: m[3] } : null;
+    }
+    return null;
+}
+
+let _shiftBusy = false;
+async function shiftAllPanels(dir) {
+    if (_shiftBusy) return;
+    const targets = [];
+    for (const p of panels) {
+        if (!p.symbol) continue;
+        const parsed = parseOptionSymbol(p.symbol);
+        if (!parsed) continue; // index chart (last panel in single-index modes) stays put
+        const strike = parsed.strike + dir * SHIFT_STEP[parsed.index];
+        targets.push({ p, sym: `${parsed.index}${parsed.expiry}${strike}${parsed.type}` });
+    }
+    if (!targets.length) { toast('No option panels to shift', 'warn'); return; }
+    _shiftBusy = true;
+    showLoadingBar();
+    try {
+        if (syncCharts) toggleSyncCharts();
+        let prefetched = {};
+        try {
+            const res = await fetch('/api/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbols: targets.map(t => t.sym), nocache: true }),
+            });
+            prefetched = await res.json();
+        } catch (e) {
+            console.warn('[Shift] Batch pre-fetch failed, panels will fetch individually:', e);
+        }
+        const symByPanel = new Map(targets.map(t => [t.p, t.sym]));
+        await loadPanelsBatched(targets.map(t => t.p), p => symByPanel.get(p), true, prefetched);
+        saveViewState();
+        prefetchJumps(targets.map(t => t.sym));
+    } finally {
+        _shiftBusy = false;
         hideLoadingBar();
     }
 }
