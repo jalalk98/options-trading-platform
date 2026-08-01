@@ -1,0 +1,83 @@
+{
+ "SENSEX77600-BOTH-165126": {
+  "id": "SENSEX77600-BOTH-165126",
+  "kind": "straddle",
+  "index": "SENSEX",
+  "strike": 77600,
+  "expiry": "26716",
+  "date": "2026-07-11",
+  "created": "2026-07-11T16:51:26.775905+05:30",
+  "status": "failed",
+  "close_reason": "entry_failed",
+  "qty": 20,
+  "buffer": 0.1,
+  "chase_secs": 4.0,
+  "disaster_pct": 0.6,
+  "combined_entry": null,
+  "combined_sl": null,
+  "legs": {
+   "CE": {
+    "symbol": "SENSEX2671677600CE",
+    "qty": 20,
+    "entry_orders": [],
+    "filled_qty": 0,
+    "avg_price": null,
+    "sl_orders": [],
+    "sl_level": null,
+    "exit_orders": [],
+    "closed": false,
+    "chased": false
+   },
+   "PE": {
+    "symbol": "SENSEX2671677600PE",
+    "qty": 20,
+    "entry_orders": [],
+    "filled_qty": 0,
+    "avg_price": null,
+    "sl_orders": [],
+    "sl_level": null,
+    "exit_orders": [],
+    "closed": false,
+    "chased": false
+   }
+  },
+  "logs": [
+   "16:51:26 CE entry error: Markets are closed right now. Use GTT for placing long standing orders instead. [Read more.](https://support.zerodha.com/category/trading-and-markets/gtt/articles/what-is-the-good-till-triggered-gtt-feature) (placed: [])",
+   "16:51:26 PE entry error: Markets are closed right now. Use GTT for placing long standing orders instead. [Read more.](https://support.zerodha.com/category/trading-and-markets/gtt/articles/what-is-the-good-till-triggered-gtt-feature) (placed: [])"
+  ]
+ },
+ "SENSEX77600-PE-165140": {
+  "id": "SENSEX77600-PE-165140",
+  "kind": "leg",
+  "index": "SENSEX",
+  "strike": 77600,
+  "expiry": "26716",
+  "date": "2026-07-11",
+  "created": "2026-07-11T16:51:40.139630+05:30",
+  "status": "failed",
+  "close_reason": "entry_failed",
+  "qty": 20,
+  "buffer": 0.1,
+  "chase_secs": 4.0,
+  "disaster_pct": 0.6,
+  "combined_entry": null,
+  "combined_sl": null,
+  "legs": {
+   "PE": {
+    "symbol": "SENSEX2671677600PE",
+    "qty": 20,
+    "entry_orders": [],
+    "filled_qty": 0,
+    "avg_price": null,
+    "sl_orders": [],
+    "sl_level": null,
+    "exit_orders": [],
+    "closed": false,
+    "chased": false
+   }
+  },
+  "logs": [
+   "16:51:40 PE entry error: Markets are closed right now. Use GTT for placing long standing orders instead. [Read more.](https://support.zerodha.com/category/trading-and-markets/gtt/articles/what-is-the-good-till-triggered-gtt-feature) (placed: [])"
+  ]
+ }
+}

@@ -17,6 +17,7 @@ INDEX_DEFINITIONS = [
     {"exchange_sym": "NSE:NIFTY FIN SERVICE", "symbol": "FINNIFTY"},
     {"exchange_sym": "NSE:NIFTY MID SELECT",  "symbol": "MIDCPNIFTY"},
     {"exchange_sym": "NSEIX:GIFT NIFTY",      "symbol": "GIFTNIFTY"},
+    {"exchange_sym": "NSE:INDIA VIX",         "symbol": "INDIAVIX"},
 ]
 
 from kiteconnect import KiteConnect
@@ -113,7 +114,7 @@ async def main():
 
     all_tokens = []
 
-    # ── Register and subscribe to the 5 index instruments ──────────────────
+    # ── Register and subscribe to the index instruments ────────────────────
     logger.info("Resolving index instrument tokens via LTP call")
     try:
         ltp_data = kite.ltp([d["exchange_sym"] for d in INDEX_DEFINITIONS])

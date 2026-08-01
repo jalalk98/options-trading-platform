@@ -202,8 +202,9 @@ class KiteConnect_custom(object):
         """Set the `access_token` received after a successful authentication."""
         self.access_token = access_token
 
-    # def _user_agent(self):
-    #     return (__title__ + "-python/").capitalize() + __version__
+    def _user_agent(self):
+        # Same UA string the hardcoded order methods send
+        return "Kiteconnect-python/5.0.1"
 
     async def place_order_custom(self,
                 variety,
@@ -237,6 +238,28 @@ class KiteConnect_custom(object):
     async def _post_custom(self, route, url_args=None, params=None, is_json=False, query_params=None):
         """Alias for sending a POST request."""
         return await self._request_custom(route, "POST", url_args=url_args, params=params, is_json=is_json, query_params=query_params)
+
+    async def get_user_margins(self, segment=None):
+        """Account balance and cash margin details (all segments or one)."""
+        if segment:
+            return await self._request_custom("user.margins.segment", "GET",
+                                              url_args={"segment": segment})
+        return await self._request_custom("user.margins", "GET")
+
+    async def basket_order_margins(self, orders, consider_positions=True):
+        """Required margin for a basket of orders placed together.
+
+        The response's "final" block reflects the combined exposure, so a
+        hedged short reports the post-hedge-benefit margin.
+        orders: list of dicts with exchange, tradingsymbol, transaction_type,
+        variety, product, order_type, quantity, price, trigger_price.
+        """
+        return await self._post_custom(
+            "order.margins.basket",
+            params=orders,
+            is_json=True,
+            query_params={"consider_positions": "true" if consider_positions else "false"},
+        )
     
 
     async def _request_custom(self, route, method, url_args=None, params=None, is_json=False, query_params=None):

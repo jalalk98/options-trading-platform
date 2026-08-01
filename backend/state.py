@@ -39,3 +39,9 @@ ghost_detector_state: dict = {}
 # Set by the REST start/stop endpoints; read by the frontend via GET /api/reverse-snipper/active.
 # reverse_snipper_state[symbol] = config dict when active, absent when stopped.
 reverse_snipper_state: dict = {}
+
+# Straddle popup positions — pos_id → position dict (structure documented in
+# backend/services/straddle_monitor.py). Mutated by the /api/straddle endpoints
+# and the monitor/entry tasks; persisted to data/straddle_positions.json via
+# straddle_monitor.save_positions() so open positions survive a server restart.
+straddle_positions: dict = {}

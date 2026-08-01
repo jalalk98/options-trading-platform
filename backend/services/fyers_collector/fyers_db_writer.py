@@ -8,7 +8,10 @@ Mirrors the semantics of backend/services/db_writer.py:
   - BATCH_SIZE = 5, FLUSH_INTERVAL ≈ 0.07s (same as Zerodha writer)
   - ACK Redis messages only after successful DB commit
   - ON CONFLICT DO NOTHING (stream_id as idempotency key)
-  - Also UPSERTs display_symbol into tracked_symbols so /api/strikes shows FY: entries
+
+FY: display symbols are deliberately NOT written to tracked_symbols: that table
+feeds the UI dropdown / ATM resolver, and panels must only ever get Zerodha
+symbols. FY: charts remain reachable via the FY:-aware history endpoints.
 
 DDL is created at startup (CREATE TABLE / INDEX IF NOT EXISTS).
 The fyers_ticks table is NOT partitioned — 8 symbols × test period = tiny table.
@@ -17,10 +20,8 @@ The fyers_ticks table is NOT partitioned — 8 symbols × test period = tiny tab
 import asyncio
 import json
 import logging
-import re
 import sys
-from datetime import datetime, date, timedelta, timezone
-from typing import Optional
+from datetime import datetime
 
 import asyncpg
 
@@ -86,60 +87,6 @@ INSERT INTO {FYERS_DB_TABLE} (
 )
 ON CONFLICT DO NOTHING
 """
-
-# ── Tracked symbols UPSERT (FY:-prefixed display_symbol → existing dropdown) ─
-
-_TRACKED_SYM_SQL = """
-INSERT INTO tracked_symbols (symbol, strike, option_type, expiry_date)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (symbol) DO NOTHING
-"""
-
-# ── Symbol parser for tracked_symbols insert ─────────────────────────────────
-
-_MONTH_MAP = {m: i for i, m in enumerate(
-    ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"], 1
-)}
-_OPT_RE = re.compile(
-    r"^(?:FY:)?(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)"
-    r"(\d{2})"
-    r"([A-Z]{3}|[1-9OND]\d{2})"
-    r"(\d+)"
-    r"(CE|PE)$"
-)
-
-# Weekly date code: single-char month (1-9, O=Oct, N=Nov, D=Dec) + 2-digit day.
-_WEEKLY_MONTH = {"O": 10, "N": 11, "D": 12}
-
-
-def _parse_display_symbol(display_symbol: str) -> Optional[tuple]:
-    """
-    Parse FY:-prefixed display symbol into (strike, option_type, expiry_date).
-    Returns None if parsing fails — never raises, so a bad symbol can only
-    skip its tracked_symbols upsert, not block the tick insert batch.
-    """
-    try:
-        base = display_symbol.removeprefix("FY:")
-        m = _OPT_RE.match(base)
-        if not m:
-            return None
-        _, yy, date_code, strike_s, opt_type = m.groups()
-        year   = 2000 + int(yy)
-        strike = float(strike_s)
-
-        if date_code.isalpha():
-            month  = _MONTH_MAP.get(date_code.upper(), 1)
-            expiry = date(year, month, 28)  # approximate; good enough for tracking
-        else:
-            month  = _WEEKLY_MONTH.get(date_code[0]) or int(date_code[0])
-            expiry = date(year, month, int(date_code[1:]))
-
-        return (strike, opt_type, expiry)
-    except Exception:
-        logger.warning("Unparseable display_symbol %r — skipping tracked_symbols upsert",
-                       display_symbol)
-        return None
-
 
 # ── Pool + consumer group setup ───────────────────────────────────────────────
 
@@ -258,24 +205,10 @@ async def flush(pool: asyncpg.Pool, buffer: list) -> None:
         except Exception as e:
             logger.warning("Row build error (skipping): %s", e)
 
-    # Build tracked_symbols records (de-duplicated)
-    seen_syms: set[str] = set()
-    tracked_records = []
-    for row in valid_buffer:
-        disp = row.get("display_symbol", "")
-        if disp and disp not in seen_syms:
-            seen_syms.add(disp)
-            parsed = _parse_display_symbol(disp)
-            if parsed:
-                strike, opt_type, expiry = parsed
-                tracked_records.append((disp, strike, opt_type, expiry))
-
     async with pool.acquire() as conn:
         async with conn.transaction():
             if records:
                 await conn.executemany(_INSERT_SQL, records)
-            if tracked_records:
-                await conn.executemany(_TRACKED_SYM_SQL, tracked_records)
 
     # ACK only after successful commit
     valid_ids = [r["stream_id"] for r in valid_buffer if r.get("stream_id")]

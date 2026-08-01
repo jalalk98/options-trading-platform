@@ -17,11 +17,13 @@ from backend.api.strikes import router as strikes_router, prewarm_strikes_cache,
 from backend.api.sl import router as sl_router
 from backend.api.hedge import router as hedge_router
 from backend.api.journal import router as journal_router
+from backend.api.straddle import router as straddle_router
 from backend.api.streaming import manager
 from fastapi import WebSocketDisconnect
 from fastapi import Body
 from backend.services import ghost_detector
 from backend.services import reverse_snipper
+from backend.services import straddle_monitor
 
     
 app = FastAPI()
@@ -30,6 +32,7 @@ app.include_router(strikes_router, prefix="/api")
 app.include_router(sl_router, prefix="/api")
 app.include_router(hedge_router, prefix="/api")
 app.include_router(journal_router, prefix="/api")
+app.include_router(straddle_router, prefix="/api")
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
@@ -233,6 +236,9 @@ async def startup():
 
     # Inject DB pool into reverse_snipper so it can persist trades
     reverse_snipper.set_pool(app.state.pool)
+
+    # Restore today's straddle positions (restarts open-straddle monitors)
+    straddle_monitor.load_positions()
 
     # B2 manifest is slow (blocking S3 call) — skip during market hours to
     # avoid stalling the event loop while charts are actively being used.

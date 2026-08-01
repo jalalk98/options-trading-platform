@@ -62,14 +62,18 @@ def extract_label(comment, cmd):
     if "chart_investigation_alert" in cmd: return "Chart investigation alert"
     if "archive_to_b2" in cmd and "--phase export" in cmd: return "Archive — export to B2"
     if "archive_to_b2" in cmd and "--phase drop"   in cmd: return "Archive — drop old partitions"
+    if "archive_cron_gate.sh export" in cmd: return "Archive — export to B2"
+    if "archive_cron_gate.sh drop"   in cmd: return "Archive — drop old partitions"
     if "create_daily_partition"    in cmd: return "Create daily partitions"
+    if "check_tomorrow_holiday"    in cmd: return "Check tomorrow holiday"
     if "remind_resume"             in cmd: return "Resume reminder"
     if "VACUUM ANALYZE" in cmd and "gap_ticks" in cmd: return "VACUUM ANALYZE gap_ticks"
     if "VACUUM ANALYZE"            in cmd: return "VACUUM ANALYZE (all tables)"
     if "ANALYZE candles_5s"        in cmd: return "ANALYZE candles_5s"
     if "pg_stat_statements_reset"  in cmd: return "pg_stat_statements reset"
-    m = re.search(r"([\w_-]+)\.(sh|py)\b", cmd)
-    if m: return m.group(1).replace("_", " ").title()
+    for m in re.finditer(r"([\w_-]+)\.(sh|py)\b", cmd):
+        if "cron_gate" not in m.group(1):
+            return m.group(1).replace("_", " ").title()
     return cmd[:45]
 
 raw  = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout.splitlines()
@@ -161,7 +165,7 @@ LABEL_TO_JOB = {
     "Expiry alert":                   ("expiry_alert",        "🗓 Expiry Alert"),
     "ANALYZE candles_5s":             ("analyze_candles",     "📈 ANALYZE candles_5s"),
     "Stop trading session":           ("stop_trading",        "⏹ Stop Trading ⚠️"),
-    "Check Tomorrow Holiday":         ("check_holiday",       "🗓 Check Tomorrow Holiday"),
+    "Check tomorrow holiday":         ("check_holiday",       "🗓 Check Tomorrow Holiday"),
     "Daily performance report":       ("perf_report",         "📈 Performance Report"),
     "Partition vacuum":               ("partition_vacuum",    "🧹 Partition VACUUM"),
     "Chart investigation":            ("chart_investigation", "🔍 Chart Investigation"),
@@ -171,6 +175,9 @@ LABEL_TO_JOB = {
     "Create daily partitions":        ("create_partitions",   "💾 Create Partitions"),
     "Weekly disk cleanup":            ("disk_cleanup",        "🗑 Disk Cleanup ⚠️"),
     "Weekly VACUUM ANALYZE":          ("vacuum_weekly",       "🧹 Weekly VACUUM ANALYZE ⚠️"),
+    "Pre-session health check":       ("pre_session_check",   "🩺 Pre-Session Health Check"),
+    "Trade Journal auto-sync":        ("journal_autosync",    "📒 Trade Journal Sync"),
+    "Order API connectivity test":    ("order_api_check",     "🔌 Order API Check"),
 }
 
 def section_header(title):

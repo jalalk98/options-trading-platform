@@ -177,24 +177,6 @@ JOBS = {
         "confirm": True,
         "env":     {"PGPASSWORD": "MustafaHasnain@123", "PGOPTIONS": "-c statement_timeout=0"},
     },
-    "pre_session_check": {
-        "label":   "🩺 Pre-Session Health Check",
-        "cmd":     ["/bin/bash", os.path.join(SCRIPT_DIR, "pre_session_check.sh")],
-        "timeout": 120,
-        "confirm": False,
-    },
-    "journal_autosync": {
-        "label":   "📒 Trade Journal Sync",
-        "cmd":     ["/bin/bash", os.path.join(SCRIPT_DIR, "sync_trade_journal.sh")],
-        "timeout": 120,
-        "confirm": False,
-    },
-    "order_api_check": {
-        "label":   "🔌 Order API Check",
-        "cmd":     ["/bin/bash", os.path.join(SCRIPT_DIR, "order_api_check.sh")],
-        "timeout": 60,
-        "confirm": False,
-    },
 }
 
 # Pending confirmations: chat_id (str) -> job_key (str)

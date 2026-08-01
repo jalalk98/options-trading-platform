@@ -44,6 +44,7 @@ async def _query_strikes(pool):
             SELECT symbol, strike, option_type, expiry_date
             FROM tracked_symbols
             WHERE expiry_date >= CURRENT_DATE
+              AND symbol NOT LIKE 'FY:%'
             ORDER BY expiry_date ASC, strike
         """)
     return [
@@ -106,7 +107,7 @@ async def _query_atm_symbol(conn, index: str = "NIFTY"):
     if index == "SENSEX":
         sym_filter = "symbol LIKE 'SENSEX%'"
     else:
-        sym_filter = "symbol NOT LIKE 'SENSEX%' AND symbol NOT LIKE 'BANKNIFTY%'"
+        sym_filter = "symbol NOT LIKE 'SENSEX%' AND symbol NOT LIKE 'BANKNIFTY%' AND symbol NOT LIKE 'FY:%'"
 
     # Step 1: get symbols for nearest expiry from tracked_symbols (fast)
     symbols = await conn.fetch(f"""
@@ -1599,6 +1600,154 @@ async def place_sl_order(order: SLOrder):
 # ═══════════════════════════════════════════════════════════════
 # ARCHIVE MANAGEMENT ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
+
+# ── Archive cron toggles ─────────────────────────────────────
+# Read/written by the UI Settings menu; scripts/archive_cron_gate.sh
+# checks this file before letting the 02:00 export / 06:45 drop crons run.
+_ARCHIVE_CONTROL_FILE = Path(__file__).parent.parent.parent / 'config' / 'archive_control.json'
+_ARCHIVE_TOGGLE_KEYS  = ('data_archival', 'delete_archive_data')
+
+
+def _read_archive_toggles() -> dict:
+    try:
+        raw = json.loads(_ARCHIVE_CONTROL_FILE.read_text())
+    except Exception:
+        raw = {}
+    return {k: raw.get(k) is True for k in _ARCHIVE_TOGGLE_KEYS}
+
+
+@router.get("/archive/toggles")
+async def get_archive_toggles():
+    return _read_archive_toggles()
+
+
+@router.post("/archive/toggles")
+async def set_archive_toggles(payload: dict):
+    """Body: any subset of {"data_archival": bool, "delete_archive_data": bool}."""
+    try:
+        toggles = _read_archive_toggles()
+        for key in _ARCHIVE_TOGGLE_KEYS:
+            if key in payload:
+                toggles[key] = payload[key] is True
+        _ARCHIVE_CONTROL_FILE.write_text(json.dumps(toggles, indent=2) + '\n')
+        logger.info(f"archive toggles updated: {toggles}")
+        return {"success": True, **toggles}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── Cron job toggles & manual run ────────────────────────────
+# Every crontab job line is prefixed with scripts/cron_gate.sh <key>, which
+# consults config/cron_control.json (missing key = enabled). The UI Settings
+# menu lists the jobs, flips the flags, and can launch a job on demand.
+_CRON_CONTROL_FILE = Path(__file__).parent.parent.parent / 'config' / 'cron_control.json'
+_CRON_GATE_RE = re.compile(
+    r'^(\S+ \S+ \S+ \S+ \S+) '
+    r'/bin/bash \S*/scripts/cron_gate\.sh (\w+) && \{ (.+); \}$'
+)
+
+# Manual-run commands for the archive jobs, which sit behind their own gate
+# script (archive_cron_gate.sh). Run-now bypasses the toggle — clicking the
+# button is explicit intent.
+_PROJECT_DIR = Path(__file__).parent.parent.parent
+_ARCHIVE_RUN_COMMANDS = {
+    'archive_export': (
+        f'{_PROJECT_DIR}/venv/bin/python3 {_PROJECT_DIR}/scripts/archive_to_b2_v3.py '
+        f'--phase export >> /home/ubuntu/archive_export.log 2>&1'
+    ),
+    'archive_drop': (
+        f'{_PROJECT_DIR}/venv/bin/python3 {_PROJECT_DIR}/scripts/archive_to_b2_v3.py '
+        f'--phase drop >> /home/ubuntu/archive_drop.log 2>&1'
+    ),
+}
+
+
+def _read_cron_control() -> dict:
+    try:
+        return json.loads(_CRON_CONTROL_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _parse_cron_jobs() -> dict:
+    """Parse the user crontab into {key: {label, schedules, command, comment}}."""
+    out = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=5)
+    jobs = {}
+    last_comment = ''
+    for line in out.stdout.splitlines():
+        s = line.strip()
+        if not s:
+            last_comment = ''
+            continue
+        if s.startswith('#'):
+            last_comment = s.lstrip('# ').strip()
+            continue
+        m = _CRON_GATE_RE.match(s)
+        if not m:
+            continue
+        sched, key, cmd = m.groups()
+        job = jobs.setdefault(key, {
+            'key':       key,
+            'label':     key.replace('_', ' ').title(),
+            'schedules': [],
+            'command':   cmd,
+            'comment':   last_comment,
+        })
+        job['schedules'].append(sched)
+    return jobs
+
+
+@router.get("/cron/jobs")
+async def get_cron_jobs():
+    try:
+        control = _read_cron_control()
+        jobs    = _parse_cron_jobs()
+        return {"jobs": [
+            {**job, "enabled": control.get(key, True) is not False}
+            for key, job in sorted(jobs.items())
+        ]}
+    except Exception as e:
+        return {"jobs": [], "error": str(e)}
+
+
+@router.post("/cron/toggle")
+async def toggle_cron_job(payload: dict):
+    """Body: {"key": "<job_key>", "enabled": bool}"""
+    try:
+        key = payload.get("key")
+        if key not in _parse_cron_jobs():
+            return {"success": False, "error": f"unknown job: {key}"}
+        control      = _read_cron_control()
+        control[key] = payload.get("enabled") is True
+        _CRON_CONTROL_FILE.write_text(json.dumps(control, indent=2, sort_keys=True) + '\n')
+        logger.info(f"cron toggle: {key} -> {control[key]}")
+        return {"success": True, "key": key, "enabled": control[key]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/cron/run")
+async def run_cron_job(payload: dict):
+    """Run a scheduled job now, exactly as cron would (minus the toggle gate)."""
+    try:
+        key = payload.get("key")
+        cmd = _ARCHIVE_RUN_COMMANDS.get(key)
+        if cmd is None:
+            job = _parse_cron_jobs().get(key)
+            if not job:
+                return {"success": False, "error": f"unknown job: {key}"}
+            cmd = job['command']
+        subprocess.Popen(
+            ['/bin/bash', '-c', cmd],
+            cwd    = '/home/ubuntu',
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        )
+        logger.info(f"cron manual run: {key}")
+        return {"success": True, "key": key}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 # ── GET /api/archive/config ──────────────────────────────────
 @router.get("/archive/config")
