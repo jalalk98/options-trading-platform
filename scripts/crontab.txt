@@ -1,0 +1,85 @@
+# Trading platform scheduled jobs
+
+# Daily VACUUM ANALYZE — every weekday 7:10 AM
+10 7 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh daily_vacuum_analyze && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c "VACUUM ANALYZE gap_ticks;" -c "VACUUM ANALYZE candles_5s;" -c "VACUUM ANALYZE gap_events;" -c "VACUUM ANALYZE conviction_signals;" >> /home/ubuntu/vacuum_analyze.txt 2>&1 && /home/ubuntu/projects/options-trading-platform/notify.sh "🧹 Daily VACUUM ANALYZE complete. gap_ticks index stats refreshed." || /home/ubuntu/projects/options-trading-platform/notify.sh "❌ Daily VACUUM ANALYZE FAILED. Chart query performance may degrade. Check ~/vacuum_analyze.txt"; }
+
+# Instrument update — every weekday 7:05 AM (after token refresh)
+5 7 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh instrument_update && { cd /home/ubuntu/projects/options-trading-platform && /home/ubuntu/projects/options-trading-platform/venv/bin/python run_instrument_update.py >> /home/ubuntu/instrument_update.txt 2>&1; }
+
+# Token refresh — every weekday 7:00 AM
+0 7 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh token_refresh && { /bin/bash /home/ubuntu/run_refresh_token.sh >> /home/ubuntu/token_refresh.txt 2>&1; }
+
+# Start trading session — every weekday 9:08 AM
+8 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh start_trading && { /bin/bash /home/ubuntu/projects/options-trading-platform/start_trading.sh >> /home/ubuntu/trading_start.txt 2>&1; }
+
+# Stop trading session — every weekday 3:30 PM
+40 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh stop_trading && { /bin/bash /home/ubuntu/projects/options-trading-platform/stop_trading.sh >> /home/ubuntu/trading_stop.txt 2>&1; }
+
+# Check tomorrow holiday — every weekday 3:35 PM
+41 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh holiday_check && { /bin/bash /home/ubuntu/projects/options-trading-platform/check_tomorrow_holiday.sh >> /home/ubuntu/holiday_check.txt 2>&1; }
+
+# Daily summary — every weekday 3:40 PM
+43 15 * * * /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh daily_summary && { /bin/bash /home/ubuntu/projects/options-trading-platform/daily_summary.sh >> /home/ubuntu/daily_summary.txt 2>&1; }
+# Resume reminder — every day at 9:30 PM
+30 21 * * * /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh resume_reminder && { /bin/bash /home/ubuntu/projects/options-trading-platform/remind_resume.sh >> /home/ubuntu/remind_resume.txt 2>&1; }
+# Weekly schedule summary — every Sunday at 10:30 PM
+30 22 * * 0 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh weekly_schedule && { /bin/bash /home/ubuntu/projects/options-trading-platform/weekly_schedule.sh >> /home/ubuntu/weekly_schedule.txt 2>&1; }
+# Watchdog — check tick_collector every 5 min during trading hours Mon–Fri
+15-59/5 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh tick_collector_watchdog && { /bin/bash /home/ubuntu/projects/options-trading-platform/watchdog_tick_collector.sh >> /home/ubuntu/watchdog.txt 2>&1; }
+*/5 10-15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh tick_collector_watchdog && { /bin/bash /home/ubuntu/projects/options-trading-platform/watchdog_tick_collector.sh >> /home/ubuntu/watchdog.txt 2>&1; }
+
+# Weekly disk cleanup — every Sunday 11 PM
+0 23 * * 0 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh disk_cleanup && { /usr/local/bin/trading-cleanup.sh >> /home/ubuntu/cleanup.log 2>&1; }
+
+# Weekly VACUUM ANALYZE — every Sunday 11:30 PM (markets closed)
+30 23 * * 0 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh weekly_full_vacuum && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c "VACUUM ANALYZE;" >> /home/ubuntu/vacuum_analyze.txt 2>&1; }
+
+# Expiry alert — 10:00 AM IST Mon–Fri (Friday covers Monday expiries)
+0 10 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh expiry_alert && { /home/ubuntu/projects/options-trading-platform/venv/bin/python /home/ubuntu/projects/options-trading-platform/expiry_alert.py >> /home/ubuntu/expiry_alert.txt 2>&1; }
+#DISABLED_CTID_BUG 0 8 * * * cd /home/ubuntu/projects/options-trading-platform && nice -n 19 ./venv/bin/python3 scripts/archive_to_b2_v2.py >> /home/ubuntu/archive_b2.log 2>&1
+10 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh gap_ticks_vacuum && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c 'VACUUM ANALYZE gap_ticks;' >> ~/vacuum_analyze.txt 2>&1; }
+15 11 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh gap_ticks_vacuum && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c 'VACUUM ANALYZE gap_ticks;' >> ~/vacuum_analyze.txt 2>&1; }
+30 13 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh gap_ticks_vacuum && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c 'VACUUM ANALYZE gap_ticks;' >> ~/vacuum_analyze.txt 2>&1; }
+0 18 * * * /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh daily_partition_create && { cd ~/projects/options-trading-platform && ./venv/bin/python3 scripts/create_daily_partition.py >> ~/partition_cron.log 2>&1; }
+
+# pg_stat_statements reset — 09:00 IST Mon–Fri (clean per-day baseline)
+0 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh pg_stats_reset && { sudo -u postgres psql -d tickdata -c "SELECT pg_stat_statements_reset();" >> /home/ubuntu/perf_reports/pg_stats_reset.log 2>&1; }
+
+# Heap correlation snapshots — 09:30, 12:00, 15:25 IST Mon–Fri
+
+# Daily performance report — 15:35 IST Mon–Fri
+44 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh daily_perf_report && { /home/ubuntu/projects/options-trading-platform/venv/bin/python3 /home/ubuntu/projects/options-trading-platform/scripts/daily_perf_report.py >> /home/ubuntu/perf_reports/report_run.log 2>&1; }
+
+# Partition vacuum — 15:36 IST Mon–Fri (after market writes settle; updates visibility map for index-only scans)
+46 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh partition_vacuum && { /home/ubuntu/projects/options-trading-platform/scripts/vacuum_today_partition.sh >> /home/ubuntu/vacuum_analyze.txt 2>&1; }
+30 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh stats_freshness_snap && { /home/ubuntu/projects/options-trading-platform/venv/bin/python3 /home/ubuntu/projects/options-trading-platform/scripts/snap_stats_freshness.py >> /home/ubuntu/perf_reports/stats_freshness_cron.log 2>&1; }
+58 11 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh stats_freshness_snap && { /home/ubuntu/projects/options-trading-platform/venv/bin/python3 /home/ubuntu/projects/options-trading-platform/scripts/snap_stats_freshness.py >> /home/ubuntu/perf_reports/stats_freshness_cron.log 2>&1; }
+25 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh stats_freshness_snap && { /home/ubuntu/projects/options-trading-platform/venv/bin/python3 /home/ubuntu/projects/options-trading-platform/scripts/snap_stats_freshness.py >> /home/ubuntu/perf_reports/stats_freshness_cron.log 2>&1; }
+# ANALYZE candles_5s mid-session — keeps planner stats fresh during trading day
+0 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh candles_analyze && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c 'ANALYZE candles_5s;' >> /home/ubuntu/perf_reports/manual_analyze.log 2>&1; }
+0 12 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh candles_analyze && { PGPASSWORD='MustafaHasnain@123' PGOPTIONS='-c statement_timeout=0' psql -h localhost -U postgres -d tickdata -c 'ANALYZE candles_5s;' >> /home/ubuntu/perf_reports/manual_analyze.log 2>&1; }
+2 12 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh stats_freshness_snap && { /home/ubuntu/projects/options-trading-platform/venv/bin/python3 /home/ubuntu/projects/options-trading-platform/scripts/snap_stats_freshness.py >> /home/ubuntu/perf_reports/stats_freshness_cron.log 2>&1; }
+# Tick rate watchdog — alert if Zerodha feed throttles silently (like Apr 21/22/24)
+# First check at 09:17 (not 09:15) to skip the pre-open ramp-up window (09:09–09:15
+# shows ~500 ticks/min from WebSocket subscription activity before equity ticks arrive).
+17-59/5 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh tick_rate_watchdog && { /bin/bash $HOME/scripts/check_tick_rate.sh >> $HOME/tick_rate_watchdog.log 2>&1; }
+*/5 10-15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh tick_rate_watchdog && { /bin/bash $HOME/scripts/check_tick_rate.sh >> $HOME/tick_rate_watchdog.log 2>&1; }
+
+# Chart investigation — natural test case alert (runs after daily report at 15:35)
+48 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh chart_investigation_alert && { /bin/bash $HOME/scripts/chart_investigation_alert.sh >> $HOME/perf_reports/chart_investigation_alert.log 2>&1; }
+
+# ── Archive v3 (two-phase) ──────────────────────────────────────────────────
+# Phase A: export day N-2 at 04:00 IST (no DB deletions)
+# ENABLE AFTER SUCCESSFUL DRY RUN — see dry-run plan in Task 6
+
+# Phase B: drop verified partitions at 04:30 IST (30 min after Phase A)
+# ENABLE AFTER SUCCESSFUL DRY RUN — see dry-run plan in Task 6
+0 2 * * * /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/archive_cron_gate.sh export >> /home/ubuntu/archive_export.log 2>&1
+45 6 * * * /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/archive_cron_gate.sh drop >> /home/ubuntu/archive_drop.log 2>&1
+# Pre-session health check — 09:09 IST Mon–Fri
+9 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh pre_session_check && { /bin/bash /home/ubuntu/projects/options-trading-platform/pre_session_check.sh >> /home/ubuntu/pre_session_check.txt 2>&1; }
+# Trade Journal auto-sync — 3:31 PM IST Mon–Fri (after market close)
+41 15 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh journal_autosync && { /bin/bash /home/ubuntu/projects/options-trading-platform/sync_trade_journal.sh >> /home/ubuntu/sync_trade_journal.txt 2>&1; }
+# Order API connectivity test — 09:02 IST Mon–Fri (pre-open collection still open)
+2 9 * * 1-5 /bin/bash /home/ubuntu/projects/options-trading-platform/scripts/cron_gate.sh order_api_check && { /bin/bash /home/ubuntu/projects/options-trading-platform/order_api_check.sh >> /home/ubuntu/order_api_check.txt 2>&1; }
+
